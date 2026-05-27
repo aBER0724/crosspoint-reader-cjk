@@ -329,6 +329,43 @@ std::unique_ptr<Page> Section::loadPageFromSectionFile() {
   return page;
 }
 
+std::string Section::getTextFromSectionFile() {
+  std::string fullText;
+  auto p = this->loadPageFromSectionFile();
+  if (p) {
+    for (const auto& el : p->elements) {
+      if (el->getTag() == TAG_PageLine) {
+        const auto& line = static_cast<const PageLine&>(*el);
+        if (line.getBlock()) {
+          const auto& words = line.getBlock()->getWords();
+          for (const auto& w : words) {
+            if (!fullText.empty()) fullText += " ";
+            fullText += w;
+          }
+        }
+      }
+    }
+  }
+  return fullText;
+}
+
+std::optional<uint16_t> Section::getCachedPageCount() const {
+  HalFile f;
+  if (!Storage.openFileForRead("SCT", filePath, f)) {
+    return std::nullopt;
+  }
+
+  const uint32_t fileSize = f.size();
+  if (fileSize < HEADER_SIZE) {
+    return std::nullopt;
+  }
+
+  f.seek(HEADER_SIZE - sizeof(uint32_t) * 4 - sizeof(uint16_t));
+  uint16_t count;
+  serialization::readPod(f, count);
+  return count;
+}
+
 std::optional<uint16_t> Section::getPageForAnchor(const std::string& anchor) const {
   HalFile f;
   if (!Storage.openFileForRead("SCT", filePath, f)) {
