@@ -198,6 +198,15 @@ The Settings screen allows you to configure the device's behavior. There are a f
 - **OPDS Servers**: Manage one or more OPDS libraries for browsing and downloading books. See [OPDS Servers (Multiple Libraries)](#365-opds-servers-multiple-libraries) below.
 - **Clear Reading Cache**: Clear the internal SD card cache.
 - **Check for updates**: Check for Crosspoint firmware updates over WiFi.
+- **Install firmware from SD**: Flash a firmware file from the SD card without USB.
+  1. Copy `firmware-sc.bin`, `firmware-tc.bin`, or `firmware.bin` to the SD card root.
+  2. Open Settings → System → Install firmware from SD.
+  3. Confirm the file and wait for the progress bar to complete.
+  4. Reboot when prompted.
+
+  > **Warning:** Use only valid X4 OTA app images from trusted releases.
+  > Do not use X3 update packages. Incorrect files may permanently brick
+  > devices without working USB data.
 - **Language**: Set the system language (see **[Supported Languages](#supported-languages)** for more information).
 
 #### 3.6.5 OPDS Servers (Multiple Libraries)
