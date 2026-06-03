@@ -197,6 +197,13 @@ Examples:
 3. The ESP32-C3 has very limited memory. Using large CJK font files for both UI and reading fonts simultaneously may cause out-of-memory crashes. It is recommended to keep UI fonts at 20pt or below.
 4. When opening the home screen for the first time after adding new books, the device will generate cover thumbnails. A "Loading" popup may appear for a few seconds — this is normal, not a freeze.
 
+## 🤝 Contributors
+
+Thanks to everyone who has contributed to CrossPoint Reader CJK.
+
+- [aBER0724](https://github.com/aBER0724) — maintainer
+- [donutboyy](https://github.com/donutboyy) — SD-card firmware update support
+
 ## 🤝 Contributing
 
 If you are new to the codebase, start with the [contributing docs](./docs/contributing/README.md).
