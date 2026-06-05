@@ -128,8 +128,8 @@ OtaUpdater::OtaUpdaterError OtaUpdater::checkForUpdate() {
       .url = latestReleaseUrl,
       .event_handler = event_handler,
       /* Default HTTP client buffer size 512 byte only */
-      .buffer_size = 8192,
-      .buffer_size_tx = 8192,
+      .buffer_size = 4096,
+      .buffer_size_tx = 1024,
       .skip_cert_common_name_check = true,
       .crt_bundle_attach = esp_crt_bundle_attach,
       .keep_alive_enable = true,
@@ -260,16 +260,13 @@ bool OtaUpdater::isUpdateNewer() const {
 
 const std::string& OtaUpdater::getLatestVersion() const { return latestVersion; }
 
-OtaUpdater::OtaUpdaterError OtaUpdater::installUpdate() {
+OtaUpdater::OtaUpdaterError OtaUpdater::installUpdate(ProgressCallback onProgress, void* ctx) {
   if (!isUpdateNewer()) {
     return UPDATE_OLDER_ERROR;
   }
 
   esp_https_ota_handle_t ota_handle = NULL;
   esp_err_t esp_err;
-  /* Signal for OtaUpdateActivity */
-  render = false;
-
   esp_http_client_config_t client_config = {
       .url = otaUrl.c_str(),
       .timeout_ms = 15000,
@@ -277,8 +274,8 @@ OtaUpdater::OtaUpdaterError OtaUpdater::installUpdate() {
        * not sufficient to handle URL redirection cases or
        * parsing of large HTTP headers.
        */
-      .buffer_size = 8192,
-      .buffer_size_tx = 8192,
+      .buffer_size = 4096,
+      .buffer_size_tx = 1024,
       .skip_cert_common_name_check = true,
       .crt_bundle_attach = esp_crt_bundle_attach,
       .keep_alive_enable = true,
@@ -292,17 +289,28 @@ OtaUpdater::OtaUpdaterError OtaUpdater::installUpdate() {
   /* For better timing and connectivity, we disable power saving for WiFi */
   esp_wifi_set_ps(WIFI_PS_NONE);
 
+  LOG_DBG("OTA", "Starting OTA begin: free=%d max=%d url=%s", ESP.getFreeHeap(), ESP.getMaxAllocHeap(), otaUrl.c_str());
   esp_err = esp_https_ota_begin(&ota_config, &ota_handle);
   if (esp_err != ESP_OK) {
     LOG_DBG("OTA", "HTTP OTA Begin Failed: %s", esp_err_to_name(esp_err));
     return INTERNAL_UPDATE_ERROR;
   }
+  LOG_DBG("OTA", "OTA begin OK: free=%d max=%d", ESP.getFreeHeap(), ESP.getMaxAllocHeap());
 
+  uint32_t lastProgressLogMs = 0;
   do {
     esp_err = esp_https_ota_perform(ota_handle);
     processedSize = esp_https_ota_get_image_len_read(ota_handle);
-    /* Sent signal to  OtaUpdateActivity */
-    render = true;
+    const uint32_t now = millis();
+    if (now - lastProgressLogMs >= 1000 || esp_err != ESP_ERR_HTTPS_OTA_IN_PROGRESS) {
+      lastProgressLogMs = now;
+      LOG_DBG("OTA", "OTA perform: err=%s, read=%u/%u, free=%d max=%d", esp_err_to_name(esp_err),
+              static_cast<unsigned int>(processedSize), static_cast<unsigned int>(totalSize), ESP.getFreeHeap(),
+              ESP.getMaxAllocHeap());
+    }
+    if (onProgress) {
+      onProgress(ctx);
+    }
     delay(100);  // TODO: should we replace this with something better?
   } while (esp_err == ESP_ERR_HTTPS_OTA_IN_PROGRESS);
 
