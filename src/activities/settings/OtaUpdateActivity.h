@@ -17,12 +17,30 @@ class OtaUpdateActivity : public Activity {
 
   // Can't initialize this to 0 or the first render doesn't happen
   static constexpr unsigned int UNINITIALIZED_PERCENTAGE = 111;
+  static constexpr int OTA_PROGRESS_GLYPH_COUNT = 12;
+  static constexpr int OTA_PROGRESS_GLYPH_MAX_BYTES = 260;
+
+  struct OtaProgressGlyph {
+    char ch = '\0';
+    uint8_t width = 0;
+    uint8_t height = 0;
+    uint8_t bytesPerRow = 0;
+    uint8_t advance = 0;
+    uint8_t bitmap[OTA_PROGRESS_GLYPH_MAX_BYTES] = {};
+  };
 
   State state = WIFI_SELECTION;
   unsigned int lastUpdaterPercentage = UNINITIALIZED_PERCENTAGE;
+  bool lowMemoryOtaProgress = false;
+  bool otaProgressGlyphAtlasReady = false;
+  OtaProgressGlyph otaProgressGlyphs[OTA_PROGRESS_GLYPH_COUNT];
   OtaUpdater updater;
 
   void onWifiSelectionComplete(bool success);
+  bool buildOtaProgressGlyphAtlas();
+  const OtaProgressGlyph* findOtaProgressGlyph(char ch) const;
+  void drawOtaProgressText(const char* text, int y);
+  void renderOtaProgressOnly(unsigned int percentage, size_t processedSize, size_t totalSize);
 
  public:
   explicit OtaUpdateActivity(GfxRenderer& renderer, MappedInputManager& mappedInput)
