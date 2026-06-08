@@ -46,14 +46,6 @@ jobs:
           path: firmware.bin
           if-no-files-found: error
 
-      - name: Move sd-recovery tag to this commit
-        run: |
-          set -euo pipefail
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag -f sd-recovery "$GITHUB_SHA"
-          git push -f origin sd-recovery
-
       - name: Remove old SD recovery assets
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -61,7 +53,7 @@ jobs:
         run: |
           set -euo pipefail
           if gh release view sd-recovery >/dev/null 2>&1; then
-            for asset in firmware.bin crosspoint-recovery-sd-sc.zip crosspoint-recovery-sd-tc.zip; do
+            for asset in firmware.bin firmware-sc.bin firmware-tc.bin bootloader.bin partitions.bin crosspoint-recovery-sd-sc.zip crosspoint-recovery-sd-tc.zip; do
               gh release delete-asset sd-recovery "$asset" -y >/dev/null 2>&1 || true
             done
           fi
