@@ -146,6 +146,7 @@ pio run --target upload
 2. 若在某个界面卡住, 可尝试重启设备.
 3. ESP32-C3 内存非常有限, 同时使用大型 CJK 字体文件作为 UI 字体和阅读字体可能导致内存溢出崩溃. 建议 UI 字体选择 20pt 及以下的字号.
 4. 添加新书后首次打开主页时, 设备会生成封面缩略图, 可能出现 "加载中" 弹窗并等待数秒, 这是正常现象, 并非设备卡死.
+5. 如果设备停留在 v0.3.3 且普通 OTA 更新无法使用, 请使用 [SD Recovery release](https://github.com/aBER0724/crosspoint-reader-cjk/releases/tag/sd-recovery). 下载其中的 `firmware.bin`, 和你想刷入的目标固件一起放到 SD 卡根目录, 并按照 release 页面里的命名规则操作.
 
 ## 🤝 参与贡献
 
