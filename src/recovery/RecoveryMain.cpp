@@ -225,7 +225,7 @@ void drawLine(uint8_t* fb, int x, int y, const char* text) {
   }
 
   const int advance = (CHAR_WIDTH + CHAR_SPACING) * TEXT_SCALE;
-  for (int i = 0; text[i] != '\0' && i < 58; i++) {
+  for (int i = 0; i < 58 && text[i] != '\0'; i++) {
     drawChar(fb, x + i * advance, y, text[i]);
   }
 }
