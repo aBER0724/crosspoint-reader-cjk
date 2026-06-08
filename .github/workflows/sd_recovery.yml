@@ -2,6 +2,9 @@ name: SD Recovery
 
 on:
   workflow_dispatch:
+  push:
+    tags:
+      - 'sd-recovery'
 
 jobs:
   build-sd-recovery:
