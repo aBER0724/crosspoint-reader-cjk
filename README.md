@@ -196,6 +196,7 @@ Examples:
 2. If stuck on a specific interface, try restarting the device.
 3. The ESP32-C3 has very limited memory. Using large CJK font files for both UI and reading fonts simultaneously may cause out-of-memory crashes. It is recommended to keep UI fonts at 20pt or below.
 4. When opening the home screen for the first time after adding new books, the device will generate cover thumbnails. A "Loading" popup may appear for a few seconds — this is normal, not a freeze.
+5. If you are on v0.3.3 and normal OTA updates do not work, use the [SD Recovery release](https://github.com/aBER0724/crosspoint-reader-cjk/releases/tag/sd-recovery). Download its `firmware.bin`, place it on the SD card with the firmware you want to install, and follow the naming notes in the release page.
 
 ## 🤝 Contributors
 
