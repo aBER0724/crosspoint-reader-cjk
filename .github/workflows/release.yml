@@ -6,6 +6,7 @@ on:
 
 jobs:
   build-release:
+    if: github.ref_name != 'sd-recovery'
     runs-on: ubuntu-latest
     permissions:
       contents: write

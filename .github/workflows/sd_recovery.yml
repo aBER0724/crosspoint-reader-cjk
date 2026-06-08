@@ -1,0 +1,107 @@
+name: SD Recovery
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'sd-recovery'
+
+jobs:
+  build-sd-recovery:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.14'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          version: "latest"
+          enable-cache: false
+
+      - name: Install PlatformIO Core
+        run: uv pip install --system -U https://github.com/pioarduino/platformio-core/archive/refs/tags/v6.1.19.zip
+
+      - name: Install font generation dependencies
+        run: uv pip install --system -U Pillow
+
+      - name: Build SD recovery firmware
+        run: |
+          set -euo pipefail
+          pio run -e recovery
+          cp .pio/build/recovery/firmware.bin firmware.bin
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sd-recovery-firmware
+          path: firmware.bin
+          if-no-files-found: error
+
+      - name: Remove old SD recovery assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if gh release view sd-recovery >/dev/null 2>&1; then
+            for asset in firmware.bin firmware-sc.bin firmware-tc.bin bootloader.bin partitions.bin crosspoint-recovery-sd-sc.zip crosspoint-recovery-sd-tc.zip; do
+              gh release delete-asset sd-recovery "$asset" -y >/dev/null 2>&1 || true
+            done
+          fi
+
+      - name: Create or update SD Recovery release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: sd-recovery
+          name: SD Recovery
+          files: firmware.bin
+          make_latest: false
+          body: |
+            # SD Recovery
+
+            Use this recovery firmware if your device is still on v0.3.3 and the normal OTA update is not working.
+
+            To use it, prepare the firmware file you want to flash, then rename it to something like:
+
+            ```text
+            firmware-target.bin
+            firmware-v1.3.0.bin
+            firmware_1.3.0.bin
+            ```
+
+            The recovery firmware will look for files that start with `firmware-` or `firmware_` and end with `.bin`.
+
+            Your SD card root should contain only these two firmware files:
+
+            ```text
+            SD card root/
+            ├── firmware.bin         # Recovery firmware
+            └── firmware-target.bin  # Target firmware
+            ```
+
+            First, use your current firmware, such as v0.3.3, to flash `firmware.bin` from SD.
+
+            After that succeeds, reboot the device. The recovery firmware will start, scan the SD card for the other firmware file, and flash it automatically.
+
+            Please make sure:
+
+            - the recovery firmware is named exactly `firmware.bin`
+            - the target firmware is named `firmware-xxxx.bin` or `firmware_xxxx.bin`
+            - there is only one target firmware file on the SD card
+
+            Do not name the target firmware `firmware.bin`. That name is reserved for the recovery firmware itself.
+
+            This method has been tested by flashing to CrossPoint v1.3.0.
+
+            Keep the battery charged and do not power off the device while it is flashing. The update process is designed to avoid overwriting the currently bootable firmware until the new image is written successfully, but no firmware update is completely risk-free.
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
