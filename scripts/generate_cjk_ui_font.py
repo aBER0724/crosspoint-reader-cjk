@@ -11,7 +11,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from gen_i18n import parse_yaml_file
+from gen_i18n import load_translations
 
 # Baseline characters that are not guaranteed to appear in translations, but are
 # used by UI layout, dynamic labels, punctuation, or Japanese composition.
@@ -27,7 +27,7 @@ abcdefghijklmnopqrstuvwxyz|«»
 ァィゥェォッャュョヴヵヶー
 一二三四五六七八九十百千万亿
 简体中文日本語启动休眠进入浏览件传输设置书库继续阅读无打开的籍从下方始未找到选择章节已末空索引内存错误页面加载超出范围失败卡网络个扫描连接时忘记保密码删除按确定重新任意键左右认式创建热点现有供他人模将备此在器或用手机维线地址作为检查字正搜等待指令试断收更多容需要显示控制系统屏幕封状态栏隐藏电量百分比段落额外间距抗锯齿源短向前钮布局侧边长跳转大小行母数汉颜色对齐符刷频率同步语言壁纸清理缓户名服务档匹配证请先凭据成功就绪完这所度丢当再次项看串口了解详情深浅自义适应裁剪整不终忽略翻竖横顺针倒逆返回上特紧凑常宽松两端居钟版可是最禁条目命获取订析退主切换消否关写起動覧転送設続読開書見選択終込範囲敗削押確認法参既暗号化済力検機試受信必画隠追間隔電側長漢余白時頻期紙去証初報利能進捗項詳細無視縦計反戻狭普通広両揃え央現部蔵効題得替決
-远程本应置账户配来自
+远程本应置账户配来自唤醒繁體
 リモートローカルセクションアップロード元
 仅付位修光典刻含哈埋复射嵌希提映样滤界移算经缩褪计过近適镜阳题首（）
 """
@@ -53,25 +53,31 @@ def normalize_language_filter(language_filter):
 
 
 def collect_translation_chars(translations_dir, language_filter=None):
-    """Return every unique character used by selected translation YAML files."""
+    """Return every unique character compiled into the selected i18n table.
+
+    Keep this in lockstep with scripts/gen_i18n.py by using load_translations()
+    instead of independently walking YAML files. This includes native language
+    names, English fallbacks for missing keys, and the exact language filtering
+    used by the firmware build environment.
+    """
     translations_path = Path(translations_dir)
     if not translations_path.is_dir():
         raise FileNotFoundError(f"Translations directory not found: {translations_dir}")
 
     normalized_filter = normalize_language_filter(language_filter)
-    chars = set()
-    for yaml_file in sorted(translations_path.glob("*.yaml")):
-        data = parse_yaml_file(str(yaml_file))
-        language_code = data.get("_language_code", "").upper()
-        if normalized_filter and language_code not in normalized_filter:
-            continue
+    language_codes, language_names, _string_keys, translations = load_translations(
+        str(translations_path), normalized_filter
+    )
 
-        for key, value in data.items():
-            if key.startswith("_"):
-                continue
-            for char in value:
-                if char.strip() and 0x20 <= ord(char) <= 0xFFFF:
-                    chars.add(char)
+    chars = set()
+    for value in language_codes:
+        chars.update(get_unique_chars(value))
+    for value in language_names:
+        chars.update(get_unique_chars(value))
+    for row in translations.values():
+        for value in row:
+            chars.update(get_unique_chars(value))
+
     return "".join(sorted(chars, key=ord))
 
 
