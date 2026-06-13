@@ -35,8 +35,7 @@ class Hyphenator {
   //      word from overflowing the page width. When mergeFallback is true, fallback
   //      candidates are merged with pattern breaks so layout can reduce excessive
   //      end-of-line whitespace while still trying language breaks first.
-  static std::vector<BreakInfo> breakOffsets(const std::string& word, bool includeFallback,
-                                             bool mergeFallback = false);
+  static std::vector<BreakInfo> breakOffsets(const std::string& word, bool includeFallback, bool mergeFallback = false);
 
   // Provide a publication-level language hint (e.g. "en", "en-US", "ru") used to select hyphenation rules.
   static void setPreferredLanguage(const std::string& lang);

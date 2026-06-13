@@ -620,7 +620,8 @@ int GfxRenderer::getTextWidthUiMixed(const int effectiveFontId, const char* text
   return width;
 }
 
-int GfxRenderer::getTextWidth(const int fontId, const char* text, const EpdFontFamily::Style style, const BidiUtils::BidiBaseDir baseDir) const {
+int GfxRenderer::getTextWidth(const int fontId, const char* text, const EpdFontFamily::Style style,
+                              const BidiUtils::BidiBaseDir baseDir) const {
   const int effectiveFontId = getEffectiveFontId(fontId);
   if (fontMap.count(effectiveFontId) == 0) {
     // UI fonts may not be in fontMap (they use built-in CJK font)
@@ -1649,9 +1650,8 @@ int GfxRenderer::getSpaceAdvance(const int fontId, const uint32_t leftCp, const 
     ExternalFont* extFont = FontManager::getInstance().getActiveFont();
     ExternalGlyphMetrics metrics{};
     if (extFont && extFont->getGlyphMetricsForLayout(' ', &metrics)) {
-      return getExternalGlyphAdvanceForRendering(metrics, extFont->getCharWidth(), 0,
-                                                 shouldUseCjkSymbolCellMetrics(' '),
-                                                 shouldUseGlyphBoundsForAdvance(' '));
+      return getExternalGlyphAdvanceForRendering(
+          metrics, extFont->getCharWidth(), 0, shouldUseCjkSymbolCellMetrics(' '), shouldUseGlyphBoundsForAdvance(' '));
     }
   }
 

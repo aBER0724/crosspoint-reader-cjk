@@ -1,8 +1,8 @@
 #pragma once
 
-#include "../ExternalFont/ExternalFont.h"
-
 #include <cstdint>
+
+#include "../ExternalFont/ExternalFont.h"
 
 // --- Glyph layout ---
 

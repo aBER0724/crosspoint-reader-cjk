@@ -183,7 +183,7 @@ void appendFallbackBreakInfos(const std::vector<CodepointInfo>& cps, const size_
 }  // namespace
 
 std::vector<Hyphenator::BreakInfo> Hyphenator::breakOffsets(const std::string& word, const bool includeFallback,
-                                                          const bool mergeFallback) {
+                                                            const bool mergeFallback) {
   if (word.empty()) {
     return {};
   }
