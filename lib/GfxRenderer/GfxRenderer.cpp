@@ -1482,19 +1482,8 @@ void GfxRenderer::displayBuffer(const HalDisplay::RefreshMode refreshMode) const
   }
 
   if (darkMode && refreshMode == HalDisplay::FAST_REFRESH) {
-    const unsigned long now = millis();
-    if (!darkUiRedrivePrimed) {
-      darkUiRedrivePrimed = true;
-      lastDarkUiRedriveMs = now;
-      darkUiFastRefreshesSinceRedrive = 0;
-    } else if (now - lastDarkUiRedriveMs >= DARK_UI_REDRIVE_MIN_INTERVAL_MS ||
-               darkUiFastRefreshesSinceRedrive >= DARK_UI_FAST_REFRESHES_PER_REDRIVE) {
-      lastDarkUiRedriveMs = now;
-      darkUiFastRefreshesSinceRedrive = 0;
-      display.displayBuffer(HalDisplay::DARK_REDRIVE, fadingFix);
-      return;
-    }
-    darkUiFastRefreshesSinceRedrive++;
+    display.displayBuffer(HalDisplay::DARK_REDRIVE, fadingFix);
+    return;
   }
 
   display.displayBuffer(refreshMode, fadingFix);

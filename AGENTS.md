@@ -111,6 +111,13 @@ It captures practical commands, style conventions, and repo guardrails.
 - Respect power/sleep semantics in the main activity loop.
 - Be cautious with SD-card IO and RAM pressure.
 
+### Dark Mode Refresh Policy
+
+- In dark mode, do not introduce new reader/UI paths that use `HALF_REFRESH` or ordinary `FAST_REFRESH` for visible updates.
+- Prefer `DARK_REDRIVE` for dark-mode updates so the controller re-drives all pixels and the dark background does not fade/whiten.
+- If adding a new refresh decision, activity transition, cadence/full-refresh replacement, partial/window update, or low-memory fallback, explicitly handle `darkMode` and route it to `RefreshMode::DarkRedrive`, `displayBufferDarkRedrive()`, or `displayWindowDarkRedrive()` as appropriate.
+- Only use `HALF_REFRESH` in dark mode with a documented hardware reason and after device testing confirms it does not make the background turn white.
+
 ### Global Access Patterns
 
 - This codebase intentionally uses singleton-style globals/macros such as `SETTINGS`, `APP_STATE`, and `I18N`.

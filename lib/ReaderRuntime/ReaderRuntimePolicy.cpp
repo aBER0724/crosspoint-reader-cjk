@@ -44,14 +44,14 @@ RefreshDecision chooseReaderRefresh(const RefreshContext& context) {
                               !context.externalFontEnabled && !context.lowMemory && !quickConsecutiveTurn;
 
   if (context.chapterBoundary) {
-    decision.mode = RefreshMode::Half;
+    decision.mode = context.darkMode ? RefreshMode::DarkRedrive : RefreshMode::Half;
     decision.reason = RefreshReason::ChapterBoundary;
     decision.nextCadenceRemaining = frequency;
     return decision;
   }
 
   if (needsStateResync(context)) {
-    decision.mode = RefreshMode::Half;
+    decision.mode = context.darkMode ? RefreshMode::DarkRedrive : RefreshMode::Half;
     decision.reason = RefreshReason::StateResync;
     decision.nextCadenceRemaining = frequency;
     return decision;
@@ -74,14 +74,14 @@ RefreshDecision chooseReaderRefresh(const RefreshContext& context) {
   }
 
   if (context.consecutiveTurns >= frequency + 1) {
-    decision.mode = RefreshMode::Half;
+    decision.mode = context.darkMode ? RefreshMode::DarkRedrive : RefreshMode::Half;
     decision.reason = RefreshReason::ContinuousTurns;
     decision.nextCadenceRemaining = frequency;
     return decision;
   }
 
   if (cadenceRemaining <= 1) {
-    decision.mode = RefreshMode::Half;
+    decision.mode = context.darkMode ? RefreshMode::DarkRedrive : RefreshMode::Half;
     decision.reason = RefreshReason::Cadence;
     decision.nextCadenceRemaining = frequency;
     return decision;
