@@ -596,20 +596,23 @@ int GfxRenderer::getTextWidthUiMixed(const int effectiveFontId, const char* text
         width += getExternalGlyphAdvanceForRendering(*extFont, cp, 0);
         hasWidth = true;
       } else {
-        // No external font, use built-in font width
+        // No external font, use built-in font width. EpdGlyph::advanceX is
+        // 12.4 fixed-point; UI truncation must measure the same pixel advance
+        // that renderChar() uses when drawing built-in Latin glyphs.
         const EpdGlyph* glyph = fontFamily.getGlyph(cp, style);
         if (glyph) {
-          width += glyph->advanceX;
+          width += fp4::toPixel(glyph->advanceX);
           hasWidth = true;
         }
       }
     }
 
-    // EPD font fallback for non-CJK characters
+    // EPD font fallback for non-CJK characters. EpdGlyph::advanceX is
+    // 12.4 fixed-point; keep measurement consistent with renderChar().
     if (!hasWidth) {
       const EpdGlyph* glyph = fontFamily.getGlyph(cp, style);
       if (glyph) {
-        width += glyph->advanceX;
+        width += fp4::toPixel(glyph->advanceX);
       }
     }
   }
@@ -2055,7 +2058,7 @@ void GfxRenderer::drawTextRotated90CW(const int fontId, const int x, const int y
     }
 
     // Move to next character position (going up, so decrease Y)
-    yPos -= glyph->advanceX;
+    yPos -= fp4::toPixel(glyph->advanceX);
   }
 }
 
@@ -2525,7 +2528,7 @@ void GfxRenderer::renderChar(const int fontId, const EpdFontFamily& fontFamily, 
     }
   }
 
-  *x += glyph->advanceX;
+  *x += fp4::toPixel(glyph->advanceX);
 }
 
 void GfxRenderer::getOrientedViewableTRBL(int* outTop, int* outRight, int* outBottom, int* outLeft) const {
