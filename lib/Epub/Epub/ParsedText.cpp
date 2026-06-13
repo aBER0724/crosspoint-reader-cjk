@@ -447,7 +447,9 @@ bool ParsedText::hyphenateWordAtIndex(const size_t wordIndex, const int availabl
   // OOM fix is unaffected.
   const std::string wordStr(wordView(wordIndex));
 
-  // Collect candidate breakpoints (byte offsets and hyphen requirements).
+  // Collect candidate breakpoints (byte offsets and hyphen requirements). Language
+  // pattern breaks are tried first. If they leave a large ragged gap, merge fallback
+  // candidates and choose again so the visible hyphen lands closer to the line edge.
   auto breakInfos = Hyphenator::breakOffsets(wordStr, allowFallbackBreaks);
   if (breakInfos.empty()) {
     return false;
@@ -479,6 +481,29 @@ bool ParsedText::hyphenateWordAtIndex(const size_t wordIndex, const int availabl
   if (chosenWidth < 0) {
     // No hyphenation point produced a prefix that fits in the remaining space.
     return false;
+  }
+
+  const int naturalSpaceWidth = renderer.getSpaceWidth(fontId, style);
+  const int excessiveRaggedGap = naturalSpaceWidth > 0 ? naturalSpaceWidth * 2 : 16;
+  if (availableWidth - chosenWidth > excessiveRaggedGap) {
+    auto mergedBreakInfos = Hyphenator::breakOffsets(wordStr, /*includeFallback=*/true, /*mergeFallback=*/true);
+    for (const auto& info : mergedBreakInfos) {
+      const size_t offset = info.byteOffset;
+      if (offset == 0 || offset >= wordStr.size()) {
+        continue;
+      }
+
+      const bool needsHyphen = info.requiresInsertedHyphen;
+      const std::string_view prefix(wordStr.data(), offset);
+      const int prefixWidth = measureWordWidth(renderer, fontId, prefix, style, needsHyphen);
+      if (prefixWidth > availableWidth || prefixWidth <= chosenWidth) {
+        continue;
+      }
+
+      chosenWidth = prefixWidth;
+      chosenOffset = offset;
+      chosenNeedsHyphen = needsHyphen;
+    }
   }
 
   // Re-emit the prefix (with optional hyphen) and the remainder at the end of
@@ -586,11 +611,17 @@ void ParsedText::extractLine(const size_t breakIndex, const int pageWidth, const
   const int effectivePageWidth = pageWidth - firstLineIndent;
   const bool isLastLine = breakIndex == lineBreakIndices.size() - 1;
 
-  // For justified text, compute per-gap extra to distribute remaining space evenly
+  // For justified text, compute per-gap extra to distribute remaining space evenly.
+  // Avoid stretching short English lines into unreadable word spacing: with only
+  // one or two gaps, a normal line can end up with a huge space between words.
   const int spareSpace = effectivePageWidth - lineWordWidthSum - totalNaturalGaps;
-  const int justifyExtra = (blockStyle.alignment == CssTextAlign::Justify && !isLastLine && actualGapCount >= 1)
-                               ? spareSpace / static_cast<int>(actualGapCount)
-                               : 0;
+  const int naturalGap = actualGapCount > 0 ? totalNaturalGaps / static_cast<int>(actualGapCount) : 0;
+  const int candidateJustifyExtra =
+      (blockStyle.alignment == CssTextAlign::Justify && !isLastLine && actualGapCount >= 3 && spareSpace > 0)
+          ? spareSpace / static_cast<int>(actualGapCount)
+          : 0;
+  const int justifyExtra =
+      (naturalGap > 0 && candidateJustifyExtra <= naturalGap * 2) ? candidateJustifyExtra : 0;
 
   // Calculate initial x position (first line starts at indent for left/justified text;
   // may be negative for hanging indents, e.g. margin-left:3em; text-indent:-1em).
