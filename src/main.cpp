@@ -37,7 +37,7 @@ MappedInputManager mappedInputManager(gpio, &BLUETOOTH_PAGE_TURN.getState());
 GfxRenderer renderer(display);
 ActivityManager activityManager(renderer, mappedInputManager);
 FontDecompressor fontDecompressor;
-FontCacheManager fontCacheManager(renderer.getFontMap());
+FontCacheManager fontCacheManager(renderer.getFontMap(), renderer.getSdCardFonts());
 
 // Fonts
 EpdFont notoserif14RegularFont(&notoserif_14_regular);

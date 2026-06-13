@@ -616,7 +616,7 @@ int GfxRenderer::getTextWidthUiMixed(const int effectiveFontId, const char* text
   return width;
 }
 
-int GfxRenderer::getTextWidth(const int fontId, const char* text, const EpdFontFamily::Style style) const {
+int GfxRenderer::getTextWidth(const int fontId, const char* text, const EpdFontFamily::Style style, const BidiUtils::BidiBaseDir baseDir) const {
   const int effectiveFontId = getEffectiveFontId(fontId);
   if (fontMap.count(effectiveFontId) == 0) {
     // UI fonts may not be in fontMap (they use built-in CJK font)
@@ -647,13 +647,13 @@ int GfxRenderer::getTextWidth(const int fontId, const char* text, const EpdFontF
 }
 
 void GfxRenderer::drawCenteredText(const int fontId, const int y, const char* text, const bool black,
-                                   const EpdFontFamily::Style style) const {
-  const int x = (getScreenWidth() - getTextWidth(fontId, text, style)) / 2;
-  drawText(fontId, x, y, text, black, style);
+                                   const EpdFontFamily::Style style, const BidiUtils::BidiBaseDir baseDir) const {
+  const int x = (getScreenWidth() - getTextWidth(fontId, text, style, baseDir)) / 2;
+  drawText(fontId, x, y, text, black, style, baseDir);
 }
 
 void GfxRenderer::drawText(const int fontId, const int x, const int y, const char* text, const bool black,
-                           const EpdFontFamily::Style style) const {
+                           const EpdFontFamily::Style style, const BidiUtils::BidiBaseDir baseDir) const {
   const int yPos = y + getFontAscenderSize(fontId);
   int xpos = x;
 
