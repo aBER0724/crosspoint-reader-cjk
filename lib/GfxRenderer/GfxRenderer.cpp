@@ -494,10 +494,11 @@ int GfxRenderer::getTextWidthExternalReader(const int effectiveFontId, const cha
           getExternalGlyphAdvanceForRendering(metrics, extFont->getCharWidth(), spacing,
                                               shouldUseCjkSymbolCellMetrics(cp), shouldUseGlyphBoundsForAdvance(cp));
     } else {
-      // Fall back to built-in reader font width
+      // Fall back to built-in reader font width. EpdGlyph::advanceX is
+      // 12.4 fixed-point; keep layout width consistent with renderChar().
       const EpdGlyph* glyph = fontFamily.getGlyph(cp, style);
       if (glyph) {
-        width += glyph->advanceX;
+        width += fp4::toPixel(glyph->advanceX);
       } else {
         width += 10;
       }
@@ -1643,11 +1644,38 @@ int GfxRenderer::getSpaceWidth(const int fontId, const EpdFontFamily::Style styl
 
 int GfxRenderer::getSpaceAdvance(const int fontId, const uint32_t leftCp, const uint32_t rightCp,
                                  const EpdFontFamily::Style style) const {
-  const auto fontIt = fontMap.find(fontId);
-  if (fontIt == fontMap.end()) return 0;
+  const int effectiveFontId = getEffectiveFontId(fontId);
+  const auto fontIt = fontMap.find(effectiveFontId);
+  if (fontIt == fontMap.end()) return isUiFont(fontId) ? 10 : 0;
+
   const auto& font = fontIt->second;
+  int32_t spaceAdvanceFP = 0;
+
+  // External reader fonts may provide the displayed word glyphs while the built-in
+  // fallback supplies missing characters. Keep natural space gaps consistent with
+  // getTextAdvanceX()/getSpaceWidth() so disabling excessive justification does
+  // not collapse English words together.
+  const bool externalReaderFont = isReaderFont(fontId) && FontManager::getInstance().isExternalFontEnabled();
+  if (externalReaderFont) {
+    ExternalFont* extFont = FontManager::getInstance().getActiveFont();
+    ExternalGlyphMetrics metrics{};
+    if (extFont && extFont->getGlyphMetricsForLayout(' ', &metrics)) {
+      return getExternalGlyphAdvanceForRendering(metrics, extFont->getCharWidth(), 0,
+                                                 shouldUseCjkSymbolCellMetrics(' '),
+                                                 shouldUseGlyphBoundsForAdvance(' '));
+    }
+  }
+
   const EpdGlyph* spaceGlyph = font.getGlyph(' ', style);
-  const int32_t spaceAdvanceFP = spaceGlyph ? static_cast<int32_t>(spaceGlyph->advanceX) : 0;
+  spaceAdvanceFP = spaceGlyph ? static_cast<int32_t>(spaceGlyph->advanceX) : 0;
+
+  // External reader fonts do not apply built-in kerning during glyph advance.
+  // If the external space is missing and we fall back to the built-in space width,
+  // keep the gap unkerned so layout stays consistent with getTextAdvanceX().
+  if (externalReaderFont) {
+    return fp4::toPixel(spaceAdvanceFP);
+  }
+
   // Combine space advance + flanking kern into one fixed-point sum before snapping.
   // Snapping the combined value avoids the +/-1 px error from snapping each component separately.
   const int32_t kernFP = static_cast<int32_t>(font.getKerning(leftCp, ' ', style)) +
@@ -1690,9 +1718,10 @@ int GfxRenderer::getTextAdvanceX(const int fontId, const char* text, EpdFontFami
                                                          shouldUseCjkSymbolCellMetrics(cp),
                                                          shouldUseGlyphBoundsForAdvance(cp));
           } else if (fallbackIt != fontMap.end()) {
-            // Fall back to built-in reader font for missing glyphs
+            // Fall back to built-in reader font for missing glyphs. EpdGlyph::advanceX
+            // is 12.4 fixed-point; keep section layout consistent with renderChar().
             const EpdGlyph* glyph = fallbackIt->second.getGlyph(cp, style);
-            if (glyph) width += glyph->advanceX;
+            if (glyph) width += fp4::toPixel(glyph->advanceX);
           }
         }
         return width;

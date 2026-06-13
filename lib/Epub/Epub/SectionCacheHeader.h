@@ -4,7 +4,7 @@
 
 namespace EpubSectionCache {
 
-inline constexpr uint8_t kSectionFileVersion = 22;
+inline constexpr uint8_t kSectionFileVersion = 25;
 inline constexpr uint32_t kSectionHeaderSize = sizeof(uint8_t) + sizeof(int) + sizeof(float) + sizeof(bool) +
                                                sizeof(uint8_t) + sizeof(uint16_t) + sizeof(uint16_t) + sizeof(bool) +
                                                sizeof(bool) + sizeof(bool) + sizeof(uint8_t) + sizeof(uint16_t) +
