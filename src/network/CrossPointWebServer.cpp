@@ -1880,12 +1880,17 @@ void CrossPointWebServer::handleWifiScan() const {
     }
   }
 
-  // Build JSON array
-  String json = "[";
+  // Stream response incrementally to avoid heap fragmentation
+  server->setContentLength(CONTENT_LENGTH_UNKNOWN);
+  server->send(200, "application/json", "");
+  server->sendContent("[");
+
   bool first = true;
   for (const auto& entry : bestIndex) {
     const int i = entry.second;
-    if (!first) json += ",";
+    if (!first) {
+      server->sendContent(",");
+    }
     first = false;
 
     JsonDocument doc;
@@ -1894,14 +1899,15 @@ void CrossPointWebServer::handleWifiScan() const {
     doc["encrypted"] = (WiFi.encryptionType(i) != WIFI_AUTH_OPEN);
     doc["saved"] = WIFI_STORE.hasSavedCredential(WiFi.SSID(i).c_str());
 
-    char buf[256];
-    serializeJson(doc, buf, sizeof(buf));
-    json += buf;
+    char buf[320];
+    const size_t written = serializeJson(doc, buf, sizeof(buf));
+    if (written >= sizeof(buf)) continue;  // Truncated — skip malformed entry
+    server->sendContent(buf);
   }
-  json += "]";
 
+  server->sendContent("]");
+  server->sendContent("");
   WiFi.scanDelete();
-  server->send(200, "application/json", json);
   LOG_DBG("WEB", "WiFi scan returned %d unique networks", bestIndex.size());
 }
 
@@ -1948,20 +1954,25 @@ void CrossPointWebServer::handleWifiList() const {
   WIFI_STORE.loadFromFile();
   const auto& creds = WIFI_STORE.getCredentials();
 
-  String json = "[";
-  for (size_t i = 0; i < creds.size(); i++) {
-    if (i > 0) json += ",";
-    // Only expose SSID, never the password
-    json += "{\"ssid\":\"";
-    // Escape any quotes in SSID
-    String escaped = creds[i].ssid.c_str();
-    escaped.replace("\"", "\\\"");
-    json += escaped;
-    json += "\"}";
-  }
-  json += "]";
+  // Stream response incrementally to avoid heap fragmentation
+  server->setContentLength(CONTENT_LENGTH_UNKNOWN);
+  server->send(200, "application/json", "");
+  server->sendContent("[");
 
-  server->send(200, "application/json", json);
+  // SSID: max 32 bytes per 802.11 spec; worst-case escaping (\uXXXX) = 6 chars/byte → 192 bytes + NUL
+  char escapedSsid[256];
+  for (size_t i = 0; i < creds.size(); i++) {
+    if (i > 0) {
+      server->sendContent(",");
+    }
+    server->sendContent("{\"ssid\":\"");
+    appendEscapedJsonString(escapedSsid, sizeof(escapedSsid), creds[i].ssid.c_str());
+    server->sendContent(escapedSsid);
+    server->sendContent("\"}");
+  }
+
+  server->sendContent("]");
+  server->sendContent("");
 }
 
 void CrossPointWebServer::handleWifiDelete() const {
