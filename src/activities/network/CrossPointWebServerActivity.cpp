@@ -8,6 +8,7 @@
 #include <esp_task_wdt.h>
 
 #include <cstddef>
+#include <string>
 
 #include "MappedInputManager.h"
 #include "NetworkModeSelectionActivity.h"
@@ -30,6 +31,13 @@ constexpr int QR_CODE_HEIGHT = 198;
 // DNS server for captive portal (redirects all DNS queries to our IP)
 DNSServer* dnsServer = nullptr;
 constexpr uint16_t DNS_PORT = 53;
+
+std::string appendAdminToken(const std::string& url, const std::string& token) {
+  if (token.empty()) {
+    return url;
+  }
+  return url + (url.find('?') == std::string::npos ? "?" : "&") + "token=" + token;
+}
 }  // namespace
 
 void CrossPointWebServerActivity::onEnter() {
@@ -370,6 +378,7 @@ void CrossPointWebServerActivity::render(RenderLock&&) {
 void CrossPointWebServerActivity::renderServerRunning() const {
   const auto& metrics = UITheme::getInstance().getMetrics();
   const auto pageWidth = renderer.getScreenWidth();
+  const std::string token = webServer ? webServer->getAdminToken() : "";
 
   GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight},
                  isApMode ? tr(STR_HOTSPOT_MODE) : tr(STR_FILE_TRANSFER), nullptr);
@@ -400,18 +409,20 @@ void CrossPointWebServerActivity::renderServerRunning() const {
                       EpdFontFamily::BOLD);
     startY += height10 + metrics.verticalSpacing * 2;
 
-    std::string hostnameUrl = std::string("http://") + AP_HOSTNAME + ".local/";
-    std::string ipUrl = tr(STR_OR_HTTP_PREFIX) + connectedIP + "/";
+    std::string hostnameUrl = appendAdminToken(std::string("http://") + AP_HOSTNAME + ".local/", token);
+    std::string ipUrl = appendAdminToken("http://" + connectedIP + "/", token);
 
     // Show QR code for URL
     const Rect qrBoundsUrl(metrics.contentSidePadding, startY, QR_CODE_WIDTH, QR_CODE_HEIGHT);
     QrUtils::drawQrCode(renderer, qrBoundsUrl, hostnameUrl);
 
     // Show IP address as fallback
-    renderer.drawText(UI_10_FONT_ID, metrics.contentSidePadding + QR_CODE_WIDTH + metrics.verticalSpacing, startY + 80,
-                      hostnameUrl.c_str());
-    renderer.drawText(SMALL_FONT_ID, metrics.contentSidePadding + QR_CODE_WIDTH + metrics.verticalSpacing, startY + 100,
-                      ipUrl.c_str());
+    const int urlTextX = metrics.contentSidePadding + QR_CODE_WIDTH + metrics.verticalSpacing;
+    const int urlTextWidth = pageWidth - urlTextX - metrics.contentSidePadding;
+    const std::string hostnameDisplay = renderer.truncatedText(SMALL_FONT_ID, hostnameUrl.c_str(), urlTextWidth);
+    const std::string ipDisplay = renderer.truncatedText(SMALL_FONT_ID, ipUrl.c_str(), urlTextWidth);
+    renderer.drawText(SMALL_FONT_ID, urlTextX, startY + 80, hostnameDisplay.c_str());
+    renderer.drawText(SMALL_FONT_ID, urlTextX, startY + 100, ipDisplay.c_str());
   } else {
     startY += metrics.verticalSpacing * 2;
 
@@ -423,18 +434,22 @@ void CrossPointWebServerActivity::renderServerRunning() const {
     startY += height10 + metrics.verticalSpacing * 2;
 
     // Show QR code for URL
-    std::string webInfo = "http://" + connectedIP + "/";
+    std::string webInfo = appendAdminToken("http://" + connectedIP + "/", token);
     const Rect qrBounds((pageWidth - QR_CODE_WIDTH) / 2, startY, QR_CODE_WIDTH, QR_CODE_HEIGHT);
     QrUtils::drawQrCode(renderer, qrBounds, webInfo);
     startY += QR_CODE_HEIGHT + metrics.verticalSpacing * 2;
 
     // Show web server URL prominently
-    renderer.drawCenteredText(UI_10_FONT_ID, startY, webInfo.c_str(), true);
+    std::string webDisplay =
+        renderer.truncatedText(UI_10_FONT_ID, webInfo.c_str(), pageWidth - metrics.contentSidePadding * 2);
+    renderer.drawCenteredText(UI_10_FONT_ID, startY, webDisplay.c_str(), true);
     startY += height10 + 5;
 
     // Also show hostname URL
-    std::string hostnameUrl = std::string(tr(STR_OR_HTTP_PREFIX)) + AP_HOSTNAME + ".local/";
-    renderer.drawCenteredText(SMALL_FONT_ID, startY, hostnameUrl.c_str(), true);
+    std::string hostnameUrl = appendAdminToken(std::string("http://") + AP_HOSTNAME + ".local/", token);
+    std::string hostnameDisplay =
+        renderer.truncatedText(SMALL_FONT_ID, hostnameUrl.c_str(), pageWidth - metrics.contentSidePadding * 2);
+    renderer.drawCenteredText(SMALL_FONT_ID, startY, hostnameDisplay.c_str(), true);
   }
 
   const auto labels = mappedInput.mapLabels(tr(STR_EXIT), "", "", "");

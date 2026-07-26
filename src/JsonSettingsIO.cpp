@@ -16,6 +16,149 @@
 #include "SettingsList.h"
 #include "WifiCredentialStore.h"
 
+namespace {
+
+String tempPathFor(const char* path) { return String(path) + ".tmp"; }
+
+String backupPathFor(const char* path) { return String(path) + ".bak"; }
+
+bool readJsonFile(const char* tag, const String& path, String& json) {
+  if (!Storage.exists(path.c_str())) {
+    return false;
+  }
+
+  json = Storage.readFile(path.c_str());
+  if (json.isEmpty()) {
+    LOG_ERR(tag, "JSON file is empty or unreadable: %s", path.c_str());
+    return false;
+  }
+  return true;
+}
+
+void recoverInterruptedJsonWrite(const char* tag, const char* path) {
+  const String targetPath(path);
+  const String tempPath = tempPathFor(path);
+  const String backupPath = backupPathFor(path);
+
+  if (Storage.exists(targetPath.c_str())) {
+    if (Storage.exists(tempPath.c_str())) {
+      Storage.remove(tempPath.c_str());
+      LOG_DBG(tag, "Removed stale JSON temp file: %s", tempPath.c_str());
+    }
+    return;
+  }
+
+  if (Storage.exists(tempPath.c_str())) {
+    if (Storage.rename(tempPath.c_str(), targetPath.c_str())) {
+      LOG_ERR(tag, "Recovered interrupted JSON write from temp: %s", targetPath.c_str());
+      return;
+    }
+    LOG_ERR(tag, "Failed to recover JSON temp file: %s", tempPath.c_str());
+  }
+
+  if (Storage.exists(backupPath.c_str())) {
+    if (Storage.rename(backupPath.c_str(), targetPath.c_str())) {
+      LOG_ERR(tag, "Recovered JSON backup: %s", targetPath.c_str());
+    } else {
+      LOG_ERR(tag, "Failed to recover JSON backup: %s", backupPath.c_str());
+    }
+  }
+}
+
+bool restoreJsonBackup(const char* tag, const char* path) {
+  const String targetPath(path);
+  const String backupPath = backupPathFor(path);
+
+  if (!Storage.exists(backupPath.c_str())) {
+    return false;
+  }
+
+  if (Storage.exists(targetPath.c_str())) {
+    Storage.remove(targetPath.c_str());
+  }
+
+  if (!Storage.rename(backupPath.c_str(), targetPath.c_str())) {
+    LOG_ERR(tag, "Failed to restore JSON backup: %s", backupPath.c_str());
+    return false;
+  }
+
+  LOG_ERR(tag, "Restored JSON backup after load failure: %s", targetPath.c_str());
+  return true;
+}
+
+template <typename Loader>
+bool loadJsonWithBackup(const char* tag, const char* path, Loader loader, bool* needsResave) {
+  if (path == nullptr || path[0] == '\0') {
+    return false;
+  }
+
+  recoverInterruptedJsonWrite(tag, path);
+
+  String json;
+  if (readJsonFile(tag, path, json) && loader(json, needsResave)) {
+    return true;
+  }
+
+  const String backupPath = backupPathFor(path);
+  String backupJson;
+  bool backupNeedsResave = false;
+  if (!readJsonFile(tag, backupPath, backupJson) || !loader(backupJson, needsResave ? &backupNeedsResave : nullptr)) {
+    return false;
+  }
+
+  if (restoreJsonBackup(tag, path) && needsResave) {
+    *needsResave = backupNeedsResave;
+  }
+  return true;
+}
+
+bool writeFileAtomic(const char* path, const String& content) {
+  if (path == nullptr || path[0] == '\0') {
+    return false;
+  }
+
+  const String targetPath(path);
+  const String tempPath = tempPathFor(path);
+  const String backupPath = backupPathFor(path);
+
+  Storage.remove(tempPath.c_str());
+  if (!Storage.writeFile(tempPath.c_str(), content)) {
+    Storage.remove(tempPath.c_str());
+    return false;
+  }
+
+  if (Storage.exists(backupPath.c_str())) {
+    Storage.remove(backupPath.c_str());
+  }
+
+  const bool hadExisting = Storage.exists(targetPath.c_str());
+  if (hadExisting && !Storage.rename(targetPath.c_str(), backupPath.c_str())) {
+    Storage.remove(tempPath.c_str());
+    return false;
+  }
+
+  if (!Storage.rename(tempPath.c_str(), targetPath.c_str())) {
+    Storage.remove(tempPath.c_str());
+    if (hadExisting && Storage.exists(backupPath.c_str())) {
+      Storage.rename(backupPath.c_str(), targetPath.c_str());
+    }
+    return false;
+  }
+
+  return true;
+}
+
+}  // namespace
+
+bool JsonSettingsIO::jsonFileOrBackupExists(const char* path) {
+  if (path == nullptr || path[0] == '\0') {
+    return false;
+  }
+
+  return Storage.exists(path) || Storage.exists(backupPathFor(path).c_str()) ||
+         Storage.exists(tempPathFor(path).c_str());
+}
+
 // Convert legacy settings.
 void applyLegacyStatusBarSettings(CrossPointSettings& settings) {
   switch (static_cast<CrossPointSettings::STATUS_BAR_MODE>(settings.statusBar)) {
@@ -79,7 +222,7 @@ bool JsonSettingsIO::saveState(const CrossPointState& s, const char* path) {
 
   String json;
   serializeJson(doc, json);
-  return Storage.writeFile(path, json);
+  return writeFileAtomic(path, json);
 }
 
 bool JsonSettingsIO::loadState(CrossPointState& s, const char* json) {
@@ -111,6 +254,11 @@ bool JsonSettingsIO::loadState(CrossPointState& s, const char* json) {
   s.readerActivityLoadCount = doc["readerActivityLoadCount"] | static_cast<uint8_t>(0);
   s.lastSleepFromReader = doc["lastSleepFromReader"] | false;
   return true;
+}
+
+bool JsonSettingsIO::loadStateFile(CrossPointState& s, const char* path) {
+  return loadJsonWithBackup(
+      "CPS", path, [&s](const String& json, bool*) { return loadState(s, json.c_str()); }, nullptr);
 }
 
 // ---- CrossPointSettings ----
@@ -145,7 +293,7 @@ bool JsonSettingsIO::saveSettings(const CrossPointSettings& s, const char* path)
 
   String json;
   serializeJson(doc, json);
-  return Storage.writeFile(path, json);
+  return writeFileAtomic(path, json);
 }
 
 bool JsonSettingsIO::loadSettings(CrossPointSettings& s, const char* json, bool* needsResave) {
@@ -246,6 +394,12 @@ bool JsonSettingsIO::loadSettings(CrossPointSettings& s, const char* json, bool*
   return true;
 }
 
+bool JsonSettingsIO::loadSettingsFile(CrossPointSettings& s, const char* path, bool* needsResave) {
+  return loadJsonWithBackup(
+      "CPS", path, [&s](const String& json, bool* resave) { return loadSettings(s, json.c_str(), resave); },
+      needsResave);
+}
+
 // ---- KOReaderCredentialStore ----
 
 bool JsonSettingsIO::saveKOReader(const KOReaderCredentialStore& store, const char* path) {
@@ -257,7 +411,7 @@ bool JsonSettingsIO::saveKOReader(const KOReaderCredentialStore& store, const ch
 
   String json;
   serializeJson(doc, json);
-  return Storage.writeFile(path, json);
+  return writeFileAtomic(path, json);
 }
 
 bool JsonSettingsIO::loadKOReader(KOReaderCredentialStore& store, const char* json, bool* needsResave) {
@@ -284,6 +438,12 @@ bool JsonSettingsIO::loadKOReader(KOReaderCredentialStore& store, const char* js
   return true;
 }
 
+bool JsonSettingsIO::loadKOReaderFile(KOReaderCredentialStore& store, const char* path, bool* needsResave) {
+  return loadJsonWithBackup(
+      "KRS", path, [&store](const String& json, bool* resave) { return loadKOReader(store, json.c_str(), resave); },
+      needsResave);
+}
+
 // ---- WifiCredentialStore ----
 
 bool JsonSettingsIO::saveWifi(const WifiCredentialStore& store, const char* path) {
@@ -299,7 +459,7 @@ bool JsonSettingsIO::saveWifi(const WifiCredentialStore& store, const char* path
 
   String json;
   serializeJson(doc, json);
-  return Storage.writeFile(path, json);
+  return writeFileAtomic(path, json);
 }
 
 bool JsonSettingsIO::loadWifi(WifiCredentialStore& store, const char* json, bool* needsResave) {
@@ -332,6 +492,12 @@ bool JsonSettingsIO::loadWifi(WifiCredentialStore& store, const char* json, bool
   return true;
 }
 
+bool JsonSettingsIO::loadWifiFile(WifiCredentialStore& store, const char* path, bool* needsResave) {
+  return loadJsonWithBackup(
+      "WCS", path, [&store](const String& json, bool* resave) { return loadWifi(store, json.c_str(), resave); },
+      needsResave);
+}
+
 // ---- RecentBooksStore ----
 
 bool JsonSettingsIO::saveRecentBooks(const RecentBooksStore& store, const char* path) {
@@ -347,7 +513,7 @@ bool JsonSettingsIO::saveRecentBooks(const RecentBooksStore& store, const char* 
 
   String json;
   serializeJson(doc, json);
-  return Storage.writeFile(path, json);
+  return writeFileAtomic(path, json);
 }
 
 bool JsonSettingsIO::loadRecentBooks(RecentBooksStore& store, const char* json) {
@@ -374,6 +540,11 @@ bool JsonSettingsIO::loadRecentBooks(RecentBooksStore& store, const char* json) 
   return true;
 }
 
+bool JsonSettingsIO::loadRecentBooksFile(RecentBooksStore& store, const char* path) {
+  return loadJsonWithBackup(
+      "RBS", path, [&store](const String& json, bool*) { return loadRecentBooks(store, json.c_str()); }, nullptr);
+}
+
 // ---- OpdsServerStore ----
 // Follows the same save/load pattern as WifiCredentialStore above.
 // Passwords are XOR-obfuscated with the device MAC and base64-encoded ("password_obf" key).
@@ -392,7 +563,7 @@ bool JsonSettingsIO::saveOpds(const OpdsServerStore& store, const char* path) {
 
   String json;
   serializeJson(doc, json);
-  return Storage.writeFile(path, json);
+  return writeFileAtomic(path, json);
 }
 
 bool JsonSettingsIO::loadOpds(OpdsServerStore& store, const char* json, bool* needsResave) {
@@ -425,4 +596,10 @@ bool JsonSettingsIO::loadOpds(OpdsServerStore& store, const char* json, bool* ne
 
   LOG_DBG("OPS", "Loaded %zu OPDS servers from file", store.servers.size());
   return true;
+}
+
+bool JsonSettingsIO::loadOpdsFile(OpdsServerStore& store, const char* path, bool* needsResave) {
+  return loadJsonWithBackup(
+      "OPS", path, [&store](const String& json, bool* resave) { return loadOpds(store, json.c_str(), resave); },
+      needsResave);
 }

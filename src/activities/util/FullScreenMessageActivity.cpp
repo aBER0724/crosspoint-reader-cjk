@@ -12,5 +12,9 @@ void FullScreenMessageActivity::onEnter() {
 
   renderer.clearScreen();
   renderer.drawCenteredText(UI_10_FONT_ID, top, text.c_str(), true, style);
-  renderer.displayBuffer(refreshMode);
+  if (renderer.isDarkMode() && (refreshMode == HalDisplay::FAST_REFRESH || refreshMode == HalDisplay::HALF_REFRESH)) {
+    renderer.displayBufferDarkRedrive();
+  } else {
+    renderer.displayBuffer(refreshMode);
+  }
 }

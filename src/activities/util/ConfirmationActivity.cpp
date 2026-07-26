@@ -52,7 +52,11 @@ void ConfirmationActivity::render(RenderLock&& lock) {
   const auto labels = mappedInput.mapLabels("", "", I18N.get(StrId::STR_CANCEL), I18N.get(StrId::STR_CONFIRM));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 
-  renderer.displayBuffer(HalDisplay::RefreshMode::FAST_REFRESH);
+  if (renderer.isDarkMode()) {
+    renderer.displayBufferDarkRedrive();
+  } else {
+    renderer.displayBuffer(HalDisplay::RefreshMode::FAST_REFRESH);
+  }
 }
 
 void ConfirmationActivity::loop() {

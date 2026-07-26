@@ -244,6 +244,7 @@ void XtcReaderActivity::renderPage() {
 
     ReaderRuntime::RefreshContext refreshContext{};
     refreshContext.readerKind = ReaderRuntime::ReaderKind::Xtc;
+    refreshContext.darkMode = wasDarkMode;
     refreshContext.textAntiAliasing = true;
     refreshContext.grayscaleRequested = true;
     refreshContext.lowMemory =
@@ -335,6 +336,7 @@ void XtcReaderActivity::renderPage() {
 
   ReaderRuntime::RefreshContext refreshContext{};
   refreshContext.readerKind = ReaderRuntime::ReaderKind::Xtc;
+  refreshContext.darkMode = wasDarkMode;
   refreshContext.lowMemory =
       ReaderRuntime::classifyReaderMemory(ESP.getFreeHeap()) != ReaderRuntime::MemoryDecision::Proceed;
   refreshContext.cadenceRemaining = pagesUntilFullRefresh;

@@ -27,6 +27,21 @@ The CrossPoint Reader exposes a webserver for file management and device monitor
 - **HTTP Server**: Port 80
 - **WebSocket Server**: Port 81 (for fast binary uploads)
 
+When the web server starts, the device screen shows a URL and QR code containing a temporary admin token. HTML pages and `/api/status` are public, but file listings, downloads, uploads, settings, Wi-Fi, OPDS, WebDAV, and WebSocket uploads require that token.
+
+For command line examples, set:
+
+```bash
+TOKEN="<token shown on the device screen>"
+BASE_URL="http://crosspoint.local"
+```
+
+Then pass the token as an HTTP header:
+
+```bash
+-H "X-CrossPoint-Token: $TOKEN"
+```
+
 ---
 
 ## HTTP Endpoints
@@ -96,10 +111,10 @@ Returns a JSON array of files and folders in the specified directory.
 **Request:**
 ```bash
 # List root directory
-curl http://crosspoint.local/api/files
+curl -H "X-CrossPoint-Token: $TOKEN" "$BASE_URL/api/files"
 
 # List specific directory
-curl "http://crosspoint.local/api/files?path=/Books"
+curl -H "X-CrossPoint-Token: $TOKEN" "$BASE_URL/api/files?path=/Books"
 ```
 
 **Query Parameters:**
@@ -127,6 +142,7 @@ curl "http://crosspoint.local/api/files?path=/Books"
 **Notes:**
 - Hidden files (starting with `.`) are automatically filtered out
 - System folders (`System Volume Information`, `XTCache`) are hidden
+- Responses are capped at 1000 entries to keep directory scans bounded
 
 ---
 
@@ -137,10 +153,10 @@ Uploads a file to the SD card via multipart form data.
 **Request:**
 ```bash
 # Upload to root directory
-curl -X POST -F "file=@mybook.epub" http://crosspoint.local/upload
+curl -H "X-CrossPoint-Token: $TOKEN" -X POST -F "file=@mybook.epub" "$BASE_URL/upload"
 
 # Upload to specific directory
-curl -X POST -F "file=@mybook.epub" "http://crosspoint.local/upload?path=/Books"
+curl -H "X-CrossPoint-Token: $TOKEN" -X POST -F "file=@mybook.epub" "$BASE_URL/upload?path=/Books"
 ```
 
 **Query Parameters:**
@@ -158,6 +174,10 @@ File uploaded successfully: mybook.epub
 
 | Status | Body                                            | Cause                       |
 | ------ | ----------------------------------------------- | --------------------------- |
+| 401    | `Unauthorized`                                  | Missing or invalid token    |
+| 408    | `Upload timed out`                              | Upload exceeded time limit  |
+| 413    | `Upload exceeds maximum size`                   | File is larger than the cap |
+| 507    | `Not enough free space`                         | Upload would exhaust SD reserve |
 | 400    | `Failed to create file on SD card`              | Cannot create file          |
 | 400    | `Failed to write to SD card - disk may be full` | Write error during upload   |
 | 400    | `Failed to write final data to SD card`         | Error flushing final buffer |
@@ -167,6 +187,8 @@ File uploaded successfully: mybook.epub
 **Notes:**
 - Existing files with the same name will be overwritten
 - Uses a 4KB buffer for efficient SD card writes
+- Single-file uploads are capped at 512 MiB, must finish within 15 minutes, and keep at least 8 MiB free on the SD card
+- WebDAV `PUT` and `COPY` use the same size, timeout, protected-path, and SD reserve limits
 
 ---
 
@@ -176,7 +198,7 @@ Creates a new folder on the SD card.
 
 **Request:**
 ```bash
-curl -X POST -d "name=NewFolder&path=/" http://crosspoint.local/mkdir
+curl -H "X-CrossPoint-Token: $TOKEN" -X POST -d "name=NewFolder&path=/" "$BASE_URL/mkdir"
 ```
 
 **Form Parameters:**
@@ -195,6 +217,7 @@ Folder created: NewFolder
 
 | Status | Body                          | Cause                         |
 | ------ | ----------------------------- | ----------------------------- |
+| 401    | `Unauthorized`                | Missing or invalid token      |
 | 400    | `Missing folder name`         | `name` parameter not provided |
 | 400    | `Folder name cannot be empty` | Empty folder name             |
 | 400    | `Folder already exists`       | Folder with same name exists  |
@@ -209,10 +232,10 @@ Deletes a file or folder from the SD card.
 **Request:**
 ```bash
 # Delete a file
-curl -X POST -d "path=/Books/mybook.epub&type=file" http://crosspoint.local/delete
+curl -H "X-CrossPoint-Token: $TOKEN" -X POST -d "path=/Books/mybook.epub" "$BASE_URL/delete"
 
 # Delete an empty folder
-curl -X POST -d "path=/OldFolder&type=folder" http://crosspoint.local/delete
+curl -H "X-CrossPoint-Token: $TOKEN" -X POST -d "path=/OldFolder" "$BASE_URL/delete"
 ```
 
 **Form Parameters:**
@@ -231,6 +254,7 @@ Deleted successfully
 
 | Status | Body                                          | Cause                         |
 | ------ | --------------------------------------------- | ----------------------------- |
+| 401    | `Unauthorized`                                | Missing or invalid token      |
 | 400    | `Missing path`                                | `path` parameter not provided |
 | 400    | `Cannot delete root directory`                | Attempted to delete `/`       |
 | 400    | `Folder is not empty. Delete contents first.` | Non-empty folder              |
@@ -259,7 +283,7 @@ ws://crosspoint.local:81/
 
 **Protocol:**
 
-1. **Client** sends TEXT message: `START:<filename>:<size>:<path>`
+1. **Client** sends TEXT message: `START:<token>:<filename>:<size>:<path>`
 2. **Server** responds with TEXT: `READY`
 3. **Client** sends BINARY messages with file data chunks
 4. **Server** sends TEXT progress updates: `PROGRESS:<received>:<total>`
@@ -268,7 +292,7 @@ ws://crosspoint.local:81/
 **Example Session:**
 
 ```
-Client -> "START:mybook.epub:1234567:/Books"
+Client -> "START:<token>:mybook.epub:1234567:/Books"
 Server -> "READY"
 Client -> [binary chunk 1]
 Client -> [binary chunk 2]
@@ -283,6 +307,10 @@ Server -> "DONE"
 
 | Message                           | Cause                              |
 | --------------------------------- | ---------------------------------- |
+| `ERROR:Unauthorized`              | Missing or invalid token           |
+| `ERROR:Upload timed out`          | Upload exceeded time limit         |
+| `ERROR:Upload exceeds maximum size` | File is larger than the cap      |
+| `ERROR:Not enough free space`     | Upload would exhaust SD reserve    |
 | `ERROR:Failed to create file`     | Cannot create file on SD card      |
 | `ERROR:Invalid START format`      | Malformed START message            |
 | `ERROR:No upload in progress`     | Binary data received without START |
@@ -294,7 +322,7 @@ Server -> "DONE"
 websocat ws://crosspoint.local:81
 
 # Then type:
-START:mybook.epub:1234567:/Books
+START:<token>:mybook.epub:1234567:/Books
 # Wait for READY, then send binary data
 ```
 
@@ -302,6 +330,7 @@ START:mybook.epub:1234567:/Books
 - Progress updates are sent every 64KB or at completion
 - Disconnection during upload will delete the incomplete file
 - Existing files with the same name will be overwritten
+- Single-file uploads are capped at 512 MB and must finish within 15 minutes
 
 ---
 
@@ -326,6 +355,7 @@ The device can operate in two network modes:
 ## Notes
 
 - These examples use `crosspoint.local`. If your network does not support mDNS or the address does not resolve, replace it with the specific **IP Address** displayed on your device screen (e.g., `http://192.168.1.102/`).
+- The admin token is temporary and changes each time the web server is started.
 - All paths on the SD card start with `/`
 - Trailing slashes are automatically stripped (except for root `/`)
 - The webserver uses chunked transfer encoding for file listings

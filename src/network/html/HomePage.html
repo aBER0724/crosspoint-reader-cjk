@@ -223,10 +223,33 @@
     </div>
   <script>
     let selectedSSID = '';
+    const adminToken = (function() {
+      const token = new URLSearchParams(window.location.search).get('token');
+      if (token) sessionStorage.setItem('crosspointToken', token);
+      return token || sessionStorage.getItem('crosspointToken') || '';
+    })();
+
+    function withToken(url) {
+      if (!adminToken) return url;
+      if (url.includes('?token=') || url.includes('&token=')) return url;
+      return url + (url.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(adminToken);
+    }
+
+    function authFetch(url, options) {
+      options = options || {};
+      options.headers = Object.assign({}, options.headers || {}, adminToken ? {'X-CrossPoint-Token': adminToken} : {});
+      return fetch(withToken(url), options);
+    }
+
+    function updateNavTokens() {
+      document.querySelectorAll('.nav-links a[href^="/"]').forEach(function(a) {
+        a.setAttribute('href', withToken(a.getAttribute('href')));
+      });
+    }
 
     async function fetchStatus() {
       try {
-        const response = await fetch('/api/status');
+        const response = await authFetch('/api/status');
         if (!response.ok) throw new Error('Status fetch failed');
         const data = await response.json();
         document.getElementById('version').textContent = data.version || 'N/A';
@@ -269,7 +292,7 @@
       list.innerHTML = '';
 
       try {
-        const response = await fetch('/api/wifi/scan');
+        const response = await authFetch('/api/wifi/scan');
         if (!response.ok) throw new Error('Scan failed');
         const networks = await response.json();
 
@@ -337,7 +360,7 @@
       }
 
       try {
-        const response = await fetch('/api/wifi/save', {
+        const response = await authFetch('/api/wifi/save', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ ssid: ssid, password: password })
@@ -359,7 +382,7 @@
     async function loadSavedNetworks() {
       const container = document.getElementById('saved-list');
       try {
-        const response = await fetch('/api/wifi/list');
+        const response = await authFetch('/api/wifi/list');
         if (!response.ok) throw new Error('Failed to load');
         const list = await response.json();
 
@@ -384,7 +407,7 @@
     async function deleteCredential(ssid) {
       if (!confirm('Delete saved credential for "' + ssid + '"?')) return;
       try {
-        const response = await fetch('/api/wifi/delete', {
+        const response = await authFetch('/api/wifi/delete', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ ssid: ssid })
@@ -413,7 +436,10 @@
       return d.innerHTML;
     }
 
-    window.onload = fetchStatus;
+    window.onload = function() {
+      updateNavTokens();
+      fetchStatus();
+    };
   </script>
   </body>
 </html>

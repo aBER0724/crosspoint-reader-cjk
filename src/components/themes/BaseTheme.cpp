@@ -764,7 +764,11 @@ void BaseTheme::fillPopupProgress(const GfxRenderer& renderer, const Rect& layou
 
   renderer.fillRect(barX, barY, fillWidth, barHeight, true);
 
-  renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+  if (renderer.isDarkMode()) {
+    renderer.displayBufferDarkRedrive();
+  } else {
+    renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+  }
 }
 
 void BaseTheme::drawStatusBar(GfxRenderer& renderer, const float bookProgress, const int currentPage,

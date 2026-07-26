@@ -36,17 +36,16 @@ bool WifiCredentialStore::saveToFile() const {
 
 bool WifiCredentialStore::loadFromFile() {
   // Try JSON first
-  if (Storage.exists(WIFI_FILE_JSON)) {
-    String json = Storage.readFile(WIFI_FILE_JSON);
-    if (!json.isEmpty()) {
-      bool resave = false;
-      bool result = JsonSettingsIO::loadWifi(*this, json.c_str(), &resave);
-      if (result && resave) {
-        LOG_DBG("WCS", "Resaving JSON with obfuscated passwords");
-        saveToFile();
+  if (JsonSettingsIO::jsonFileOrBackupExists(WIFI_FILE_JSON)) {
+    bool resave = false;
+    bool result = JsonSettingsIO::loadWifiFile(*this, WIFI_FILE_JSON, &resave);
+    if (result && resave) {
+      LOG_DBG("WCS", "Resaving JSON with obfuscated passwords");
+      if (!saveToFile()) {
+        LOG_ERR("WCS", "Failed to resave WiFi credentials after format update");
       }
-      return result;
     }
+    return result;
   }
 
   // Fall back to binary migration
