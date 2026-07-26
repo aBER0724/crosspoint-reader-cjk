@@ -1,5 +1,8 @@
 #include "MappedInputManager.h"
 
+#include <algorithm>
+#include <numeric>
+
 #include "CrossPointSettings.h"
 #include "input/BluetoothPageTurnState.h"
 
@@ -211,29 +214,107 @@ bool MappedInputManager::checkButton(const Button button, const GpioFn gpioFn, c
 }
 
 bool MappedInputManager::wasPressed(const Button button) const {
-  return checkButton(button, &HalGPIO::wasPressed, &BluetoothPageTurnState::wasPageBackPressed,
-                     &BluetoothPageTurnState::wasPageForwardPressed);
+  const bool physical = checkButton(button, &HalGPIO::wasPressed, &BluetoothPageTurnState::wasPageBackPressed,
+                                    &BluetoothPageTurnState::wasPageForwardPressed);
+#ifdef ENABLE_SERIAL_INPUT_TEST
+  return physical || testButtons[static_cast<size_t>(button)].pressed;
+#else
+  return physical;
+#endif
 }
 
 bool MappedInputManager::wasReleased(const Button button) const {
-  return checkButton(button, &HalGPIO::wasReleased, &BluetoothPageTurnState::wasPageBackReleased,
-                     &BluetoothPageTurnState::wasPageForwardReleased);
+  const bool physical = checkButton(button, &HalGPIO::wasReleased, &BluetoothPageTurnState::wasPageBackReleased,
+                                    &BluetoothPageTurnState::wasPageForwardReleased);
+#ifdef ENABLE_SERIAL_INPUT_TEST
+  return physical || testButtons[static_cast<size_t>(button)].released;
+#else
+  return physical;
+#endif
 }
 
 bool MappedInputManager::isPressed(const Button button) const {
-  return checkButton(button, &HalGPIO::isPressed, &BluetoothPageTurnState::isPageBackPressed,
-                     &BluetoothPageTurnState::isPageForwardPressed);
+  const bool physical = checkButton(button, &HalGPIO::isPressed, &BluetoothPageTurnState::isPageBackPressed,
+                                    &BluetoothPageTurnState::isPageForwardPressed);
+#ifdef ENABLE_SERIAL_INPUT_TEST
+  return physical || testButtons[static_cast<size_t>(button)].held;
+#else
+  return physical;
+#endif
 }
 
 bool MappedInputManager::wasAnyPressed() const {
-  return gpio.wasAnyPressed() || (bluetoothPageTurnState && bluetoothPageTurnState->wasAnyPressed());
+  if (gpio.wasAnyPressed() || (bluetoothPageTurnState && bluetoothPageTurnState->wasAnyPressed())) {
+    return true;
+  }
+#ifdef ENABLE_SERIAL_INPUT_TEST
+  return std::any_of(testButtons.begin(), testButtons.end(),
+                     [](const TestButtonState& state) { return state.pressed; });
+#else
+  return false;
+#endif
 }
 
 bool MappedInputManager::wasAnyReleased() const {
-  return gpio.wasAnyReleased() || (bluetoothPageTurnState && bluetoothPageTurnState->wasAnyReleased());
+  if (gpio.wasAnyReleased() || (bluetoothPageTurnState && bluetoothPageTurnState->wasAnyReleased())) {
+    return true;
+  }
+#ifdef ENABLE_SERIAL_INPUT_TEST
+  return std::any_of(testButtons.begin(), testButtons.end(),
+                     [](const TestButtonState& state) { return state.released; });
+#else
+  return false;
+#endif
 }
 
-unsigned long MappedInputManager::getHeldTime() const { return gpio.getHeldTime(); }
+unsigned long MappedInputManager::getHeldTime() const {
+  unsigned long heldTime = gpio.getHeldTime();
+#ifdef ENABLE_SERIAL_INPUT_TEST
+  const unsigned long testHeldTime = std::accumulate(
+      testButtons.begin(), testButtons.end(), 0UL, [](const unsigned long maximum, const TestButtonState& state) {
+        return state.held ? std::max(maximum, millis() - state.pressedAt) : maximum;
+      });
+  heldTime = std::max(heldTime, testHeldTime);
+#endif
+  return heldTime;
+}
+
+#ifdef ENABLE_SERIAL_INPUT_TEST
+void MappedInputManager::beginTestInputFrame() {
+  std::for_each(testButtons.begin(), testButtons.end(), [](TestButtonState& state) {
+    state.pressed = false;
+    state.released = false;
+  });
+}
+
+void MappedInputManager::setTestButtonPressed(const Button button, const bool pressed) {
+  TestButtonState& state = testButtons[static_cast<size_t>(button)];
+  if (pressed) {
+    if (!state.held) {
+      state.held = true;
+      state.pressed = true;
+      state.pressedAt = millis();
+    }
+    return;
+  }
+
+  if (state.held) {
+    state.held = false;
+    state.released = true;
+    state.pressedAt = 0;
+  }
+}
+
+void MappedInputManager::tapTestButton(const Button button) {
+  TestButtonState& state = testButtons[static_cast<size_t>(button)];
+  state.held = false;
+  state.pressed = true;
+  state.released = true;
+  state.pressedAt = 0;
+}
+
+void MappedInputManager::clearTestButtons() { testButtons.fill({}); }
+#endif
 
 MappedInputManager::Labels MappedInputManager::mapLabels(const char* back, const char* confirm, const char* previous,
                                                          const char* next) const {

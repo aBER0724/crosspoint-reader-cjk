@@ -19,7 +19,7 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v7
         with:
-          version: "latest"
+          version: "0.9.30"
           enable-cache: false
 
       - name: Install PlatformIO Core
@@ -45,8 +45,12 @@ jobs:
 
       - name: Rename firmware files
         run: |
+          set -euo pipefail
           cp .pio/build/gh_release_rc/firmware.bin firmware-sc.bin
           cp .pio/build/gh_release_rc_tc/firmware.bin firmware-tc.bin
+
+      - name: Generate checksums
+        run: sha256sum .pio/build/gh_release_rc/bootloader.bin .pio/build/gh_release_rc/partitions.bin firmware-sc.bin firmware-tc.bin > SHA256SUMS
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
@@ -57,3 +61,4 @@ jobs:
             .pio/build/gh_release_rc/partitions.bin
             firmware-sc.bin
             firmware-tc.bin
+            SHA256SUMS

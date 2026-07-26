@@ -5,6 +5,9 @@
 #include <WebServer.h>
 #include <WebSocketsServer.h>
 
+#include <cstddef>
+#include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -65,6 +68,7 @@ class CrossPointWebServer {
   bool isRunning() const { return running; }
 
   WsUploadStatus getWsUploadStatus() const;
+  const std::string& getAdminToken() const { return adminToken; }
 
   // Get the port number
   uint16_t getPort() const { return port; }
@@ -78,6 +82,10 @@ class CrossPointWebServer {
   uint16_t wsPort = 81;  // WebSocket port
   NetworkUDP udp;
   bool udpActive = false;
+  std::string adminToken;
+
+  bool isAdminAuthorized() const;
+  bool requireAdminAuth() const;
 
   // WebSocket upload state
   void onWebSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t length);
@@ -85,7 +93,7 @@ class CrossPointWebServer {
   void abortWsUpload(const char* tag);
 
   // File scanning
-  void scanFiles(const char* path, const std::function<void(const FileInfo&)>& callback) const;
+  void scanFiles(const char* path, const std::function<bool(const FileInfo&)>& callback) const;
   String formatFileSize(size_t bytes) const;
   bool isEpubFile(const String& filename) const;
 

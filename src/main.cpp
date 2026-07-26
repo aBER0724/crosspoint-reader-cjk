@@ -183,6 +183,70 @@ void waitForPowerRelease() {
   }
 }
 
+#ifdef ENABLE_SERIAL_INPUT_TEST
+bool parseSerialTestButton(String name, MappedInputManager::Button& button) {
+  name.toUpperCase();
+  if (name == "BACK") {
+    button = MappedInputManager::Button::Back;
+  } else if (name == "CONFIRM") {
+    button = MappedInputManager::Button::Confirm;
+  } else if (name == "LEFT") {
+    button = MappedInputManager::Button::Left;
+  } else if (name == "RIGHT") {
+    button = MappedInputManager::Button::Right;
+  } else if (name == "UP") {
+    button = MappedInputManager::Button::Up;
+  } else if (name == "DOWN") {
+    button = MappedInputManager::Button::Down;
+  } else {
+    return false;
+  }
+  return true;
+}
+
+bool handleSerialTestInputCommand(const String& command) {
+  if (command == "INPUT:CLEAR") {
+    mappedInputManager.clearTestButtons();
+    logSerial.println("TEST_INPUT:CLEARED");
+    return true;
+  }
+
+  if (!command.startsWith("INPUT:")) {
+    return false;
+  }
+
+  const int actionSeparator = command.indexOf(':', 6);
+  if (actionSeparator < 0) {
+    logSerial.println("TEST_INPUT:ERROR:FORMAT");
+    return true;
+  }
+
+  String buttonName = command.substring(6, actionSeparator);
+  String action = command.substring(actionSeparator + 1);
+  action.toUpperCase();
+
+  MappedInputManager::Button button;
+  if (!parseSerialTestButton(buttonName, button)) {
+    logSerial.println("TEST_INPUT:ERROR:BUTTON");
+    return true;
+  }
+
+  if (action == "PRESS") {
+    mappedInputManager.setTestButtonPressed(button, true);
+  } else if (action == "RELEASE") {
+    mappedInputManager.setTestButtonPressed(button, false);
+  } else if (action == "TAP") {
+    mappedInputManager.tapTestButton(button);
+  } else {
+    logSerial.println("TEST_INPUT:ERROR:ACTION");
+    return true;
+  }
+
+  logSerial.printf("TEST_INPUT:%s:%s\n", action.c_str(), buttonName.c_str());
+  return true;
+}
+#endif
+
 // Enter deep sleep mode
 void enterDeepSleep() {
   HalPowerManager::Lock powerLock;  // Ensure we are at normal CPU frequency for sleep preparation
@@ -238,6 +302,13 @@ void setup() {
   powerManager.begin();
 
 #ifdef ENABLE_SERIAL_LOG
+#ifdef ENABLE_SERIAL_INPUT_TEST
+  Serial.begin(115200);
+  const unsigned long start = millis();
+  while (!Serial && (millis() - start) < 500) {
+    delay(10);
+  }
+#else
   if (gpio.isUsbConnected()) {
     Serial.begin(115200);
     const unsigned long start = millis();
@@ -245,6 +316,7 @@ void setup() {
       delay(10);
     }
   }
+#endif
 #endif
 
   LOG_INF("MAIN", "Hardware detect: %s", gpio.deviceIsX3() ? "X3" : "X4");
@@ -333,6 +405,9 @@ void loop() {
   static unsigned long lastMemPrint = 0;
 
   gpio.update();
+#ifdef ENABLE_SERIAL_INPUT_TEST
+  mappedInputManager.beginTestInputFrame();
+#endif
   BLUETOOTH_PAGE_TURN.setReaderSessionActive(activityManager.isReaderActivity());
   BLUETOOTH_PAGE_TURN.update();
 
@@ -357,13 +432,17 @@ void loop() {
         uint8_t* buf = display.getFrameBuffer();
         logSerial.write(buf, bufferSize);
         logSerial.printf("SCREENSHOT_END\n");
+#ifdef ENABLE_SERIAL_INPUT_TEST
+      } else {
+        handleSerialTestInputCommand(cmd);
+#endif
       }
     }
   }
 
   // Check for any user activity (button press or release) or active background work
   static unsigned long lastActivityTime = millis();
-  if (gpio.wasAnyPressed() || gpio.wasAnyReleased() || activityManager.preventAutoSleep()) {
+  if (mappedInputManager.wasAnyPressed() || mappedInputManager.wasAnyReleased() || activityManager.preventAutoSleep()) {
     lastActivityTime = millis();         // Reset inactivity timer
     powerManager.setPowerSaving(false);  // Restore normal CPU frequency on user activity
   }
@@ -405,7 +484,11 @@ void loop() {
       mappedInputManager.wasReleased(MappedInputManager::Button::Power)) {
     LOG_DBG("MAIN", "Manual screen refresh triggered");
     RenderLock lock;
-    renderer.displayBuffer(HalDisplay::HALF_REFRESH);
+    if (renderer.isDarkMode()) {
+      renderer.displayBufferDarkRedrive();
+    } else {
+      renderer.displayBuffer(HalDisplay::HALF_REFRESH);
+    }
   }
 
   // Refresh the battery icon when USB is plugged or unplugged.

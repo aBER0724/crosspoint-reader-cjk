@@ -651,7 +651,7 @@ def main(translations_dir=None, output_dir=None, language_filter=None) -> None:
         )
 
         print()
-        print("✓ Code generation complete!")
+        print("Code generation complete.")
         print(f"  Languages: {len(languages)}")
         print(f"  String keys: {len(string_keys)}")
 

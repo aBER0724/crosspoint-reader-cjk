@@ -31,6 +31,7 @@ void SleepActivity::onEnter() {
   // the renderer's dark mode.  Disable dark mode here to prevent double
   // inversion artifacts; restore afterwards in case the device doesn't sleep.
   const bool wasDarkMode = renderer.isDarkMode();
+  sleepStartedInDarkMode = wasDarkMode;
   renderer.setDarkMode(false);
 
   switch (SETTINGS.sleepScreen) {
@@ -41,19 +42,29 @@ void SleepActivity::onEnter() {
       renderCustomSleepScreen();
       break;
     case (CrossPointSettings::SLEEP_SCREEN_MODE::COVER):
-      return renderCoverSleepScreen();
+      renderCoverSleepScreen();
+      break;
     case (CrossPointSettings::SLEEP_SCREEN_MODE::COVER_CUSTOM):
       if (APP_STATE.lastSleepFromReader) {
-        return renderCoverSleepScreen();
+        renderCoverSleepScreen();
       } else {
-        return renderCustomSleepScreen();
+        renderCustomSleepScreen();
       }
+      break;
     default:
       renderDefaultSleepScreen();
       break;
   }
 
   renderer.setDarkMode(wasDarkMode);
+}
+
+void SleepActivity::displaySleepBuffer() const {
+  if (sleepStartedInDarkMode) {
+    renderer.displayBufferDarkRedrive();
+  } else {
+    renderer.displayBuffer(HalDisplay::HALF_REFRESH);
+  }
 }
 
 void SleepActivity::renderCustomSleepScreen() const {
@@ -149,7 +160,7 @@ void SleepActivity::renderDefaultSleepScreen() const {
     renderer.invertScreen();
   }
 
-  renderer.displayBuffer(HalDisplay::HALF_REFRESH);
+  displaySleepBuffer();
 }
 
 void SleepActivity::renderBitmapSleepScreen(const Bitmap& bitmap) const {
@@ -204,7 +215,7 @@ void SleepActivity::renderBitmapSleepScreen(const Bitmap& bitmap) const {
     renderer.invertScreen();
   }
 
-  renderer.displayBuffer(HalDisplay::HALF_REFRESH);
+  displaySleepBuffer();
 
   if (hasGreyscale) {
     bitmap.rewindToData();
@@ -305,5 +316,5 @@ void SleepActivity::renderCoverSleepScreen() const {
 
 void SleepActivity::renderBlankSleepScreen() const {
   renderer.clearScreen();
-  renderer.displayBuffer(HalDisplay::HALF_REFRESH);
+  displaySleepBuffer();
 }

@@ -41,17 +41,17 @@ bool KOReaderCredentialStore::saveToFile() const {
 
 bool KOReaderCredentialStore::loadFromFile() {
   // Try JSON first
-  if (Storage.exists(KOREADER_FILE_JSON)) {
-    String json = Storage.readFile(KOREADER_FILE_JSON);
-    if (!json.isEmpty()) {
-      bool resave = false;
-      bool result = JsonSettingsIO::loadKOReader(*this, json.c_str(), &resave);
-      if (result && resave) {
-        saveToFile();
+  if (JsonSettingsIO::jsonFileOrBackupExists(KOREADER_FILE_JSON)) {
+    bool resave = false;
+    bool result = JsonSettingsIO::loadKOReaderFile(*this, KOREADER_FILE_JSON, &resave);
+    if (result && resave) {
+      if (saveToFile()) {
         LOG_DBG("KRS", "Resaved KOReader credentials to update format");
+      } else {
+        LOG_ERR("KRS", "Failed to resave KOReader credentials after format update");
       }
-      return result;
     }
+    return result;
   }
 
   // Fall back to binary migration

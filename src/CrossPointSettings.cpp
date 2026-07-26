@@ -96,20 +96,17 @@ bool CrossPointSettings::saveToFile() const {
 
 bool CrossPointSettings::loadFromFile() {
   // Try JSON first
-  if (Storage.exists(SETTINGS_FILE_JSON)) {
-    String json = Storage.readFile(SETTINGS_FILE_JSON);
-    if (!json.isEmpty()) {
-      bool resave = false;
-      bool result = JsonSettingsIO::loadSettings(*this, json.c_str(), &resave);
-      if (result && resave) {
-        if (saveToFile()) {
-          LOG_DBG("CPS", "Resaved settings to update format");
-        } else {
-          LOG_ERR("CPS", "Failed to resave settings after format update");
-        }
+  if (JsonSettingsIO::jsonFileOrBackupExists(SETTINGS_FILE_JSON)) {
+    bool resave = false;
+    bool result = JsonSettingsIO::loadSettingsFile(*this, SETTINGS_FILE_JSON, &resave);
+    if (result && resave) {
+      if (saveToFile()) {
+        LOG_DBG("CPS", "Resaved settings to update format");
+      } else {
+        LOG_ERR("CPS", "Failed to resave settings after format update");
       }
-      return result;
     }
+    return result;
   }
 
   // Fall back to binary migration

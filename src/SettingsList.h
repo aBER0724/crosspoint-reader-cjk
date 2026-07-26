@@ -103,7 +103,7 @@ inline const std::vector<SettingInfo>& getSettingsList() {
             KOREADER_STORE.setCredentials(KOREADER_STORE.getUsername(), v);
             KOREADER_STORE.saveToFile();
           },
-          "koPassword", StrId::STR_KOREADER_SYNC),
+          "koPassword", StrId::STR_KOREADER_SYNC, true),
       SettingInfo::DynamicString(
           StrId::STR_SYNC_SERVER_URL, [] { return KOREADER_STORE.getServerUrl(); },
           [](const std::string& v) {

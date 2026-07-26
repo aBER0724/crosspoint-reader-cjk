@@ -7,6 +7,7 @@
 #include <WiFiClientSecure.h>
 
 #include <ctime>
+#include <memory>
 
 #include "KOReaderCredentialStore.h"
 
@@ -43,7 +44,6 @@ KOReaderSyncClient::Error KOReaderSyncClient::authenticate() {
 
   if (isHttpsUrl(url)) {
     secureClient.reset(new WiFiClientSecure);
-    secureClient->setInsecure();
     http.begin(*secureClient, url.c_str());
   } else {
     http.begin(plainClient, url.c_str());
@@ -81,7 +81,6 @@ KOReaderSyncClient::Error KOReaderSyncClient::getProgress(const std::string& doc
 
   if (isHttpsUrl(url)) {
     secureClient.reset(new WiFiClientSecure);
-    secureClient->setInsecure();
     http.begin(*secureClient, url.c_str());
   } else {
     http.begin(plainClient, url.c_str());
@@ -143,7 +142,6 @@ KOReaderSyncClient::Error KOReaderSyncClient::updateProgress(const KOReaderProgr
 
   if (isHttpsUrl(url)) {
     secureClient.reset(new WiFiClientSecure);
-    secureClient->setInsecure();
     http.begin(*secureClient, url.c_str());
   } else {
     http.begin(plainClient, url.c_str());

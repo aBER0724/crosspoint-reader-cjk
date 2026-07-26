@@ -1735,6 +1735,36 @@
 <script>
   // get current path from query parameter
   const currentPath = decodeURIComponent(new URLSearchParams(window.location.search).get('path') || '/');
+  const adminToken = (function() {
+    const token = new URLSearchParams(window.location.search).get('token');
+    if (token) sessionStorage.setItem('crosspointToken', token);
+    return token || sessionStorage.getItem('crosspointToken') || '';
+  })();
+
+  function withToken(url) {
+    if (!adminToken) return url;
+    if (url.includes('?token=') || url.includes('&token=')) return url;
+    return url + (url.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(adminToken);
+  }
+
+  function authFetch(url, options) {
+    options = options || {};
+    options.headers = Object.assign({}, options.headers || {}, adminToken ? {'X-CrossPoint-Token': adminToken} : {});
+    return fetch(withToken(url), options);
+  }
+
+  function openAuthedXhr(method, url) {
+    const xhr = new XMLHttpRequest();
+    xhr.open(method, withToken(url), true);
+    if (adminToken) xhr.setRequestHeader('X-CrossPoint-Token', adminToken);
+    return xhr;
+  }
+
+  function rewriteAuthedLinks(root) {
+    (root || document).querySelectorAll('a[href^="/"]').forEach(function(a) {
+      a.setAttribute('href', withToken(a.getAttribute('href')));
+    });
+  }
 
   if (currentPath !== '/') {
     const leaf = currentPath.split('/').filter(Boolean).pop();
@@ -1826,6 +1856,8 @@
   }
 
   async function hydrate() {
+    rewriteAuthedLinks(document);
+
     // Fetch CrossPoint version
     fetchVersion();
 
@@ -1860,10 +1892,11 @@
       breadcrumbContent += '<span class="current">' + escapeHtml(pathSegments[pathSegments.length - 1]) + '</span>';
     }
     breadcrumbs.innerHTML = breadcrumbContent;
+    rewriteAuthedLinks(breadcrumbs);
 
     let files = [];
     try {
-      const response = await fetch('/api/files?path=' + encodeURIComponent(currentPath) + '&_=' + Date.now());
+      const response = await authFetch('/api/files?path=' + encodeURIComponent(currentPath) + '&_=' + Date.now());
       if (!response.ok) {
         throw new Error('Failed to load files: ' + response.status + ' ' + response.statusText);
       }
@@ -1943,6 +1976,7 @@
 
       fileTableContent += '</table>';
       fileTable.innerHTML = fileTableContent;
+      rewriteAuthedLinks(fileTable);
     }
   }
 
@@ -2875,7 +2909,7 @@
     });
 
     const body = 'paths=' + encodeURIComponent(JSON.stringify(paths));
-    fetch('/delete', {
+    authFetch('/delete', {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: body
@@ -3018,7 +3052,7 @@ let crosspointVersion = 'Unknown';
 // Fetch version from API
 async function fetchVersion() {
   try {
-    const response = await fetch('/api/status');
+    const response = await authFetch('/api/status');
     if (response.ok) {
       const data = await response.json();
       crosspointVersion = data.version || 'Unknown';
@@ -4540,8 +4574,8 @@ function uploadFileWebSocket(file, onProgress, onComplete, onError) {
 
     ws.onopen = function() {
       console.log('[WS] Connected, starting upload:', file.name);
-      // Send start message: START:<filename>:<size>:<path>
-      ws.send(`START:${file.name}:${file.size}:${currentPath}`);
+      // Send start message: START:<token>:<filename>:<size>:<path>
+      ws.send(`START:${adminToken}:${file.name}:${file.size}:${currentPath}`);
     };
 
     ws.onmessage = async function(event) {
@@ -4645,7 +4679,8 @@ function uploadFileHTTP(file, onProgress, onComplete, onError) {
 
     const xhr = new XMLHttpRequest();
     currentUploadXhr = xhr;
-    xhr.open('POST', '/upload?path=' + encodeURIComponent(currentPath), true);
+    xhr.open('POST', withToken('/upload?path=' + encodeURIComponent(currentPath)), true);
+    if (adminToken) xhr.setRequestHeader('X-CrossPoint-Token', adminToken);
 
     xhr.upload.onprogress = function(e) {
       if (e.lengthComputable && onProgress) {
@@ -5029,8 +5064,7 @@ function retryAllFailedUploads() {
     formData.append('name', folderName);
     formData.append('path', currentPath);
 
-    const xhr = new XMLHttpRequest();
-    xhr.open('POST', '/mkdir', true);
+    const xhr = openAuthedXhr('POST', '/mkdir');
 
     xhr.onload = function() {
       if (xhr.status === 200) {
@@ -5081,8 +5115,7 @@ function retryAllFailedUploads() {
     formData.append('path', path);
     formData.append('name', newName);
 
-    const xhr = new XMLHttpRequest();
-    xhr.open('POST', '/rename', true);
+    const xhr = openAuthedXhr('POST', '/rename');
 
     xhr.onload = function() {
       if (xhr.status === 200) {
@@ -5127,7 +5160,7 @@ function retryAllFailedUploads() {
 
     async function fetchFolders(path) {
       try {
-        const response = await fetch('/api/files?path=' + encodeURIComponent(path));
+      const response = await authFetch('/api/files?path=' + encodeURIComponent(path));
         if (!response.ok) return [];
         return await response.json();
       } catch (e) {
@@ -5191,8 +5224,7 @@ function retryAllFailedUploads() {
     formData.append('path', path);
     formData.append('dest', destPath);
 
-    const xhr = new XMLHttpRequest();
-    xhr.open('POST', '/move', true);
+    const xhr = openAuthedXhr('POST', '/move');
 
     xhr.onload = function() {
       if (xhr.status === 200) {
