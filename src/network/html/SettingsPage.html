@@ -310,6 +310,29 @@
 <script>
   let allSettings = [];
   let originalValues = {};
+  const adminToken = (function() {
+    const token = new URLSearchParams(window.location.search).get('token');
+    if (token) sessionStorage.setItem('crosspointToken', token);
+    return token || sessionStorage.getItem('crosspointToken') || '';
+  })();
+
+  function withToken(url) {
+    if (!adminToken) return url;
+    if (url.includes('?token=') || url.includes('&token=')) return url;
+    return url + (url.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(adminToken);
+  }
+
+  function authFetch(url, options) {
+    options = options || {};
+    options.headers = Object.assign({}, options.headers || {}, adminToken ? {'X-CrossPoint-Token': adminToken} : {});
+    return fetch(withToken(url), options);
+  }
+
+  function updateNavTokens() {
+    document.querySelectorAll('.nav-links a[href^="/"]').forEach(function(a) {
+      a.setAttribute('href', withToken(a.getAttribute('href')));
+    });
+  }
 
   function escapeHtml(unsafe) {
     return unsafe
@@ -355,7 +378,12 @@
     }
 
     if (setting.type === 'string') {
-      const inputType = setting.name.toLowerCase().includes('password') ? 'password' : 'text';
+      const inputType = setting.secret || setting.name.toLowerCase().includes('password') ? 'password' : 'text';
+      if (setting.secret) {
+        const placeholder = setting.configured ? '(unchanged)' : '';
+        return '<input type="' + inputType + '" id="' + id + '" value="" placeholder="' + placeholder + '"' +
+          ' oninput="markChanged()">';
+      }
       const val = setting.value || '';
       return '<input type="' + inputType + '" id="' + id + '" value="' + escapeHtml(val) + '"' +
         ' oninput="markChanged()">';
@@ -378,6 +406,9 @@
       return parseInt(el.value, 10);
     }
     if (setting.type === 'string') {
+      if (setting.secret && el.value === '') {
+        return undefined;
+      }
       return el.value;
     }
     return undefined;
@@ -389,7 +420,7 @@
 
   async function loadSettings() {
     try {
-      const response = await fetch('/api/settings');
+      const response = await authFetch('/api/settings');
       if (!response.ok) {
         throw new Error('Failed to load settings: ' + response.status);
       }
@@ -398,7 +429,7 @@
       // Store original values
       originalValues = {};
       allSettings.forEach(function(s) {
-        originalValues[s.key] = s.value;
+        originalValues[s.key] = s.secret ? undefined : s.value;
       });
 
       // Group by category
@@ -453,7 +484,7 @@
     }
 
     try {
-      const response = await fetch('/api/settings', {
+      const response = await authFetch('/api/settings', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(changes)
@@ -467,6 +498,14 @@
       // Update original values to new values
       for (const key in changes) {
         originalValues[key] = changes[key];
+        const setting = allSettings.find(function(s) { return s.key === key; });
+        if (setting && setting.secret) {
+          const el = document.getElementById('setting-' + key);
+          if (el) el.value = '';
+          originalValues[key] = undefined;
+          setting.configured = true;
+          el && el.setAttribute('placeholder', '(unchanged)');
+        }
       }
 
       showMessage('Settings saved successfully!', false);
@@ -477,8 +516,6 @@
 
     btn.textContent = 'Save Settings';
   }
-
-  loadSettings();
 
   // --- OPDS Server Management ---
   // Dynamically renders an editable list of OPDS servers, communicating with the
@@ -533,7 +570,7 @@
 
   async function loadOpdsServers() {
     try {
-      const resp = await fetch('/api/opds');
+      const resp = await authFetch('/api/opds');
       if (!resp.ok) throw new Error('Failed to load');
       opdsServers = await resp.json();
       renderOpdsSection();
@@ -565,7 +602,7 @@
     if (idx >= 0) data.index = idx;
 
     try {
-      const resp = await fetch('/api/opds', {
+      const resp = await authFetch('/api/opds', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify(data)
@@ -581,7 +618,7 @@
   async function deleteOpdsServer(idx) {
     if (!confirm('Delete this OPDS server?')) return;
     try {
-      const resp = await fetch('/api/opds/delete', {
+      const resp = await authFetch('/api/opds/delete', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({index: idx})
@@ -594,6 +631,8 @@
     }
   }
 
+  updateNavTokens();
+  loadSettings();
   loadOpdsServers();
 </script>
 </body>

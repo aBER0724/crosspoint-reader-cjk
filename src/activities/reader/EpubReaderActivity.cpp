@@ -636,7 +636,11 @@ void EpubReaderActivity::render(RenderLock&& lock) {
       section.reset();
       renderer.clearScreen();
       renderer.drawCenteredText(UI_12_FONT_ID, 300, tr(STR_MEMORY_ERROR), true, EpdFontFamily::BOLD);
-      renderer.displayBuffer(HalDisplay::HALF_REFRESH);
+      if (renderer.isDarkMode()) {
+        renderer.displayBufferDarkRedrive();
+      } else {
+        renderer.displayBuffer(HalDisplay::HALF_REFRESH);
+      }
       return;
     }
     const auto start = millis();
@@ -736,7 +740,11 @@ bool EpubReaderActivity::loadOrBuildSection(const int orientedMarginTop, const i
       section.reset();
       renderer.clearScreen();
       renderer.drawCenteredText(UI_12_FONT_ID, 300, tr(STR_MEMORY_ERROR), true, EpdFontFamily::BOLD);
-      renderer.displayBuffer(HalDisplay::HALF_REFRESH);
+      if (renderer.isDarkMode()) {
+        renderer.displayBufferDarkRedrive();
+      } else {
+        renderer.displayBuffer(HalDisplay::HALF_REFRESH);
+      }
       return false;
     }
 

@@ -47,7 +47,7 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v7
         with:
-          version: "latest"
+          version: "0.9.30"
           enable-cache: false
 
       - name: Install PlatformIO Core
@@ -73,7 +73,7 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v7
         with:
-          version: "latest"
+          version: "0.9.30"
           enable-cache: false
 
       - name: Install PlatformIO Core
@@ -84,6 +84,12 @@ jobs:
 
       - name: Check built-in CJK UI font charset generation
         run: python3 scripts/check_cjk_ui_font_charset.py
+
+      - name: Validate audit security contracts
+        run: python3 scripts/check_audit_security_contracts.py
+
+      - name: Validate release contracts
+        run: python3 scripts/validate_release_contracts.py
 
       - name: Build CrossPoint
         run: |

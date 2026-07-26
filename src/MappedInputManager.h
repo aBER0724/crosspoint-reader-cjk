@@ -2,6 +2,11 @@
 
 #include <HalGPIO.h>
 
+#ifdef ENABLE_SERIAL_INPUT_TEST
+#include <array>
+#include <cstddef>
+#endif
+
 class BluetoothPageTurnState;
 
 class MappedInputManager {
@@ -36,6 +41,15 @@ class MappedInputManager {
   // by a landscape setting.
   void setEffectiveOrientation(Orientation o) { effectiveOrientation = o; }
 
+#ifdef ENABLE_SERIAL_INPUT_TEST
+  // Test-build-only logical input injection. These states are merged after
+  // physical button mapping so serial tests exercise the normal UI paths.
+  void beginTestInputFrame();
+  void setTestButtonPressed(Button button, bool pressed);
+  void tapTestButton(Button button);
+  void clearTestButtons();
+#endif
+
  private:
   using GpioFn = bool (HalGPIO::*)(uint8_t) const;
   using BtFn = bool (BluetoothPageTurnState::*)() const;
@@ -43,6 +57,18 @@ class MappedInputManager {
   HalGPIO& gpio;
   const BluetoothPageTurnState* bluetoothPageTurnState = nullptr;
   Orientation effectiveOrientation = Orientation::Portrait;
+
+#ifdef ENABLE_SERIAL_INPUT_TEST
+  struct TestButtonState {
+    bool pressed = false;
+    bool released = false;
+    bool held = false;
+    unsigned long pressedAt = 0;
+  };
+
+  static constexpr size_t TEST_BUTTON_COUNT = static_cast<size_t>(Button::PageForward) + 1;
+  std::array<TestButtonState, TEST_BUTTON_COUNT> testButtons;
+#endif
 
   bool mapButton(Button button, GpioFn fn) const;
   // Returns the physical state for `button` and ORs in the matching

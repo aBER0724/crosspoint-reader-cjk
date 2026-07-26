@@ -76,7 +76,7 @@ Once connected, the screen will display:
 
 - **Network name** (SSID)
 - **IP Address** (e.g., `192.168.1.102`)
-- **Web server URL** (e.g., `http://192.168.1.102/`)
+- **Web server URL** with a temporary admin token
 
 <img src="./images/wifi/wifi_connected.jpeg" height="500">
 
@@ -90,16 +90,16 @@ Once connected, the screen will display:
 
 1. Ensure your computer is connected to the **same WiFi network** as your CrossPoint Reader
 2. Open any web browser (Chrome is recommended)
-3. Type the IP address shown on your device into the browser's address bar
-   - Example: `http://192.168.1.102/`
+3. Scan the QR code or type the full URL shown on your device into the browser's address bar
+   - Example: `http://192.168.1.102/?token=...`
 4. Press Enter
 
 ### From a Phone or Tablet
 
 1. Ensure your phone/tablet is connected to the **same WiFi network** as your CrossPoint Reader
 2. Open your mobile browser (Safari, Chrome, etc.)
-3. Type the IP address into the address bar
-   - Example: `http://192.168.1.102/`
+3. Scan the QR code or type the full URL shown on your device into the address bar
+   - Example: `http://192.168.1.102/?token=...`
 4. Tap Go
 
 ---
@@ -188,7 +188,8 @@ For power users, you can manage files directly from your terminal using `curl` w
 ## Security Notes
 
 - The web server runs on port 80 (standard HTTP)
-- **No authentication is required** - anyone on the same network can access the interface
+- File management, settings, Wi-Fi, OPDS, WebDAV, and upload APIs require the temporary admin token shown on the device screen
+- HTML pages and basic device status are still visible to clients on the same network
 - The web server is only accessible while the WiFi screen shows "Connected"
 - The web server automatically stops when you exit the WiFi screen
 - For security, only use on trusted private networks
@@ -199,7 +200,9 @@ For power users, you can manage files directly from your terminal using `curl` w
 
 - **Supported WiFi:** 2.4GHz networks (802.11 b/g/n)
 - **Web Server Port:** 80 (HTTP)
-- **Maximum Upload Size:** Limited by available SD card space
+- **Maximum Upload Size:** 512 MB per file, also limited by available SD card space
+- **Maximum Upload Time:** 15 minutes per file
+- **Storage Reserve:** browser, WebSocket, and WebDAV uploads keep at least 8 MB free on the SD card
 - **Browser Compatibility:** All modern browsers (Chrome, Firefox, Safari, Edge)
 
 ---
