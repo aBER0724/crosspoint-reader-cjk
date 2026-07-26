@@ -229,7 +229,7 @@ Behavior notes:
 You can also manage OPDS servers from the web interface while in File Transfer mode:
 
 1. Connect to the device web UI.
-2. Open `http://<device-ip>/settings`.
+2. Open the tokenized settings URL shown on the device, such as `http://<device-ip>/settings?token=...`.
 3. Use the **OPDS Servers** card to add, edit, or delete entries.
 
 #### 3.6.6 KOReader Sync Quick Setup

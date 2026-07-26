@@ -88,11 +88,8 @@ RecentBook RecentBooksStore::getDataFromBook(std::string path) const {
 
 bool RecentBooksStore::loadFromFile() {
   // Try JSON first
-  if (Storage.exists(RECENT_BOOKS_FILE_JSON)) {
-    String json = Storage.readFile(RECENT_BOOKS_FILE_JSON);
-    if (!json.isEmpty()) {
-      return JsonSettingsIO::loadRecentBooks(*this, json.c_str());
-    }
+  if (JsonSettingsIO::jsonFileOrBackupExists(RECENT_BOOKS_FILE_JSON)) {
+    return JsonSettingsIO::loadRecentBooksFile(*this, RECENT_BOOKS_FILE_JSON);
   }
 
   // Fall back to binary migration

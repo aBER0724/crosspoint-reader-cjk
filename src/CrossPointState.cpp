@@ -38,11 +38,8 @@ bool CrossPointState::saveToFile() const {
 
 bool CrossPointState::loadFromFile() {
   // Try JSON first
-  if (Storage.exists(STATE_FILE_JSON)) {
-    String json = Storage.readFile(STATE_FILE_JSON);
-    if (!json.isEmpty()) {
-      return JsonSettingsIO::loadState(*this, json.c_str());
-    }
+  if (JsonSettingsIO::jsonFileOrBackupExists(STATE_FILE_JSON)) {
+    return JsonSettingsIO::loadStateFile(*this, STATE_FILE_JSON);
   }
 
   // Fall back to binary migration

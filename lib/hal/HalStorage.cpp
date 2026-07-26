@@ -86,6 +86,10 @@ bool HalStorage::rename(const char* oldPath, const char* newPath) {
 
 bool HalStorage::rmdir(const char* path) { HAL_STORAGE_WRAPPED_CALL(rmdir, path); }
 
+uint64_t HalStorage::freeBytes() { HAL_STORAGE_WRAPPED_CALL(freeBytes, ); }
+
+uint64_t HalStorage::totalBytes() { HAL_STORAGE_WRAPPED_CALL(totalBytes, ); }
+
 bool HalStorage::openFileForRead(const char* moduleName, const char* path, HalFile& file) {
   StorageLock lock;  // ensure thread safety for the duration of this function
   FsFile fsFile;

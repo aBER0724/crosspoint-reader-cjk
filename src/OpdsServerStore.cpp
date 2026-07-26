@@ -20,18 +20,17 @@ bool OpdsServerStore::saveToFile() const {
 }
 
 bool OpdsServerStore::loadFromFile() {
-  if (Storage.exists(OPDS_FILE_JSON)) {
-    String json = Storage.readFile(OPDS_FILE_JSON);
-    if (!json.isEmpty()) {
-      // resave flag is set when passwords were stored in plaintext and need re-obfuscation
-      bool resave = false;
-      bool result = JsonSettingsIO::loadOpds(*this, json.c_str(), &resave);
-      if (result && resave) {
-        LOG_DBG("OPS", "Resaving JSON with obfuscated passwords");
-        saveToFile();
+  if (JsonSettingsIO::jsonFileOrBackupExists(OPDS_FILE_JSON)) {
+    // resave flag is set when passwords were stored in plaintext and need re-obfuscation
+    bool resave = false;
+    bool result = JsonSettingsIO::loadOpdsFile(*this, OPDS_FILE_JSON, &resave);
+    if (result && resave) {
+      LOG_DBG("OPS", "Resaving JSON with obfuscated passwords");
+      if (!saveToFile()) {
+        LOG_ERR("OPS", "Failed to resave OPDS servers after format update");
       }
-      return result;
     }
+    return result;
   }
 
   // No opds.json found — attempt one-time migration from the legacy single-server

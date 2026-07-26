@@ -6,17 +6,41 @@
 #include <Logging.h>
 #include <esp_task_wdt.h>
 
-namespace {
-const char* HIDDEN_ITEMS[] = {"System Volume Information", "XTCache"};
-constexpr size_t HIDDEN_ITEMS_COUNT = sizeof(HIDDEN_ITEMS) / sizeof(HIDDEN_ITEMS[0]);
+#include <utility>
 
+#include "StoragePathPolicy.h"
+#include "WebAdminAuth.h"
+
+namespace {
 // RFC 1123 date format helper: "Sun, 06 Nov 1994 08:49:37 GMT"
 // ESP32 doesn't have real-time clock set by default, so we use a fixed epoch date
 // as a fallback. The date is not critical for WebDAV Class 1 operations.
 const char* FIXED_DATE = "Thu, 01 Jan 2024 00:00:00 GMT";
+constexpr size_t MAX_DAV_UPLOAD_BYTES = 512UL * 1024UL * 1024UL;
+constexpr unsigned long MAX_DAV_UPLOAD_MS = 15UL * 60UL * 1000UL;
+constexpr uint64_t DAV_STORAGE_RESERVE_BYTES = 8ULL * 1024ULL * 1024ULL;
+
+bool transferWouldExceedLimit(const size_t currentSize, const size_t incomingSize) {
+  return currentSize > MAX_DAV_UPLOAD_BYTES || incomingSize > MAX_DAV_UPLOAD_BYTES - currentSize;
+}
+
+bool transferTimedOut(const unsigned long startedAt) {
+  return startedAt != 0 && millis() - startedAt > MAX_DAV_UPLOAD_MS;
+}
+
+bool storageHasSpaceForTransfer(const size_t pendingBytes) {
+  const uint64_t freeBytes = Storage.freeBytes();
+  if (freeBytes == 0) {
+    return false;
+  }
+
+  return freeBytes >= DAV_STORAGE_RESERVE_BYTES + static_cast<uint64_t>(pendingBytes);
+}
 }  // namespace
 
 // ── RequestHandler interface ─────────────────────────────────────────────────
+
+WebDAVHandler::WebDAVHandler(std::string adminToken) : _adminToken(std::move(adminToken)) {}
 
 bool WebDAVHandler::canHandle(WebServer& server, HTTPMethod method, const String& uri) {
   (void)server;
@@ -47,9 +71,40 @@ bool WebDAVHandler::canRaw(WebServer& server, const String& uri) {
 void WebDAVHandler::raw(WebServer& server, const String& uri, HTTPRaw& raw) {
   (void)uri;
   if (raw.status == RAW_START) {
+    _putOk = false;
+    _putReceived = 0;
+    _putStartTime = millis();
+    _putStatusCode = 500;
+    _putErrorMessage = "Write failed - incomplete upload or disk full";
+
+    if (!isAuthorized(server)) {
+      if (_putFile) _putFile.close();
+      _putPath = "";
+      _putStatusCode = 401;
+      _putErrorMessage = "Unauthorized";
+      _putOk = false;
+      return;
+    }
     _putPath = getRequestPath(server);
     if (isProtectedPath(_putPath)) {
+      _putPath = "";
+      _putStatusCode = 403;
+      _putErrorMessage = "Forbidden";
       _putOk = false;
+      return;
+    }
+
+    const size_t contentLength = server.clientContentLength();
+    if (contentLength > MAX_DAV_UPLOAD_BYTES) {
+      _putPath = "";
+      _putStatusCode = 413;
+      _putErrorMessage = "Payload Too Large";
+      return;
+    }
+    if (!storageHasSpaceForTransfer(contentLength)) {
+      _putPath = "";
+      _putStatusCode = 507;
+      _putErrorMessage = "Insufficient Storage";
       return;
     }
 
@@ -58,6 +113,7 @@ void WebDAVHandler::raw(WebServer& server, const String& uri, HTTPRaw& raw) {
     if (lastSlash > 0) {
       String parentPath = _putPath.substring(0, lastSlash);
       if (!Storage.exists(parentPath.c_str())) {
+        _putPath = "";
         _putOk = false;
         return;
       }
@@ -70,6 +126,7 @@ void WebDAVHandler::raw(WebServer& server, const String& uri, HTTPRaw& raw) {
       FsFile existing = Storage.open(_putPath.c_str());
       if (existing && existing.isDirectory()) {
         existing.close();
+        _putPath = "";
         _putOk = false;
         return;
       }
@@ -84,11 +141,41 @@ void WebDAVHandler::raw(WebServer& server, const String& uri, HTTPRaw& raw) {
 
   } else if (raw.status == RAW_WRITE) {
     if (_putFile && _putOk) {
+      if (transferTimedOut(_putStartTime)) {
+        _putOk = false;
+        _putStatusCode = 408;
+        _putErrorMessage = "Request Timeout";
+        _putFile.close();
+        Storage.remove((_putPath + ".davtmp").c_str());
+        return;
+      }
+      if (transferWouldExceedLimit(_putReceived, raw.currentSize)) {
+        _putOk = false;
+        _putStatusCode = 413;
+        _putErrorMessage = "Payload Too Large";
+        _putFile.close();
+        Storage.remove((_putPath + ".davtmp").c_str());
+        return;
+      }
+      if (!storageHasSpaceForTransfer(raw.currentSize)) {
+        _putOk = false;
+        _putStatusCode = 507;
+        _putErrorMessage = "Insufficient Storage";
+        _putFile.close();
+        Storage.remove((_putPath + ".davtmp").c_str());
+        return;
+      }
       esp_task_wdt_reset();
       size_t written = _putFile.write(raw.buf, raw.currentSize);
       if (written != raw.currentSize) {
         _putOk = false;
+        _putStatusCode = 507;
+        _putErrorMessage = "Insufficient Storage";
+        _putFile.close();
+        Storage.remove((_putPath + ".davtmp").c_str());
+        return;
       }
+      _putReceived += written;
     }
 
   } else if (raw.status == RAW_END) {
@@ -103,20 +190,33 @@ void WebDAVHandler::raw(WebServer& server, const String& uri, HTTPRaw& raw) {
       } else {
         _putOk = false;
       }
-      if (!_putOk) Storage.remove(tempPath.c_str());
+      if (!_putOk) {
+        _putStatusCode = 500;
+        _putErrorMessage = "Write failed - incomplete upload or disk full";
+        Storage.remove(tempPath.c_str());
+      }
     }
     LOG_DBG("DAV", "PUT END: %u bytes, ok=%d", raw.totalSize, _putOk);
 
   } else if (raw.status == RAW_ABORTED) {
     if (_putFile) _putFile.close();
-    String tempPath = _putPath + ".davtmp";
-    Storage.remove(tempPath.c_str());
+    if (!_putPath.isEmpty()) {
+      String tempPath = _putPath + ".davtmp";
+      Storage.remove(tempPath.c_str());
+    }
+    _putStatusCode = 400;
+    _putErrorMessage = "Upload aborted";
     _putOk = false;
   }
 }
 
 bool WebDAVHandler::handle(WebServer& server, HTTPMethod method, const String& uri) {
   (void)uri;
+  if (!isAuthorized(server)) {
+    server.send(401, "text/plain", "Unauthorized");
+    return true;
+  }
+
   switch (method) {
     case HTTP_OPTIONS:
       handleOptions(server);
@@ -176,6 +276,11 @@ void WebDAVHandler::handlePropfind(WebServer& s) {
 
   LOG_DBG("DAV", "PROPFIND %s depth=%d", path.c_str(), depth);
 
+  if (isProtectedPath(path)) {
+    s.send(403, "text/plain", "Forbidden");
+    return;
+  }
+
   // Check if path exists
   if (!Storage.exists(path.c_str()) && path != "/") {
     s.send(404, "text/plain", "Not Found");
@@ -228,15 +333,7 @@ void WebDAVHandler::handlePropfind(WebServer& s) {
       String fileName(name);
 
       // Skip hidden/protected items
-      bool shouldHide = fileName.startsWith(".");
-      if (!shouldHide) {
-        for (size_t i = 0; i < HIDDEN_ITEMS_COUNT; i++) {
-          if (fileName.equals(HIDDEN_ITEMS[i])) {
-            shouldHide = true;
-            break;
-          }
-        }
-      }
+      bool shouldHide = StoragePathPolicy::isProtectedItemName(fileName);
 
       if (!shouldHide) {
         String childPath = path;
@@ -381,7 +478,7 @@ void WebDAVHandler::handlePut(WebServer& s) {
   if (!_putOk) {
     String tempPath = path + ".davtmp";
     Storage.remove(tempPath.c_str());
-    s.send(500, "text/plain", "Write failed - incomplete upload or disk full");
+    s.send(_putStatusCode, "text/plain", _putErrorMessage);
     return;
   }
 
@@ -595,6 +692,18 @@ void WebDAVHandler::handleCopy(WebServer& s) {
     return;
   }
 
+  const size_t srcSize = srcFile.size();
+  if (srcSize > MAX_DAV_UPLOAD_BYTES) {
+    srcFile.close();
+    s.send(413, "text/plain", "Payload Too Large");
+    return;
+  }
+  if (!storageHasSpaceForTransfer(srcSize)) {
+    srcFile.close();
+    s.send(507, "text/plain", "Insufficient Storage");
+    return;
+  }
+
   // Check destination parent exists
   int lastSlash = dstPath.lastIndexOf('/');
   if (lastSlash > 0) {
@@ -655,6 +764,11 @@ void WebDAVHandler::handleLock(WebServer& s) {
   String path = getRequestPath(s);
   LOG_DBG("DAV", "LOCK %s (dummy)", path.c_str());
 
+  if (isProtectedPath(path)) {
+    s.send(403, "text/plain", "Forbidden");
+    return;
+  }
+
   // Return a dummy lock token for client compatibility
   String xml =
       "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"
@@ -675,7 +789,12 @@ void WebDAVHandler::handleLock(WebServer& s) {
 }
 
 void WebDAVHandler::handleUnlock(WebServer& s) {
-  LOG_DBG("DAV", "UNLOCK %s (dummy)", s.uri().c_str());
+  String path = getRequestPath(s);
+  LOG_DBG("DAV", "UNLOCK %s (dummy)", path.c_str());
+  if (isProtectedPath(path)) {
+    s.send(403, "text/plain", "Forbidden");
+    return;
+  }
   s.send(204);
 }
 
@@ -758,31 +877,9 @@ void WebDAVHandler::urlEncodePath(const String& path, String& out) const {
   }
 }
 
-bool WebDAVHandler::isProtectedPath(const String& path) const {
-  // Check every segment of the path, not just the last one.
-  // This prevents access to e.g. /.hidden/somefile or /System Volume Information/foo
-  int start = 0;
-  while (start < (int)path.length()) {
-    if (path.charAt(start) == '/') {
-      start++;
-      continue;
-    }
-    int end = path.indexOf('/', start);
-    if (end == -1) end = path.length();
+bool WebDAVHandler::isAuthorized(WebServer& s) const { return WebAdminAuth::isAuthorized(s, _adminToken); }
 
-    String segment = path.substring(start, end);
-
-    if (segment.startsWith(".")) return true;
-
-    for (size_t i = 0; i < HIDDEN_ITEMS_COUNT; i++) {
-      if (segment.equals(HIDDEN_ITEMS[i])) return true;
-    }
-
-    start = end + 1;
-  }
-
-  return false;
-}
+bool WebDAVHandler::isProtectedPath(const String& path) const { return StoragePathPolicy::isProtectedPath(path); }
 
 int WebDAVHandler::getDepth(WebServer& s) const {
   String depth = s.header("Depth");

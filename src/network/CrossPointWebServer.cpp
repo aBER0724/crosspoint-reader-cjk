@@ -7,6 +7,7 @@
 #include <HalStorage.h>
 #include <Logging.h>
 #include <WiFi.h>
+#include <esp_system.h>
 #include <esp_task_wdt.h>
 
 #include <algorithm>
@@ -17,6 +18,8 @@
 #include "CrossPointSettings.h"
 #include "OpdsServerStore.h"
 #include "SettingsList.h"
+#include "StoragePathPolicy.h"
+#include "WebAdminAuth.h"
 #include "WebDAVHandler.h"
 #include "WifiCredentialStore.h"
 #include "html/FilesPageHtml.generated.h"
@@ -24,15 +27,14 @@
 #include "html/SettingsPageHtml.generated.h"
 #include "html/js/jszip_minJs.generated.h"
 #include "util/ExternalFontLabel.h"
-#include "util/StringUtils.h"
 
 namespace {
-// Folders/files to hide from the web interface file browser
-// Note: Items starting with "." are automatically hidden
-const char* HIDDEN_ITEMS[] = {"System Volume Information", "XTCache"};
-constexpr size_t HIDDEN_ITEMS_COUNT = sizeof(HIDDEN_ITEMS) / sizeof(HIDDEN_ITEMS[0]);
 constexpr uint16_t UDP_PORTS[] = {54982, 48123, 39001, 44044, 59678};
 constexpr uint16_t LOCAL_UDP_PORT = 8134;
+constexpr size_t MAX_WEB_UPLOAD_BYTES = 512UL * 1024UL * 1024UL;
+constexpr unsigned long MAX_WEB_UPLOAD_MS = 15UL * 60UL * 1000UL;
+constexpr size_t MAX_WEB_LIST_ENTRIES = 1000;
+constexpr uint64_t WEB_STORAGE_RESERVE_BYTES = 8ULL * 1024ULL * 1024ULL;
 
 // Static pointer for WebSocket callback (WebSocketsServer requires C-style callback)
 CrossPointWebServer* wsInstance = nullptr;
@@ -78,22 +80,19 @@ String normalizeWebPath(const String& inputPath) {
   return result;
 }
 
-bool isProtectedItemName(const char* name) {
-  if (name == nullptr || name[0] == '\0') {
-    return false;
-  }
-  if (name[0] == '.') {
-    return true;
-  }
-  for (size_t i = 0; i < HIDDEN_ITEMS_COUNT; i++) {
-    if (strcmp(name, HIDDEN_ITEMS[i]) == 0) {
-      return true;
-    }
-  }
-  return false;
-}
+bool isProtectedItemName(const char* name) { return StoragePathPolicy::isProtectedItemName(name); }
 
 bool isProtectedItemName(const String& name) { return isProtectedItemName(name.c_str()); }
+
+bool isProtectedWebPath(const String& path) { return StoragePathPolicy::isProtectedPath(normalizeWebPath(path)); }
+
+std::string generateAdminToken() {
+  char token[33] = {0};
+  snprintf(token, sizeof(token), "%08lx%08lx%08lx%08lx", static_cast<unsigned long>(esp_random()),
+           static_cast<unsigned long>(esp_random()), static_cast<unsigned long>(esp_random()),
+           static_cast<unsigned long>(esp_random()));
+  return token;
+}
 
 bool endsWithIgnoreCase(const char* value, const char* suffix) {
   if (value == nullptr || suffix == nullptr) {
@@ -194,15 +193,81 @@ bool isReaderFontFamilySetting(const SettingInfo& s) { return s.key != nullptr &
 bool isUiFontFamilyKey(const char* key) { return key != nullptr && strcmp(key, "uiFontFamily") == 0; }
 
 bool isLanguageSettingKey(const char* key) { return key != nullptr && strcmp(key, "language") == 0; }
+
+String buildChildPath(String parentPath, const String& childName) {
+  if (!parentPath.endsWith("/")) {
+    parentPath += "/";
+  }
+  parentPath += childName;
+  return parentPath;
+}
+
+bool uploadWouldExceedLimit(const size_t currentSize, const size_t incomingSize) {
+  return currentSize > MAX_WEB_UPLOAD_BYTES || incomingSize > MAX_WEB_UPLOAD_BYTES - currentSize;
+}
+
+bool uploadTimedOut(const unsigned long startedAt) {
+  return startedAt != 0 && millis() - startedAt > MAX_WEB_UPLOAD_MS;
+}
+
+bool storageHasSpaceForUpload(const size_t pendingBytes) {
+  const uint64_t freeBytes = Storage.freeBytes();
+  if (freeBytes == 0) {
+    return false;
+  }
+
+  return freeBytes >= WEB_STORAGE_RESERVE_BYTES + static_cast<uint64_t>(pendingBytes);
+}
+
+bool parseUploadSizeToken(const String& token, size_t& outSize, bool& exceedsLimit) {
+  outSize = 0;
+  exceedsLimit = false;
+  bool valid = token.length() > 0;
+  int digitStart = (valid && token[0] == '+') ? 1 : 0;
+  if (digitStart > 0 && token.length() < 2) {
+    valid = false;
+  }
+  for (int i = digitStart; i < (int)token.length() && valid; i++) {
+    if (!isdigit((unsigned char)token[i])) {
+      valid = false;
+      break;
+    }
+    const size_t digit = static_cast<size_t>(token[i] - '0');
+    if (outSize > (MAX_WEB_UPLOAD_BYTES - digit) / 10) {
+      exceedsLimit = true;
+      return true;
+    }
+    outSize = outSize * 10 + digit;
+  }
+  if (outSize > MAX_WEB_UPLOAD_BYTES) {
+    exceedsLimit = true;
+  }
+  return valid;
+}
 }  // namespace
 
 // File listing page template - now using generated headers:
 // - HomePageHtml (from html/HomePage.html)
 // - FilesPageHeaderHtml (from html/FilesPageHeader.html)
 // - FilesPageFooterHtml (from html/FilesPageFooter.html)
-CrossPointWebServer::CrossPointWebServer() {}
+CrossPointWebServer::CrossPointWebServer() : adminToken(generateAdminToken()) {}
 
 CrossPointWebServer::~CrossPointWebServer() { stop(); }
+
+bool CrossPointWebServer::isAdminAuthorized() const {
+  if (!server) {
+    return false;
+  }
+  return WebAdminAuth::isAuthorized(*server, adminToken);
+}
+
+bool CrossPointWebServer::requireAdminAuth() const {
+  if (isAdminAuthorized()) {
+    return true;
+  }
+  WebAdminAuth::sendUnauthorized(*server);
+  return false;
+}
 
 void CrossPointWebServer::begin() {
   if (running) {
@@ -287,10 +352,10 @@ void CrossPointWebServer::begin() {
   server->onNotFound([this] { handleNotFound(); });
   LOG_DBG("WEB", "[MEM] Free heap after route setup: %d bytes", ESP.getFreeHeap());
 
-  // Collect WebDAV headers and register handler
-  const char* davHeaders[] = {"Depth", "Destination", "Overwrite", "If", "Lock-Token", "Timeout"};
-  server->collectHeaders(davHeaders, 6);
-  server->addHandler(new WebDAVHandler());  // Note: WebDAVHandler will be deleted by WebServer when server is stopped
+  // Collect WebDAV and admin-auth headers and register handler.
+  const char* webHeaders[] = {"Depth", "Destination", "Overwrite", "If", "Lock-Token", "Timeout", "X-CrossPoint-Token"};
+  server->collectHeaders(webHeaders, 7);
+  server->addHandler(new WebDAVHandler(adminToken));  // WebServer owns and deletes the handler on stop
   LOG_DBG("WEB", "WebDAV handler initialized");
 
   server->begin();
@@ -481,7 +546,7 @@ void CrossPointWebServer::handleStatus() const {
   server->send(200, "application/json", json);
 }
 
-void CrossPointWebServer::scanFiles(const char* path, const std::function<void(const FileInfo&)>& callback) const {
+void CrossPointWebServer::scanFiles(const char* path, const std::function<bool(const FileInfo&)>& callback) const {
   FsFile root = Storage.open(path);
   if (!root) {
     LOG_DBG("WEB", "Failed to open directory: %s", path);
@@ -510,17 +575,10 @@ void CrossPointWebServer::scanFiles(const char* path, const std::function<void(c
 
     auto fileName = String(info.name);
 
-    // Skip hidden items (starting with ".")
+    // Skip hidden items (starting with ".") unless the device setting asks to show them.
     bool shouldHide = !SETTINGS.showHiddenFiles && fileName.startsWith(".");
-
-    // Check against explicitly hidden items list
-    if (!shouldHide) {
-      for (size_t i = 0; i < HIDDEN_ITEMS_COUNT; i++) {
-        if (fileName.equals(HIDDEN_ITEMS[i])) {
-          shouldHide = true;
-          break;
-        }
-      }
+    if (!shouldHide && StoragePathPolicy::isProtectedItemName(fileName)) {
+      shouldHide = true;
     }
 
     if (shouldHide) {
@@ -541,7 +599,10 @@ void CrossPointWebServer::scanFiles(const char* path, const std::function<void(c
         info.isEpub = endsWithIgnoreCase(info.name, ".epub");
       }
 
-      callback(info);
+      if (!callback(info)) {
+        file.close();
+        break;
+      }
     }
 
     file.close();
@@ -559,18 +620,19 @@ void CrossPointWebServer::handleFileList() const {
 }
 
 void CrossPointWebServer::handleFileListData() const {
+  if (!requireAdminAuth()) {
+    return;
+  }
+
   // Get current path from query string (default to root)
   String currentPath = "/";
   if (server->hasArg("path")) {
-    currentPath = server->arg("path");
-    // Ensure path starts with /
-    if (!currentPath.startsWith("/")) {
-      currentPath = "/" + currentPath;
-    }
-    // Remove trailing slash unless it's root
-    if (currentPath.length() > 1 && currentPath.endsWith("/")) {
-      currentPath = currentPath.substring(0, currentPath.length() - 1);
-    }
+    currentPath = normalizeWebPath(server->arg("path"));
+  }
+
+  if (isProtectedWebPath(currentPath)) {
+    server->send(403, "application/json", "[]");
+    return;
   }
 
   server->setContentLength(CONTENT_LENGTH_UNKNOWN);
@@ -580,11 +642,19 @@ void CrossPointWebServer::handleFileListData() const {
   char escapedName[FileInfo::NAME_BUFFER_SIZE * 2];
   constexpr size_t outputSize = sizeof(output);
   bool seenFirst = false;
+  size_t listedEntries = 0;
+  bool listingTruncated = false;
 
-  scanFiles(currentPath.c_str(), [this, &output, &escapedName, seenFirst](const FileInfo& info) mutable {
+  scanFiles(currentPath.c_str(), [this, &output, &escapedName, &listedEntries, &listingTruncated,
+                                  seenFirst](const FileInfo& info) mutable {
+    if (listedEntries >= MAX_WEB_LIST_ENTRIES) {
+      listingTruncated = true;
+      return false;
+    }
+
     if (appendEscapedJsonString(escapedName, sizeof(escapedName), info.name) == 0 && info.name[0] != '\0') {
       LOG_DBG("WEB", "Skipping file entry with oversized escaped JSON name");
-      return;
+      return true;
     }
 
     const int written = snprintf(output, outputSize, "{\"name\":\"%s\",\"size\":%llu,\"isDirectory\":%s,\"isEpub\":%s}",
@@ -592,7 +662,7 @@ void CrossPointWebServer::handleFileListData() const {
                                  info.isDirectory ? "true" : "false", info.isEpub ? "true" : "false");
     if (written < 0 || static_cast<size_t>(written) >= outputSize) {
       LOG_DBG("WEB", "Skipping file entry with oversized JSON for name: %s", info.name);
-      return;
+      return true;
     }
 
     if (seenFirst) {
@@ -601,14 +671,24 @@ void CrossPointWebServer::handleFileListData() const {
       seenFirst = true;
     }
     server->sendContent(output);
+    listedEntries++;
+    return true;
   });
   server->sendContent("]");
   // End of streamed response, empty chunk to signal client
   server->sendContent("");
+  if (listingTruncated) {
+    LOG_DBG("WEB", "File listing truncated at %u entries for path: %s", static_cast<unsigned>(MAX_WEB_LIST_ENTRIES),
+            currentPath.c_str());
+  }
   LOG_DBG("WEB", "Served file listing page for path: %s", currentPath.c_str());
 }
 
 void CrossPointWebServer::handleDownload() const {
+  if (!requireAdminAuth()) {
+    return;
+  }
+
   if (!server->hasArg("path")) {
     server->send(400, "text/plain", "Missing path");
     return;
@@ -623,16 +703,10 @@ void CrossPointWebServer::handleDownload() const {
     itemPath = "/" + itemPath;
   }
 
-  const String itemName = itemPath.substring(itemPath.lastIndexOf('/') + 1);
-  if (itemName.startsWith(".")) {
-    server->send(403, "text/plain", "Cannot access system files");
+  itemPath = normalizeWebPath(itemPath);
+  if (isProtectedWebPath(itemPath)) {
+    server->send(403, "text/plain", "Cannot access protected items");
     return;
-  }
-  for (size_t i = 0; i < HIDDEN_ITEMS_COUNT; i++) {
-    if (itemName.equals(HIDDEN_ITEMS[i])) {
-      server->send(403, "text/plain", "Cannot access protected items");
-      return;
-    }
   }
 
   if (!Storage.exists(itemPath.c_str())) {
@@ -714,6 +788,18 @@ static bool flushUploadBuffer(CrossPointWebServer::UploadState& state) {
   return true;
 }
 
+static void abortHttpUpload(CrossPointWebServer::UploadState& state, const String& error) {
+  state.error = error;
+  state.bufferPos = 0;
+  if (state.file) {
+    state.file.close();
+    if (!state.fileName.isEmpty()) {
+      const String filePath = buildChildPath(state.path, state.fileName);
+      Storage.remove(filePath.c_str());
+    }
+  }
+}
+
 void CrossPointWebServer::handleUpload(UploadState& state) const {
   static size_t lastLoggedSize = 0;
 
@@ -727,6 +813,12 @@ void CrossPointWebServer::handleUpload(UploadState& state) const {
   }
 
   const HTTPUpload& upload = server->upload();
+  if (!isAdminAuthorized()) {
+    if (upload.status == UPLOAD_FILE_START) {
+      state.error = "Unauthorized";
+    }
+    return;
+  }
 
   if (upload.status == UPLOAD_FILE_START) {
     // Reset watchdog - this is the critical 1% crash point
@@ -746,26 +838,22 @@ void CrossPointWebServer::handleUpload(UploadState& state) const {
     // Note: We use query parameter instead of form data because multipart form
     // fields aren't available until after file upload completes
     if (server->hasArg("path")) {
-      state.path = server->arg("path");
-      // Ensure path starts with /
-      if (!state.path.startsWith("/")) {
-        state.path = "/" + state.path;
-      }
-      // Remove trailing slash unless it's root
-      if (state.path.length() > 1 && state.path.endsWith("/")) {
-        state.path = state.path.substring(0, state.path.length() - 1);
-      }
+      state.path = normalizeWebPath(server->arg("path"));
     } else {
       state.path = "/";
+    }
+
+    if (isProtectedWebPath(state.path) || isProtectedItemName(state.fileName)) {
+      state.error = "Cannot upload to protected path";
+      LOG_DBG("WEB", "[UPLOAD] Rejected protected upload: %s to %s", state.fileName.c_str(), state.path.c_str());
+      return;
     }
 
     LOG_DBG("WEB", "[UPLOAD] START: %s to path: %s", state.fileName.c_str(), state.path.c_str());
     LOG_DBG("WEB", "[UPLOAD] Free heap: %d bytes", ESP.getFreeHeap());
 
     // Create file path
-    String filePath = state.path;
-    if (!filePath.endsWith("/")) filePath += "/";
-    filePath += state.fileName;
+    String filePath = buildChildPath(state.path, state.fileName);
 
     // Check if file already exists - SD operations can be slow
     esp_task_wdt_reset();
@@ -773,6 +861,12 @@ void CrossPointWebServer::handleUpload(UploadState& state) const {
       LOG_DBG("WEB", "[UPLOAD] Overwriting existing file: %s", filePath.c_str());
       esp_task_wdt_reset();
       Storage.remove(filePath.c_str());
+    }
+
+    if (!storageHasSpaceForUpload(0)) {
+      state.error = "Not enough free space";
+      LOG_DBG("WEB", "[UPLOAD] Rejected upload without storage reserve: %s", state.fileName.c_str());
+      return;
     }
 
     // Open file for writing - this can be slow due to FAT cluster allocation
@@ -787,6 +881,22 @@ void CrossPointWebServer::handleUpload(UploadState& state) const {
     LOG_DBG("WEB", "[UPLOAD] File created successfully: %s", filePath.c_str());
   } else if (upload.status == UPLOAD_FILE_WRITE) {
     if (state.file && state.error.isEmpty()) {
+      if (uploadTimedOut(uploadStartTime)) {
+        abortHttpUpload(state, "Upload timed out");
+        LOG_DBG("WEB", "[UPLOAD] Rejected timed out upload: %s", state.fileName.c_str());
+        return;
+      }
+      if (uploadWouldExceedLimit(state.size, upload.currentSize)) {
+        abortHttpUpload(state, "Upload exceeds maximum size");
+        LOG_DBG("WEB", "[UPLOAD] Rejected oversized upload: %s", state.fileName.c_str());
+        return;
+      }
+      if (!storageHasSpaceForUpload(state.bufferPos + upload.currentSize)) {
+        abortHttpUpload(state, "Not enough free space");
+        LOG_DBG("WEB", "[UPLOAD] Rejected upload without enough free space: %s", state.fileName.c_str());
+        return;
+      }
+
       // Buffer incoming data and flush when buffer is full
       // This reduces SD card write operations and improves throughput
       const uint8_t* data = upload.buf;
@@ -841,9 +951,7 @@ void CrossPointWebServer::handleUpload(UploadState& state) const {
                 writePercent);
 
         // Clear epub cache to prevent stale metadata issues when overwriting files
-        String filePath = state.path;
-        if (!filePath.endsWith("/")) filePath += "/";
-        filePath += state.fileName;
+        String filePath = buildChildPath(state.path, state.fileName);
         clearEpubCacheIfNeeded(filePath);
       }
     }
@@ -852,9 +960,7 @@ void CrossPointWebServer::handleUpload(UploadState& state) const {
     if (state.file) {
       state.file.close();
       // Try to delete the incomplete file
-      String filePath = state.path;
-      if (!filePath.endsWith("/")) filePath += "/";
-      filePath += state.fileName;
+      String filePath = buildChildPath(state.path, state.fileName);
       Storage.remove(filePath.c_str());
     }
     state.error = "Upload aborted";
@@ -863,15 +969,31 @@ void CrossPointWebServer::handleUpload(UploadState& state) const {
 }
 
 void CrossPointWebServer::handleUploadPost(UploadState& state) const {
+  if (!requireAdminAuth()) {
+    return;
+  }
+
   if (state.success) {
     server->send(200, "text/plain", "File uploaded successfully: " + state.fileName);
   } else {
     const String error = state.error.isEmpty() ? "Unknown error during upload" : state.error;
-    server->send(400, "text/plain", error);
+    if (error == "Upload exceeds maximum size") {
+      server->send(413, "text/plain", error);
+    } else if (error == "Upload timed out") {
+      server->send(408, "text/plain", error);
+    } else if (error == "Not enough free space") {
+      server->send(507, "text/plain", error);
+    } else {
+      server->send(400, "text/plain", error);
+    }
   }
 }
 
 void CrossPointWebServer::handleCreateFolder() const {
+  if (!requireAdminAuth()) {
+    return;
+  }
+
   // Get folder name from form data
   if (!server->hasArg("name")) {
     server->send(400, "text/plain", "Missing folder name");
@@ -889,13 +1011,12 @@ void CrossPointWebServer::handleCreateFolder() const {
   // Get parent path
   String parentPath = "/";
   if (server->hasArg("path")) {
-    parentPath = server->arg("path");
-    if (!parentPath.startsWith("/")) {
-      parentPath = "/" + parentPath;
-    }
-    if (parentPath.length() > 1 && parentPath.endsWith("/")) {
-      parentPath = parentPath.substring(0, parentPath.length() - 1);
-    }
+    parentPath = normalizeWebPath(server->arg("path"));
+  }
+
+  if (isProtectedWebPath(parentPath) || isProtectedItemName(folderName)) {
+    server->send(403, "text/plain", "Cannot create protected folder");
+    return;
   }
 
   // Build full folder path
@@ -922,6 +1043,10 @@ void CrossPointWebServer::handleCreateFolder() const {
 }
 
 void CrossPointWebServer::handleRename() const {
+  if (!requireAdminAuth()) {
+    return;
+  }
+
   if (!server->hasArg("path") || !server->hasArg("name")) {
     server->send(400, "text/plain", "Missing path or new name");
     return;
@@ -933,6 +1058,10 @@ void CrossPointWebServer::handleRename() const {
 
   if (itemPath.isEmpty() || itemPath == "/") {
     server->send(400, "text/plain", "Invalid path");
+    return;
+  }
+  if (isProtectedWebPath(itemPath)) {
+    server->send(403, "text/plain", "Cannot rename protected item");
     return;
   }
   if (newName.isEmpty()) {
@@ -949,10 +1078,6 @@ void CrossPointWebServer::handleRename() const {
   }
 
   const String itemName = itemPath.substring(itemPath.lastIndexOf('/') + 1);
-  if (isProtectedItemName(itemName)) {
-    server->send(403, "text/plain", "Cannot rename protected item");
-    return;
-  }
   if (newName == itemName) {
     server->send(200, "text/plain", "Name unchanged");
     return;
@@ -983,6 +1108,10 @@ void CrossPointWebServer::handleRename() const {
     newPath += "/";
   }
   newPath += newName;
+  if (isProtectedWebPath(newPath)) {
+    server->send(403, "text/plain", "Cannot rename to protected path");
+    return;
+  }
 
   if (Storage.exists(newPath.c_str())) {
     file.close();
@@ -1004,6 +1133,10 @@ void CrossPointWebServer::handleRename() const {
 }
 
 void CrossPointWebServer::handleMove() const {
+  if (!requireAdminAuth()) {
+    return;
+  }
+
   if (!server->hasArg("path") || !server->hasArg("dest")) {
     server->send(400, "text/plain", "Missing path or destination");
     return;
@@ -1020,19 +1153,12 @@ void CrossPointWebServer::handleMove() const {
     server->send(400, "text/plain", "Invalid destination");
     return;
   }
-
-  const String itemName = itemPath.substring(itemPath.lastIndexOf('/') + 1);
-  if (isProtectedItemName(itemName)) {
+  if (isProtectedWebPath(itemPath) || isProtectedWebPath(destPath)) {
     server->send(403, "text/plain", "Cannot move protected item");
     return;
   }
-  if (destPath != "/") {
-    const String destName = destPath.substring(destPath.lastIndexOf('/') + 1);
-    if (isProtectedItemName(destName)) {
-      server->send(403, "text/plain", "Cannot move into protected folder");
-      return;
-    }
-  }
+
+  const String itemName = itemPath.substring(itemPath.lastIndexOf('/') + 1);
 
   if (!Storage.exists(itemPath.c_str())) {
     server->send(404, "text/plain", "Item not found");
@@ -1097,6 +1223,10 @@ void CrossPointWebServer::handleMove() const {
 }
 
 void CrossPointWebServer::handleDelete() const {
+  if (!requireAdminAuth()) {
+    return;
+  }
+
   // To ensure backwards compatibility, plain `path` is mapped
   // to a single element JSON array.
   bool hasPathArg = server->hasArg("path");
@@ -1152,25 +1282,7 @@ void CrossPointWebServer::handleDelete() const {
       itemPath = "/" + itemPath;
     }
 
-    // Security check: prevent deletion of protected items
-    const String itemName = itemPath.substring(itemPath.lastIndexOf('/') + 1);
-
-    // Hidden/system files are protected
-    if (itemName.startsWith(".")) {
-      failedItems += itemPath + " (hidden/system file); ";
-      allSuccess = false;
-      continue;
-    }
-
-    // Check against explicitly protected items
-    bool isProtected = false;
-    for (size_t i = 0; i < HIDDEN_ITEMS_COUNT; i++) {
-      if (itemName.equals(HIDDEN_ITEMS[i])) {
-        isProtected = true;
-        break;
-      }
-    }
-    if (isProtected) {
+    if (isProtectedWebPath(itemPath)) {
       failedItems += itemPath + " (protected file); ";
       allSuccess = false;
       continue;
@@ -1224,6 +1336,10 @@ void CrossPointWebServer::handleSettingsPage() const {
 }
 
 void CrossPointWebServer::handleGetSettings() const {
+  if (!requireAdminAuth()) {
+    return;
+  }
+
   const auto& settings = getSettingsList();
 
   server->setContentLength(CONTENT_LENGTH_UNKNOWN);
@@ -1307,10 +1423,21 @@ void CrossPointWebServer::handleGetSettings() const {
       }
       case SettingType::STRING: {
         doc["type"] = "string";
-        if (s.stringGetter) {
-          doc["value"] = s.stringGetter();
-        } else if (s.stringMaxLen > 0 && s.stringPtr) {
-          doc["value"] = std::string(s.stringPtr);
+        if (s.isSecret) {
+          doc["secret"] = true;
+          if (s.stringGetter) {
+            doc["configured"] = !s.stringGetter().empty();
+          } else if (s.stringMaxLen > 0 && s.stringPtr) {
+            doc["configured"] = s.stringPtr[0] != '\0';
+          } else {
+            doc["configured"] = false;
+          }
+        } else {
+          if (s.stringGetter) {
+            doc["value"] = s.stringGetter();
+          } else if (s.stringMaxLen > 0 && s.stringPtr) {
+            doc["value"] = std::string(s.stringPtr);
+          }
         }
         break;
       }
@@ -1396,6 +1523,10 @@ void CrossPointWebServer::handleGetSettings() const {
 }
 
 void CrossPointWebServer::handlePostSettings() {
+  if (!requireAdminAuth()) {
+    return;
+  }
+
   if (!server->hasArg("plain")) {
     server->send(400, "text/plain", "Missing JSON body");
     return;
@@ -1527,6 +1658,10 @@ void CrossPointWebServer::handlePostSettings() {
 // ---- OPDS Server API ----
 
 void CrossPointWebServer::handleGetOpdsServers() const {
+  if (!requireAdminAuth()) {
+    return;
+  }
+
   const auto& servers = OPDS_STORE.getServers();
 
   // Stream JSON array incrementally to avoid allocating the full response in memory
@@ -1560,6 +1695,10 @@ void CrossPointWebServer::handleGetOpdsServers() const {
 }
 
 void CrossPointWebServer::handlePostOpdsServer() {
+  if (!requireAdminAuth()) {
+    return;
+  }
+
   if (!server->hasArg("plain")) {
     server->send(400, "text/plain", "Missing JSON body");
     return;
@@ -1611,6 +1750,10 @@ void CrossPointWebServer::handlePostOpdsServer() {
 
 // Uses POST (not HTTP DELETE) because ESP32 WebServer doesn't support DELETE with body.
 void CrossPointWebServer::handleDeleteOpdsServer() {
+  if (!requireAdminAuth()) {
+    return;
+  }
+
   if (!server->hasArg("plain")) {
     server->send(400, "text/plain", "Missing JSON body");
     return;
@@ -1649,7 +1792,7 @@ void CrossPointWebServer::wsEventCallback(uint8_t num, WStype_t type, uint8_t* p
 
 // WebSocket event handler for fast binary uploads
 // Protocol:
-//   1. Client sends TEXT message: "START:<filename>:<size>:<path>"
+//   1. Client sends TEXT message: "START:<token>:<filename>:<size>:<path>"
 //   2. Client sends BINARY messages with file data chunks
 //   3. Server sends TEXT "PROGRESS:<received>:<total>" after each chunk
 //   4. Server sends TEXT "DONE" or "ERROR:<message>" when complete
@@ -1673,7 +1816,11 @@ void CrossPointWebServer::onWebSocketEvent(uint8_t num, WStype_t type, uint8_t* 
     case WStype_TEXT: {
       // Parse control messages
       String msg = String((char*)payload);
-      LOG_DBG("WS", "Text from client %u: %s", num, msg.c_str());
+      if (msg.startsWith("START:")) {
+        LOG_DBG("WS", "Upload START from client %u", num);
+      } else {
+        LOG_DBG("WS", "Text from client %u: %s", num, msg.c_str());
+      }
 
       if (msg.startsWith("START:")) {
         // Reject any START while an upload is already active to prevent
@@ -1683,34 +1830,41 @@ void CrossPointWebServer::onWebSocketEvent(uint8_t num, WStype_t type, uint8_t* 
           break;
         }
 
-        // Parse: START:<filename>:<size>:<path>
+        // Parse: START:<token>:<filename>:<size>:<path>
         int firstColon = msg.indexOf(':', 6);
         int secondColon = msg.indexOf(':', firstColon + 1);
+        int thirdColon = msg.indexOf(':', secondColon + 1);
 
-        if (firstColon > 0 && secondColon > 0) {
-          wsUploadFileName = msg.substring(6, firstColon);
-          String sizeToken = msg.substring(firstColon + 1, secondColon);
-          bool sizeValid = sizeToken.length() > 0;
-          int digitStart = (sizeValid && sizeToken[0] == '+') ? 1 : 0;
-          if (digitStart > 0 && sizeToken.length() < 2) sizeValid = false;
-          for (int i = digitStart; i < (int)sizeToken.length() && sizeValid; i++) {
-            if (!isdigit((unsigned char)sizeToken[i])) sizeValid = false;
+        if (firstColon > 0 && secondColon > 0 && thirdColon > 0) {
+          const String token = msg.substring(6, firstColon);
+          if (token != adminToken.c_str()) {
+            wsServer->sendTXT(num, "ERROR:Unauthorized");
+            return;
           }
-          if (!sizeValid) {
+          wsUploadFileName = msg.substring(firstColon + 1, secondColon);
+          String sizeToken = msg.substring(secondColon + 1, thirdColon);
+          bool uploadTooLarge = false;
+          if (!parseUploadSizeToken(sizeToken, wsUploadSize, uploadTooLarge)) {
             LOG_DBG("WS", "START rejected: invalid size token '%s'", sizeToken.c_str());
             wsServer->sendTXT(num, "ERROR:Invalid START format");
             return;
           }
-          wsUploadSize = sizeToken.toInt();
-          wsUploadPath = msg.substring(secondColon + 1);
+          if (uploadTooLarge) {
+            LOG_DBG("WS", "START rejected: upload too large");
+            wsServer->sendTXT(num, "ERROR:Upload exceeds maximum size");
+            return;
+          }
+          wsUploadPath = msg.substring(thirdColon + 1);
           wsUploadReceived = 0;
           wsLastProgressSent = 0;
           wsUploadStartTime = millis();
 
-          // Ensure path is valid
-          if (!wsUploadPath.startsWith("/")) wsUploadPath = "/" + wsUploadPath;
-          if (wsUploadPath.length() > 1 && wsUploadPath.endsWith("/")) {
-            wsUploadPath = wsUploadPath.substring(0, wsUploadPath.length() - 1);
+          wsUploadPath = normalizeWebPath(wsUploadPath);
+          if (isProtectedWebPath(wsUploadPath) || isProtectedItemName(wsUploadFileName)) {
+            wsServer->sendTXT(num, "ERROR:Cannot upload to protected path");
+            wsUploadInProgress = false;
+            wsUploadClientNum = 255;
+            return;
           }
 
           // Build file path
@@ -1725,6 +1879,13 @@ void CrossPointWebServer::onWebSocketEvent(uint8_t num, WStype_t type, uint8_t* 
           esp_task_wdt_reset();
           if (Storage.exists(filePath.c_str())) {
             Storage.remove(filePath.c_str());
+          }
+
+          if (!storageHasSpaceForUpload(wsUploadSize)) {
+            wsServer->sendTXT(num, "ERROR:Not enough free space");
+            wsUploadInProgress = false;
+            wsUploadClientNum = 255;
+            return;
           }
 
           // Open file for writing
@@ -1766,12 +1927,22 @@ void CrossPointWebServer::onWebSocketEvent(uint8_t num, WStype_t type, uint8_t* 
         wsServer->sendTXT(num, "ERROR:No upload in progress");
         return;
       }
+      if (uploadTimedOut(wsUploadStartTime)) {
+        abortWsUpload("WS");
+        wsServer->sendTXT(num, "ERROR:Upload timed out");
+        return;
+      }
 
       // Write binary data directly to file
       size_t remaining = wsUploadSize - wsUploadReceived;
       if (length > remaining) {
         abortWsUpload("WS");
         wsServer->sendTXT(num, "ERROR:Upload overflow");
+        return;
+      }
+      if (!storageHasSpaceForUpload(length)) {
+        abortWsUpload("WS");
+        wsServer->sendTXT(num, "ERROR:Not enough free space");
         return;
       }
       esp_task_wdt_reset();
@@ -1830,6 +2001,10 @@ void CrossPointWebServer::onWebSocketEvent(uint8_t num, WStype_t type, uint8_t* 
 // --- WiFi credential management API handlers (CJK) ---
 
 void CrossPointWebServer::handleWifiScan() const {
+  if (!requireAdminAuth()) {
+    return;
+  }
+
   LOG_DBG("WEB", "WiFi scan requested");
 
   // In AP mode we need to briefly enable STA to scan, without tearing down the AP.
@@ -1906,6 +2081,10 @@ void CrossPointWebServer::handleWifiScan() const {
 }
 
 void CrossPointWebServer::handleWifiSave() const {
+  if (!requireAdminAuth()) {
+    return;
+  }
+
   // Expect JSON body: {"ssid": "...", "password": "..."}
   if (!server->hasArg("plain")) {
     server->send(400, "application/json", "{\"error\":\"Missing request body\"}");
@@ -1945,6 +2124,10 @@ void CrossPointWebServer::handleWifiSave() const {
 }
 
 void CrossPointWebServer::handleWifiList() const {
+  if (!requireAdminAuth()) {
+    return;
+  }
+
   WIFI_STORE.loadFromFile();
   const auto& creds = WIFI_STORE.getCredentials();
 
@@ -1965,6 +2148,10 @@ void CrossPointWebServer::handleWifiList() const {
 }
 
 void CrossPointWebServer::handleWifiDelete() const {
+  if (!requireAdminAuth()) {
+    return;
+  }
+
   if (!server->hasArg("plain")) {
     server->send(400, "application/json", "{\"error\":\"Missing request body\"}");
     return;

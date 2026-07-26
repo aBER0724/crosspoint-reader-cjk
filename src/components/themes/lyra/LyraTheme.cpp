@@ -643,5 +643,9 @@ void LyraTheme::fillPopupProgress(const GfxRenderer& renderer, const Rect& layou
 
   renderer.fillRect(barX, barY, fillWidth, barHeight, false);
 
-  renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+  if (renderer.isDarkMode()) {
+    renderer.displayBufferDarkRedrive();
+  } else {
+    renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+  }
 }

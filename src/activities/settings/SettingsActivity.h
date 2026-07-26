@@ -1,7 +1,11 @@
 #pragma once
 #include <I18n.h>
 
+#include <cstddef>
+#include <cstdint>
+#include <functional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "activities/Activity.h"
@@ -41,6 +45,7 @@ struct SettingInfo {
 
   const char* key = nullptr;             // JSON API key (nullptr for ACTION types)
   StrId category = StrId::STR_NONE_OPT;  // Category for web UI grouping
+  bool isSecret = false;                 // Secret fields are write-only in the web settings API
 
   // Direct char[] string fields (for settings stored in CrossPointSettings)
   char* stringPtr = nullptr;
@@ -123,7 +128,7 @@ struct SettingInfo {
 
   static SettingInfo DynamicString(StrId nameId, std::function<std::string()> getter,
                                    std::function<void(const std::string&)> setter, const char* key = nullptr,
-                                   StrId category = StrId::STR_NONE_OPT) {
+                                   StrId category = StrId::STR_NONE_OPT, bool isSecret = false) {
     SettingInfo s;
     s.nameId = nameId;
     s.type = SettingType::STRING;
@@ -131,6 +136,7 @@ struct SettingInfo {
     s.stringSetter = std::move(setter);
     s.key = key;
     s.category = category;
+    s.isSecret = isSecret;
     return s;
   }
 };

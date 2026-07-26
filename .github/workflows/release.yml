@@ -22,7 +22,7 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v7
         with:
-          version: "latest"
+          version: "0.9.30"
           enable-cache: false
 
       - name: Install PlatformIO Core
@@ -64,6 +64,9 @@ jobs:
 
           cp "${tc_firmware}" firmware-tc.bin
 
+      - name: Generate checksums
+        run: sha256sum bootloader.bin partitions.bin firmware-sc.bin firmware-tc.bin > SHA256SUMS
+
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -73,6 +76,7 @@ jobs:
             partitions.bin
             firmware-sc.bin
             firmware-tc.bin
+            SHA256SUMS
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
@@ -81,6 +85,7 @@ jobs:
           files: |
             firmware-sc.bin
             firmware-tc.bin
+            SHA256SUMS
           body: |
             ## CrossPoint Reader CJK ${{ github.ref_name }}
 
