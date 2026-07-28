@@ -207,6 +207,7 @@ void EpubReaderActivity::onEnter() {
   RECENT_BOOKS.addBook(epub->getPath(), epub->getTitle(), epub->getAuthor(), epub->getThumbBmpPath());
 
   loadCachedBookmarks();
+  lastReaderInputMs = millis();
 
   // Trigger first update
   requestUpdate();
@@ -232,6 +233,7 @@ void EpubReaderActivity::onExit() {
     saveProgress(origin.spineIndex, origin.pageNumber, 0);
   }
 
+  if (section) section->discardBuild();
   section.reset();
   if (pendingReadFolderMove && epub) {
     const std::string srcPath = epub->getPath();
@@ -293,6 +295,11 @@ void EpubReaderActivity::showBuildPopup() {
 }
 
 void EpubReaderActivity::runDeferredReaderWork() {
+  const unsigned long now = millis();
+  if (now - lastReaderInputMs < IDLE_READER_WORK_DELAY_MS) {
+    return;
+  }
+
   // Lazily resume a partial's extension build once the reader nears its watermark. Far from
   // it the rebuild is all cost (whole-chapter re-layout from page 0) and no benefit this
   // session, so reopening a partial deliberately does NOT start it (see the deferral in
@@ -303,7 +310,8 @@ void EpubReaderActivity::runDeferredReaderWork() {
   if (section && !section->isBuilding() && section->isPartial() && section->hasHtmlCache() && !RenderLock::peek() &&
       buildViewportWidth > 0 && !partialRebuildStartFailed &&
       section->currentPage + PARTIAL_REBUILD_START_MARGIN >= static_cast<int>(section->pageCount)) {
-    RenderLock lock;
+    RenderLock lock(false);
+    if (!lock.locked()) return;
     // Reuse the last render's viewport so the extension paginates identically to the partial.
     const ReaderRenderSpec buildSpec = SETTINGS.readerRenderSpec(buildViewportWidth, buildViewportHeight);
     if (!section->startBuild(buildSpec)) {
@@ -319,17 +327,17 @@ void EpubReaderActivity::runDeferredReaderWork() {
 
   // Drive any in-progress incremental section build forward, off the page-turn critical path,
   // but only within a small window ahead of the reader: an unbounded build monopolized the
-  // RenderLock and locked out page turns. The build follows the reader instead, and instant
-  // reopen comes from suspendBuild() persisting the laid-out pages as a partial on exit.
+  // RenderLock and locked out page turns. The build follows the reader instead. Existing
+  // partial caches from earlier firmware remain readable, but navigation never writes one.
   // While extending a partial (rebuild from a previous session), pageCount is pinned at the
   // partial's watermark until the build catches up, so the window check would wrongly read
   // "far enough ahead" and stall the build at 0 pages -- then the first turn past the
   // watermark re-parses the whole chapter synchronously. Keep ticking until it finalizes.
-  const unsigned long now = millis();
   if (section && section->isBuilding() && !RenderLock::peek() &&
       (section->isPartial() || static_cast<int>(section->pageCount) < section->currentPage + BUILD_WINDOW_AHEAD) &&
       now - lastBackgroundBuildMs >= BACKGROUND_BUILD_INTERVAL_MS && buildTickHeapGate()) {
-    RenderLock lock;
+    RenderLock lock(false);
+    if (!lock.locked()) return;
     // Re-check under the lock: render() (which also holds the RenderLock) may have finalized the
     // build between the outer isBuilding() check and acquiring the lock here, in which case
     // buildSomeMore() would fail and wrongly reset the section. The heap gate must be re-read
@@ -339,7 +347,8 @@ void EpubReaderActivity::runDeferredReaderWork() {
     // cppcheck-suppress knownConditionTrueFalse
     if (section->isBuilding() && buildTickHeapGate()) {
       lastBackgroundBuildMs = now;
-      if (!section->buildSomeMore(BACKGROUND_BUILD_PAGES_PER_TICK, BACKGROUND_BUILD_PARSE_STEPS_PER_TICK)) {
+      if (!section->buildSomeMore(BACKGROUND_BUILD_PAGES_PER_TICK, BACKGROUND_BUILD_PARSE_STEPS_PER_TICK,
+                                  BACKGROUND_BUILD_PARSE_BYTES_PER_TICK)) {
         LOG_ERR("ERS", "Background section build failed");
         section.reset();
         requestUpdate();
@@ -412,6 +421,16 @@ void EpubReaderActivity::loop() {
   }
 
   const auto touch = ReaderUtils::detectTouchPageTurn(renderer, mappedInput);
+  const bool inputActive = mappedInput.wasAnyPressed() || mappedInput.wasAnyReleased() ||
+                           mappedInput.isPressed(MappedInputManager::Button::Back) ||
+                           mappedInput.isPressed(MappedInputManager::Button::Confirm) ||
+                           mappedInput.isPressed(MappedInputManager::Button::PageBack) ||
+                           mappedInput.isPressed(MappedInputManager::Button::PageForward) ||
+                           mappedInput.isPressed(MappedInputManager::Button::Power) || gpio.wasTouchActivity() ||
+                           touch.prev || touch.next;
+  if (inputActive) {
+    lastReaderInputMs = millis();
+  }
 
   if (automaticPageTurnActive) {
     if (mappedInput.wasReleased(MappedInputManager::Button::Confirm) ||
@@ -569,15 +588,6 @@ void EpubReaderActivity::loop() {
   prevTriggered = prevTriggered || touch.prev;
   nextTriggered = nextTriggered || touch.next;
   if (!prevTriggered && !nextTriggered) {
-    // Do not start optional SD/parse work while a button event is pending, even when it belongs
-    // to a different activity or is intentionally ignored by the reader.
-    const bool inputActive = mappedInput.wasAnyPressed() || mappedInput.wasAnyReleased() ||
-                             mappedInput.isPressed(MappedInputManager::Button::Back) ||
-                             mappedInput.isPressed(MappedInputManager::Button::Confirm) ||
-                             mappedInput.isPressed(MappedInputManager::Button::PageBack) ||
-                             mappedInput.isPressed(MappedInputManager::Button::PageForward) ||
-                             mappedInput.isPressed(MappedInputManager::Button::Power) ||
-                             gpio.wasTouchActivity();
     if (!inputActive) {
       runDeferredReaderWork();
     }
@@ -1005,6 +1015,7 @@ void EpubReaderActivity::pageTurn(bool isForwardTurn) {
     }
   }
   lastPageTurnTime = millis();
+  lastReaderInputMs = lastPageTurnTime;
   requestUpdate();
 }
 

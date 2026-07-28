@@ -47,6 +47,8 @@ class EpubReaderActivity final : public Activity {
   unsigned long dictionaryMessageTime = 0UL;
   bool ignoreNextConfirmRelease = false;
   bool currentPageBookmarked = false;
+  // Every input resets optional indexing work so it cannot run alongside taps.
+  unsigned long lastReaderInputMs = 0;
   unsigned long lastBackgroundBuildMs = 0;
   bool bookmarkRemoved = false;  // true when last toggle removed (controls popup text)
   std::vector<BookmarkEntry> cachedBookmarks;
@@ -91,10 +93,12 @@ class EpubReaderActivity final : public Activity {
   // Pages laid out per incremental-build pump: on the render path (catching up to the page
   // being shown) and per loop() tick (background build of a large chapter). Background work is
   // strictly limited to one page so a parser/SD burst cannot delay interactive input.
-  static constexpr int BUILD_PAGES_PER_CHUNK = 8;
+  static constexpr int BUILD_PAGES_PER_CHUNK = 1;
   static constexpr int BACKGROUND_BUILD_PAGES_PER_TICK = 1;
   static constexpr int BACKGROUND_BUILD_PARSE_STEPS_PER_TICK = 1;
-  static constexpr unsigned long BACKGROUND_BUILD_INTERVAL_MS = 100;
+  static constexpr size_t BACKGROUND_BUILD_PARSE_BYTES_PER_TICK = 256;
+  static constexpr unsigned long BACKGROUND_BUILD_INTERVAL_MS = 200;
+  static constexpr unsigned long IDLE_READER_WORK_DELAY_MS = 900;
 
   // MEMFIX-PORT: background-build heap floor; portable
   // Skip background build ticks below this free-heap floor. The parse path grows
@@ -127,8 +131,8 @@ class EpubReaderActivity final : public Activity {
   // -- a tiny buffer is enough. The background build stops once the watermark is this far
   // ahead and resumes as the reader advances; building unbounded instead locked up input by
   // monopolizing the RenderLock. A giant single-spine book therefore never finalizes its .bin
-  // in one sitting -- instant reopen comes from Section::suspendBuild() persisting the pages
-  // already laid out as a partial file on exit/sleep.
+  // in one sitting. Navigation discards only the active temporary build so it never blocks on
+  // a partial-cache commit; completed section caches remain available for instant reopen.
   static constexpr int BUILD_WINDOW_AHEAD = 5;
   // Reopening a partial does NOT immediately restart its extension build (a whole-chapter
   // re-layout from page 0 -- minutes of background CPU + SD writes on a giant spine, wasted
@@ -194,6 +198,7 @@ class EpubReaderActivity final : public Activity {
     return section && section->isBuilding() && !buildHeapPaused &&
            (section->isPartial() ||
             static_cast<int>(section->pageCount) < section->currentPage + BUILD_WINDOW_AHEAD) &&
+           !RenderLock::peek() && millis() - lastReaderInputMs >= IDLE_READER_WORK_DELAY_MS &&
            millis() - lastBackgroundBuildMs >= BACKGROUND_BUILD_INTERVAL_MS;
   }
   bool isReaderActivity() const override { return true; }
