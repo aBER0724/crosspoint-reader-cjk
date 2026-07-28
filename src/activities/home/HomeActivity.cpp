@@ -9,6 +9,8 @@
 #include <Utf8.h>
 #include <Xtc.h>
 
+#include <algorithm>
+#include <array>
 #include <cstring>
 #include <vector>
 
@@ -18,6 +20,7 @@
 #include "OpdsServerStore.h"
 #include "RecentBooksStore.h"
 #include "components/UITheme.h"
+#include "components/themes/BaseTheme.h"
 #include "fontIds.h"
 
 int HomeActivity::getMenuItemCount() const {
@@ -29,6 +32,43 @@ int HomeActivity::getMenuItemCount() const {
     count++;
   }
   return count;
+}
+
+bool HomeActivity::isCoverSelectionIndex(const int index) const {
+  if (recentBooks.empty() || index < 0) {
+    return false;
+  }
+
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  if (metrics.homeContinueReadingInMenu) {
+    // Cover tile is decorative; selection lives entirely in the button menu.
+    return false;
+  }
+
+  // Base/Lyra paint selection chrome on recent tiles for indices in [0, recentCount).
+  return index < static_cast<int>(recentBooks.size());
+}
+
+bool HomeActivity::canUseMenuOnlyPartialUpdate(const int fromIndex, const int toIndex) const {
+  if (!firstRenderDone || fullRedrawRequired || fromIndex < 0 || fromIndex == toIndex) {
+    return false;
+  }
+  return !isCoverSelectionIndex(fromIndex) && !isCoverSelectionIndex(toIndex);
+}
+
+bool HomeActivity::canUseCoverOnlyPartialUpdate(const int fromIndex, const int toIndex) const {
+  if (!firstRenderDone || fullRedrawRequired || fromIndex < 0 || fromIndex == toIndex) {
+    return false;
+  }
+  return isCoverSelectionIndex(fromIndex) && isCoverSelectionIndex(toIndex) && GUI.supportsHomeCoverSelectionUpdates();
+}
+
+Rect HomeActivity::getMenuRect(const ThemeMetrics& metrics, const int pageWidth, const int pageHeight) const {
+  const int menuTop = metrics.homeTopPadding + metrics.homeCoverTileHeight + metrics.homeMenuTopOffset;
+  const int menuHeight =
+      std::max(0, pageHeight - (metrics.headerHeight + metrics.homeTopPadding + metrics.verticalSpacing +
+                                metrics.homeMenuTopOffset + metrics.buttonHintsHeight));
+  return Rect{0, menuTop, pageWidth, menuHeight};
 }
 
 void HomeActivity::loadRecentBooks(int maxBooks) {
@@ -85,6 +125,7 @@ void HomeActivity::loadNextRecentCover(int coverHeight) {
     }
 
     coverRendered = false;
+    fullRedrawRequired = true;
     requestUpdate();
     return;
   }
@@ -107,6 +148,11 @@ void HomeActivity::onEnter() {
 
   const auto base = static_cast<int>(recentBooks.size());
   selectorIndex = initialMenuItem == HomeMenuItem::NONE ? 0 : base + menuItemToIndex(initialMenuItem, hasOpdsServers);
+  lastRenderedSelectorIndex = -1;
+  fullRedrawRequired = true;
+  firstRenderDone = false;
+  coverRendered = false;
+  coverBufferStored = false;
 
   // Trigger first update
   requestUpdate();
@@ -147,6 +193,7 @@ bool HomeActivity::restoreCoverBuffer() {
   if (coverBufferDarkMode != renderer.isDarkMode()) {
     freeCoverBuffer();
     coverRendered = false;
+    fullRedrawRequired = true;
     return false;
   }
   return renderer.copyBufferToRegion(coverRectX, coverRectY, coverRectW, coverRectH, coverBuffer, coverBufferSize);
@@ -289,63 +336,163 @@ void HomeActivity::render(RenderLock&&) {
   const auto& metrics = UITheme::getInstance().getMetrics();
   const auto pageWidth = renderer.getScreenWidth();
   const auto pageHeight = renderer.getScreenHeight();
+  const Rect menuRect = getMenuRect(metrics, pageWidth, pageHeight);
+#if defined(SSD1677_PROBE_DEBUG) && SSD1677_PROBE_DEBUG
+  const unsigned long renderStart = millis();
+  unsigned long afterClear = renderStart;
+  unsigned long afterRestore = renderStart;
+  unsigned long afterHeader = renderStart;
+  unsigned long afterCover = renderStart;
+  unsigned long afterMenu = renderStart;
+#endif
 
-  renderer.clearScreen();
-  bool bufferRestored = coverBufferStored && restoreCoverBuffer();
-
-  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.homeTopPadding},
-                 metrics.homeContinueReadingInMenu && !recentBooks.empty() ? recentBooks[0].title.c_str() : nullptr);
-
-  // Record the tile rect so storeCoverBuffer (called from the theme) knows
-  // which sub-region of the framebuffer to snapshot. ~16 KB in Portrait
-  // instead of the 48 KB full framebuffer the previous bind captured.
-  coverRectX = 0;
-  coverRectY = metrics.homeTopPadding;
-  coverRectW = pageWidth;
-  coverRectH = metrics.homeCoverTileHeight;
-
-  GUI.drawRecentBookCover(renderer, Rect{0, metrics.homeTopPadding, pageWidth, metrics.homeCoverTileHeight},
-                          recentBooks, selectorIndex, coverRendered, coverBufferStored, bufferRestored,
-                          std::bind(&HomeActivity::storeCoverBuffer, this));
-
-  // Build menu items dynamically
-  std::vector<const char*> menuItems = {tr(STR_BROWSE_FILES), tr(STR_MENU_RECENT_BOOKS), tr(STR_FILE_TRANSFER),
-                                        tr(STR_SETTINGS_TITLE)};
-  std::vector<UIIcon> menuIcons = {Folder, Recent, Transfer, Settings};
-
-  if (hasOpdsServers) {
-    menuItems.insert(menuItems.begin() + 2, tr(STR_OPDS_BROWSER));
-    menuIcons.insert(menuIcons.begin() + 2, Library);
-  }
-
+  std::array<const char*, 6> menuItems{};
+  std::array<UIIcon, 6> menuIcons{};
+  int menuItemCount = 0;
+  const auto addMenuItem = [&](const char* label, UIIcon icon) {
+    menuItems[menuItemCount] = label;
+    menuIcons[menuItemCount++] = icon;
+  };
   if (metrics.homeContinueReadingInMenu && !recentBooks.empty()) {
-    // Insert Continue Reading at the top if enabled in theme
-    menuItems.insert(menuItems.begin(), tr(STR_CONTINUE_READING));
-    menuIcons.insert(menuIcons.begin(), Book);
+    addMenuItem(tr(STR_CONTINUE_READING), Book);
+  }
+  addMenuItem(tr(STR_BROWSE_FILES), Folder);
+  addMenuItem(tr(STR_MENU_RECENT_BOOKS), Recent);
+  if (hasOpdsServers) {
+    addMenuItem(tr(STR_OPDS_BROWSER), Library);
+  }
+  addMenuItem(tr(STR_FILE_TRANSFER), Transfer);
+  addMenuItem(tr(STR_SETTINGS_TITLE), Settings);
+
+  const bool menuOnlyPartialUpdate = canUseMenuOnlyPartialUpdate(lastRenderedSelectorIndex, selectorIndex);
+  bool coverOnlyPartialUpdate = canUseCoverOnlyPartialUpdate(lastRenderedSelectorIndex, selectorIndex);
+  const int selectedMenuIndex =
+      metrics.homeContinueReadingInMenu ? selectorIndex : selectorIndex - static_cast<int>(recentBooks.size());
+#if defined(SSD1677_PROBE_DEBUG) && SSD1677_PROBE_DEBUG
+  LOG_INF("HOME", "menu-update from=%d to=%d recent=%u first=%d full=%d cover=%d/%d partial=%d rows=%d",
+          lastRenderedSelectorIndex, selectorIndex, static_cast<unsigned>(recentBooks.size()), firstRenderDone ? 1 : 0,
+          fullRedrawRequired ? 1 : 0, isCoverSelectionIndex(lastRenderedSelectorIndex) ? 1 : 0,
+          isCoverSelectionIndex(selectorIndex) ? 1 : 0, menuOnlyPartialUpdate ? 1 : 0,
+          GUI.supportsHomeMenuRowUpdates() ? 1 : 0);
+#endif
+  int firstUpdatedMenuIndex = 0;
+  int lastUpdatedMenuIndex = menuItemCount - 1;
+  Rect coverDirtyRect;
+  bool bufferRestored = false;
+
+  if (coverOnlyPartialUpdate) {
+    bufferRestored = coverBufferStored && restoreCoverBuffer();
+    coverOnlyPartialUpdate = bufferRestored;
+    if (coverOnlyPartialUpdate) {
+      coverDirtyRect = GUI.drawHomeCoverSelectionUpdate(
+          renderer, Rect{0, metrics.homeTopPadding, pageWidth, metrics.homeCoverTileHeight}, recentBooks,
+          lastRenderedSelectorIndex, selectorIndex);
+      coverOnlyPartialUpdate = coverDirtyRect.width > 0 && coverDirtyRect.height > 0;
+      if (coverOnlyPartialUpdate) {
+        renderer.setPartialUpdateRect(coverDirtyRect.x, coverDirtyRect.y, coverDirtyRect.width, coverDirtyRect.height);
+      }
+    }
   }
 
-  GUI.drawButtonMenu(
-      renderer,
-      Rect{0, metrics.homeTopPadding + metrics.homeCoverTileHeight + metrics.homeMenuTopOffset, pageWidth,
-           pageHeight - (metrics.headerHeight + metrics.homeTopPadding + metrics.verticalSpacing +
-                         metrics.homeMenuTopOffset + metrics.buttonHintsHeight)},
-      static_cast<int>(menuItems.size()),
-      metrics.homeContinueReadingInMenu ? selectorIndex : selectorIndex - recentBooks.size(),
-      [&menuItems](int index) { return std::string(menuItems[index]); },
-      [&menuIcons](int index) { return menuIcons[index]; });
+  if (menuOnlyPartialUpdate) {
+    const int previousMenuIndex = metrics.homeContinueReadingInMenu
+                                      ? lastRenderedSelectorIndex
+                                      : lastRenderedSelectorIndex - static_cast<int>(recentBooks.size());
+    const int currentMenuIndex =
+        metrics.homeContinueReadingInMenu ? selectorIndex : selectorIndex - static_cast<int>(recentBooks.size());
+    firstUpdatedMenuIndex = std::min(previousMenuIndex, currentMenuIndex);
+    lastUpdatedMenuIndex = std::max(previousMenuIndex, currentMenuIndex);
+    const Rect dirtyRect = GUI.getHomeMenuDirtyRect(menuRect, previousMenuIndex, currentMenuIndex);
+#if defined(SSD1677_PROBE_DEBUG) && SSD1677_PROBE_DEBUG
+    LOG_INF("HOME", "menu-window rows=%d..%d logical=%d,%d %dx%d", firstUpdatedMenuIndex, lastUpdatedMenuIndex,
+            dirtyRect.x, dirtyRect.y, dirtyRect.width, dirtyRect.height);
+#endif
+    // Clear and rebuild exactly the menu rows whose selected state changed.
+    renderer.fillRect(dirtyRect.x, dirtyRect.y, dirtyRect.width, dirtyRect.height, false);
+    renderer.setPartialUpdateRect(dirtyRect.x, dirtyRect.y, dirtyRect.width, dirtyRect.height);
+  } else if (!coverOnlyPartialUpdate) {
+    renderer.clearScreen();
+  }
+#if defined(SSD1677_PROBE_DEBUG) && SSD1677_PROBE_DEBUG
+  afterClear = millis();
+#endif
 
-  const auto labels = mappedInput.mapLabels(recentBooks.empty() ? "" : tr(STR_RESUME), tr(STR_SELECT), tr(STR_DIR_UP),
-                                            tr(STR_DIR_DOWN));
-  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+  if (!menuOnlyPartialUpdate && !coverOnlyPartialUpdate) {
+    bufferRestored = coverBufferStored && restoreCoverBuffer();
+#if defined(SSD1677_PROBE_DEBUG) && SSD1677_PROBE_DEBUG
+    afterRestore = millis();
+#endif
 
-  if (renderer.isDarkMode()) {
+    GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.homeTopPadding},
+                   metrics.homeContinueReadingInMenu && !recentBooks.empty() ? recentBooks[0].title.c_str() : nullptr);
+#if defined(SSD1677_PROBE_DEBUG) && SSD1677_PROBE_DEBUG
+    afterHeader = millis();
+#endif
+
+    // Record the tile rect so storeCoverBuffer (called from the theme) knows
+    // which sub-region of the framebuffer to snapshot. ~16 KB in Portrait
+    // instead of the 48 KB full framebuffer the previous bind captured.
+    coverRectX = 0;
+    coverRectY = metrics.homeTopPadding;
+    coverRectW = pageWidth;
+    coverRectH = metrics.homeCoverTileHeight;
+
+    GUI.drawRecentBookCover(renderer, Rect{0, metrics.homeTopPadding, pageWidth, metrics.homeCoverTileHeight},
+                            recentBooks, selectorIndex, coverRendered, coverBufferStored, bufferRestored,
+                            std::bind(&HomeActivity::storeCoverBuffer, this));
+#if defined(SSD1677_PROBE_DEBUG) && SSD1677_PROBE_DEBUG
+    afterCover = millis();
+#endif
+  }
+
+  const auto menuLabel = [&menuItems](int index) { return menuItems[static_cast<size_t>(index)]; };
+  const auto menuIcon = [&menuIcons](int index) { return menuIcons[static_cast<size_t>(index)]; };
+  if (menuOnlyPartialUpdate && GUI.supportsHomeMenuRowUpdates()) {
+    GUI.drawButtonMenuRange(renderer, menuRect, menuItemCount, selectedMenuIndex, menuLabel, menuIcon,
+                            firstUpdatedMenuIndex, lastUpdatedMenuIndex);
+  } else if (!coverOnlyPartialUpdate) {
+    GUI.drawButtonMenu(renderer, menuRect, menuItemCount, selectedMenuIndex, menuLabel, menuIcon);
+  }
+#if defined(SSD1677_PROBE_DEBUG) && SSD1677_PROBE_DEBUG
+  afterMenu = millis();
+#endif
+
+  if (!menuOnlyPartialUpdate && !coverOnlyPartialUpdate) {
+    const auto labels = mappedInput.mapLabels(recentBooks.empty() ? "" : tr(STR_RESUME), tr(STR_SELECT), tr(STR_DIR_UP),
+                                              tr(STR_DIR_DOWN));
+    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+  }
+#if defined(SSD1677_PROBE_DEBUG) && SSD1677_PROBE_DEBUG
+  if (!menuOnlyPartialUpdate && !coverOnlyPartialUpdate &&
+      (isCoverSelectionIndex(lastRenderedSelectorIndex) || isCoverSelectionIndex(selectorIndex))) {
+    const unsigned long afterHints = millis();
+    LOG_INF("HOME", "cover-profile clear=%lu restore=%lu header=%lu cover=%lu menu=%lu hints=%lu total=%lu",
+            afterClear - renderStart, afterRestore - afterClear, afterHeader - afterRestore, afterCover - afterHeader,
+            afterMenu - afterCover, afterHints - afterMenu, afterHints - renderStart);
+  }
+  if (coverOnlyPartialUpdate) {
+    LOG_INF("HOME", "cover-window logical=%d,%d %dx%d cpu=%lu", coverDirtyRect.x, coverDirtyRect.y,
+            coverDirtyRect.width, coverDirtyRect.height, millis() - renderStart);
+  }
+#endif
+
+  // Menu-only path uses setPartialUpdateRect + displayBuffer so dark mode still
+  // takes the windowed dark redrive branch. Full redraws keep the existing policy.
+  if (menuOnlyPartialUpdate || coverOnlyPartialUpdate) {
+    renderer.displayBuffer();
+  } else if (renderer.isDarkMode()) {
     renderer.displayBufferDarkRedrive();
   } else {
     renderer.displayBuffer();
   }
 
+  lastRenderedSelectorIndex = selectorIndex;
+  fullRedrawRequired = false;
+
   if (!firstRenderDone) {
     firstRenderDone = true;
+    // Second pass lets the cover snapshot path settle without blocking the first paint.
+    fullRedrawRequired = true;
     requestUpdate();
   }
 }

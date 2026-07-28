@@ -220,9 +220,25 @@ class BaseTheme {
   virtual void drawRecentBookCover(GfxRenderer& renderer, Rect rect, const std::vector<RecentBook>& recentBooks,
                                    const int selectorIndex, bool& coverRendered, bool& coverBufferStored,
                                    bool& bufferRestored, std::function<bool()> storeCoverBuffer) const;
+  // Bounds that must be refreshed when home-menu selection changes. Themes
+  // whose menu layout is not row-stable can safely retain the whole menu rect.
+  virtual Rect getHomeMenuDirtyRect(Rect menuRect, int previousIndex, int currentIndex) const;
+  virtual bool supportsHomeMenuRowUpdates() const { return true; }
+  // Themes with independent recent-book tiles may update the focus chrome from
+  // an already-restored unselected cover baseline instead of repainting Home.
+  virtual bool supportsHomeCoverSelectionUpdates() const { return false; }
+  virtual Rect drawHomeCoverSelectionUpdate(GfxRenderer& renderer, Rect coverRect,
+                                            const std::vector<RecentBook>& recentBooks, int previousSelectorIndex,
+                                            int selectorIndex) const {
+    return Rect{};
+  }
   virtual void drawButtonMenu(GfxRenderer& renderer, Rect rect, int buttonCount, int selectedIndex,
-                              const std::function<std::string(int index)>& buttonLabel,
+                              const std::function<const char*(int index)>& buttonLabel,
                               const std::function<UIIcon(int index)>& rowIcon) const;
+  virtual void drawButtonMenuRange(GfxRenderer& renderer, Rect rect, int buttonCount, int selectedIndex,
+                                   const std::function<const char*(int index)>& buttonLabel,
+                                   const std::function<UIIcon(int index)>& rowIcon, int firstIndex,
+                                   int lastIndex) const;
   virtual Rect drawPopup(const GfxRenderer& renderer, const char* message) const;
   virtual void drawOptionPopup(const GfxRenderer& renderer, const char* title, const std::vector<std::string>& options,
                                int selectedIndex) const;

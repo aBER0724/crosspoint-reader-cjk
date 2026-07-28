@@ -8,6 +8,7 @@
 
 struct RecentBook;
 struct Rect;
+struct ThemeMetrics;
 
 class HomeActivity final : public Activity {
   ButtonNavigator buttonNavigator;
@@ -19,6 +20,11 @@ class HomeActivity final : public Activity {
   bool coverRendered = false;        // Track if cover has been rendered once
   bool coverBufferStored = false;    // Track if cover buffer is stored
   bool coverBufferDarkMode = false;  // Reject cover snapshots created for the opposite display mode
+  // When true, render() must repaint header/cover instead of the menu-only path.
+  // Set on enter, cover regeneration, and any selection change that touches cover chrome.
+  bool fullRedrawRequired = true;
+  // Selector index from the last completed render; used to detect menu-only moves.
+  int lastRenderedSelectorIndex = -1;
   // Home can be entered while Back is still held (e.g. leaving Settings with
   // Back): ignore that stale release until a fresh press is seen here.
   bool backPressSeen = false;
@@ -73,6 +79,15 @@ class HomeActivity final : public Activity {
   void onOpdsBrowserOpen();
 
   int getMenuItemCount() const;
+  // True when this selector index paints selection chrome on the recent-cover tile.
+  // Themes with homeContinueReadingInMenu keep cover art static and put selection in the menu.
+  bool isCoverSelectionIndex(int index) const;
+  // Menu-only windowed refresh is safe when both the previously rendered and current
+  // indices live purely in the button menu (no cover selection chrome changes).
+  bool canUseMenuOnlyPartialUpdate(int fromIndex, int toIndex) const;
+  // Cover-only windowed refresh requires the theme's unselected cover baseline.
+  bool canUseCoverOnlyPartialUpdate(int fromIndex, int toIndex) const;
+  Rect getMenuRect(const ThemeMetrics& metrics, int pageWidth, int pageHeight) const;
   bool storeCoverBuffer();    // Store frame buffer for cover image
   bool restoreCoverBuffer();  // Restore frame buffer from stored cover
   void freeCoverBuffer();     // Free the stored cover buffer

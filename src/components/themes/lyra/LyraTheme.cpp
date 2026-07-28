@@ -593,10 +593,28 @@ void LyraTheme::drawEmptyRecents(const GfxRenderer& renderer, const Rect rect) c
   renderer.drawText(UI_10_FONT_ID, rect.x + padding, rect.y + rect.height / 2 + 2, tr(STR_START_READING), true);
 }
 
+Rect LyraTheme::getHomeMenuDirtyRect(const Rect menuRect, const int previousIndex, const int currentIndex) const {
+  const int firstIndex = std::min(previousIndex, currentIndex);
+  const int lastIndex = std::max(previousIndex, currentIndex);
+  const int rowStep = LyraMetrics::values.menuRowHeight + LyraMetrics::values.menuSpacing;
+  const int y = menuRect.y + firstIndex * rowStep;
+  const int bottom = menuRect.y + lastIndex * rowStep + LyraMetrics::values.menuRowHeight;
+  return Rect{menuRect.x, y, menuRect.width, bottom - y};
+}
+
 void LyraTheme::drawButtonMenu(GfxRenderer& renderer, Rect rect, int buttonCount, int selectedIndex,
-                               const std::function<std::string(int index)>& buttonLabel,
+                               const std::function<const char*(int index)>& buttonLabel,
                                const std::function<UIIcon(int index)>& rowIcon) const {
-  for (int i = 0; i < buttonCount; ++i) {
+  drawButtonMenuRange(renderer, rect, buttonCount, selectedIndex, buttonLabel, rowIcon, 0, buttonCount - 1);
+}
+
+void LyraTheme::drawButtonMenuRange(GfxRenderer& renderer, Rect rect, int buttonCount, int selectedIndex,
+                                    const std::function<const char*(int index)>& buttonLabel,
+                                    const std::function<UIIcon(int index)>& rowIcon, int firstIndex,
+                                    int lastIndex) const {
+  const int first = std::max(0, firstIndex);
+  const int last = std::min(buttonCount - 1, lastIndex);
+  for (int i = first; i <= last; ++i) {
     int tileWidth = rect.width - LyraMetrics::values.contentSidePadding * 2;
     Rect tileRect = Rect{rect.x + LyraMetrics::values.contentSidePadding,
                          rect.y + i * (LyraMetrics::values.menuRowHeight + LyraMetrics::values.menuSpacing), tileWidth,
@@ -608,8 +626,7 @@ void LyraTheme::drawButtonMenu(GfxRenderer& renderer, Rect rect, int buttonCount
       renderer.fillRoundedRect(tileRect.x, tileRect.y, tileRect.width, tileRect.height, cornerRadius, Color::LightGray);
     }
 
-    std::string labelStr = buttonLabel(i);
-    const char* label = labelStr.c_str();
+    const char* label = buttonLabel(i);
     int textX = tileRect.x + 16;
     const int lineHeight = renderer.getLineHeight(UI_12_FONT_ID);
     const int textY = tileRect.y + (LyraMetrics::values.menuRowHeight - lineHeight) / 2;

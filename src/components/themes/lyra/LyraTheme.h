@@ -93,9 +93,14 @@ class LyraTheme : public BaseTheme {
   void drawButtonHints(GfxRenderer& renderer, const char* btn1, const char* btn2, const char* btn3,
                        const char* btn4) const override;
   void drawSideButtonHints(const GfxRenderer& renderer, const char* topBtn, const char* bottomBtn) const override;
+  Rect getHomeMenuDirtyRect(Rect menuRect, int previousIndex, int currentIndex) const override;
   void drawButtonMenu(GfxRenderer& renderer, Rect rect, int buttonCount, int selectedIndex,
-                      const std::function<std::string(int index)>& buttonLabel,
+                      const std::function<const char*(int index)>& buttonLabel,
                       const std::function<UIIcon(int index)>& rowIcon) const override;
+  void drawButtonMenuRange(GfxRenderer& renderer, Rect rect, int buttonCount, int selectedIndex,
+                           const std::function<const char*(int index)>& buttonLabel,
+                           const std::function<UIIcon(int index)>& rowIcon, int firstIndex,
+                           int lastIndex) const override;
   void drawRecentBookCover(GfxRenderer& renderer, Rect rect, const std::vector<RecentBook>& recentBooks,
                            const int selectorIndex, bool& coverRendered, bool& coverBufferStored, bool& bufferRestored,
                            std::function<bool()> storeCoverBuffer) const override;
