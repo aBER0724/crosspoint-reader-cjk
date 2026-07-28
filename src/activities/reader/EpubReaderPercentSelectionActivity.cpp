@@ -19,6 +19,8 @@ constexpr int kLargeStep = 10;
 
 void EpubReaderPercentSelectionActivity::onEnter() {
   Activity::onEnter();
+  lastRenderedPercent = -1;
+  fullRedrawRequired = true;
   // Set up rendering task and mark first frame dirty.
   requestUpdate();
 }
@@ -116,26 +118,32 @@ void EpubReaderPercentSelectionActivity::loop() {
 }
 
 void EpubReaderPercentSelectionActivity::render(RenderLock&&) {
-  renderer.clearScreen();
-
   auto& theme = UITheme::getInstance();
   auto metrics = theme.getMetrics();
   Rect screen = theme.getScreenSafeArea(renderer, true, false);
-
-  GUI.drawHeader(renderer, Rect{screen.x, screen.y + metrics.topPadding, screen.width, metrics.headerHeight},
-                 tr(STR_GO_TO_PERCENT));
-
   const int contentTop = screen.y + metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing * 4;
+  constexpr int barWidth = 360;
+  constexpr int barHeight = 16;
+  const int barX = screen.x + (screen.width - barWidth) / 2;
+  const int barY = contentTop + metrics.verticalSpacing * 2;
+  const bool partialUpdate = !renderer.isDarkMode() && !fullRedrawRequired && lastRenderedPercent != percent;
+
+  if (partialUpdate) {
+    const int dirtyY = contentTop - metrics.verticalSpacing;
+    const int dirtyHeight = barY + barHeight + metrics.verticalSpacing - dirtyY;
+    renderer.fillRect(screen.x, dirtyY, screen.width, dirtyHeight, false);
+    renderer.setPartialUpdateRect(screen.x, dirtyY, screen.width, dirtyHeight);
+  } else {
+    renderer.clearScreen();
+    GUI.drawHeader(renderer, Rect{screen.x, screen.y + metrics.topPadding, screen.width, metrics.headerHeight},
+                   tr(STR_GO_TO_PERCENT));
+  }
 
   const std::string percentText = std::to_string(percent) + "%";
   UITheme::drawCenteredText(renderer, screen, UI_12_FONT_ID, contentTop, percentText.c_str(), true,
                             EpdFontFamily::BOLD);
 
   // Draw slider track.
-  constexpr int barWidth = 360;
-  constexpr int barHeight = 16;
-  const int barX = screen.x + (screen.width - barWidth) / 2;
-  const int barY = contentTop + metrics.verticalSpacing * 2;
 
   renderer.drawRect(barX, barY, barWidth, barHeight);
 
@@ -149,21 +157,27 @@ void EpubReaderPercentSelectionActivity::render(RenderLock&&) {
   const int knobX = barX + 2 + fillWidth - 2;
   renderer.fillRect(knobX, barY - 4, 4, barHeight + 8, true);
 
-  // Two-line step hint built from separate label + value strings (front buttons = fine step, side
-  // buttons = coarse step), so the layout doesn't depend on a separator hidden in translated text.
-  char line[64];
-  snprintf(line, sizeof(line), "%s %d%%", I18N.get(StrId::STR_STEP_HINT_FRONT), kSmallStep);
-  UITheme::drawCenteredText(renderer, screen, SMALL_FONT_ID, barY + 30, line, true);
-  snprintf(line, sizeof(line), "%s %d%%", I18N.get(StrId::STR_STEP_HINT_SIDE), kLargeStep);
-  UITheme::drawCenteredText(renderer, screen, SMALL_FONT_ID, barY + 52, line, true);
+  if (!partialUpdate) {
+    // Two-line step hint built from separate label + value strings (front buttons = fine step, side
+    // buttons = coarse step), so the layout doesn't depend on a separator hidden in translated text.
+    char line[64];
+    snprintf(line, sizeof(line), "%s %d%%", I18N.get(StrId::STR_STEP_HINT_FRONT), kSmallStep);
+    UITheme::drawCenteredText(renderer, screen, SMALL_FONT_ID, barY + 30, line, true);
+    snprintf(line, sizeof(line), "%s %d%%", I18N.get(StrId::STR_STEP_HINT_SIDE), kLargeStep);
+    UITheme::drawCenteredText(renderer, screen, SMALL_FONT_ID, barY + 52, line, true);
 
-  // Button hints follow the current front button layout.
-  const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), "-", "+");
-  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+    // Button hints follow the current front button layout.
+    const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), "-", "+");
+    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+  }
 
-  if (renderer.isDarkMode()) {
+  if (partialUpdate) {
+    renderer.displayBuffer();
+  } else if (renderer.isDarkMode()) {
     renderer.displayBufferDarkRedrive();
   } else {
     renderer.displayBuffer();
   }
+  lastRenderedPercent = percent;
+  fullRedrawRequired = false;
 }

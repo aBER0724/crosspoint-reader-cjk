@@ -51,6 +51,8 @@ class EpubReaderMenuActivity final : public Activity {
   const std::vector<MenuItem> menuItems;
 
   int selectedIndex = 0;
+  int lastRenderedSelectedIndex = -1;
+  bool fullRedrawRequired = true;
 
   ButtonNavigator buttonNavigator;
   OptionPopup optionPopup;

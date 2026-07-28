@@ -491,9 +491,6 @@ void HomeActivity::render(RenderLock&&) {
 
   if (!firstRenderDone) {
     firstRenderDone = true;
-    // Second pass lets the cover snapshot path settle without blocking the first paint.
-    fullRedrawRequired = true;
-    requestUpdate();
   }
 }
 
