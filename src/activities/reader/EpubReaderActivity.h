@@ -47,13 +47,7 @@ class EpubReaderActivity final : public Activity {
   unsigned long dictionaryMessageTime = 0UL;
   bool ignoreNextConfirmRelease = false;
   bool currentPageBookmarked = false;
-  // Idle-time glyph prewarm: after a page settles, scan the LIKELY next page
-  // (scan mode draws nothing) and load its missing glyphs from SD during idle,
-  // so the next turn's in-render prewarm is a cache hit instead of ~100 ms of
-  // SD reads on the page-turn critical path. One attempt per position.
-  int idlePrewarmSpine = -1;
-  int idlePrewarmPage = -1;
-  unsigned long lastRenderCompleteMs = 0;
+  unsigned long lastBackgroundBuildMs = 0;
   bool bookmarkRemoved = false;  // true when last toggle removed (controls popup text)
   std::vector<BookmarkEntry> cachedBookmarks;
   // Tracks whether this book is currently removed from Recent Books by the
@@ -95,10 +89,12 @@ class EpubReaderActivity final : public Activity {
                       int orientedMarginBottom, int orientedMarginLeft);
   void renderStatusBar() const;
   // Pages laid out per incremental-build pump: on the render path (catching up to the page
-  // being shown) and per loop() tick (background build of a large chapter). Kept small so a
-  // background build chunk never noticeably delays input or a pending render.
+  // being shown) and per loop() tick (background build of a large chapter). Background work is
+  // strictly limited to one page so a parser/SD burst cannot delay interactive input.
   static constexpr int BUILD_PAGES_PER_CHUNK = 8;
-  static constexpr int BACKGROUND_BUILD_PAGES_PER_TICK = 2;
+  static constexpr int BACKGROUND_BUILD_PAGES_PER_TICK = 1;
+  static constexpr int BACKGROUND_BUILD_PARSE_STEPS_PER_TICK = 1;
+  static constexpr unsigned long BACKGROUND_BUILD_INTERVAL_MS = 100;
 
   // MEMFIX-PORT: background-build heap floor; portable
   // Skip background build ticks below this free-heap floor. The parse path grows
@@ -122,10 +118,10 @@ class EpubReaderActivity final : public Activity {
   // true the whole time, and without this the loop would spin at full CPU speed doing
   // no build work — indefinitely, if the build context itself keeps the heap low.
   bool buildHeapPaused = false;
-  // Heap floor for optional render-adjacent work (idle prewarm). Page
-  // deserialization (TextBlock word vectors/strings) and glyph caching allocate
-  // through throwing paths that abort() on OOM; skip deferrable work below it.
-  static constexpr size_t RENDER_MIN_FREE_HEAP = 24 * 1024;
+  // Incremental indexing only runs after loop() has handled every pending reader action. It may
+  // take the render lock and perform SD I/O, so it must never run ahead of page turns, menus, or
+  // back navigation.
+  void runDeferredReaderWork();
   // How many pages to keep laid out ahead of the reader for a still-building section. A page
   // turn is ~1s on e-ink and a page builds in ~30ms, so the reader can't out-click the builder
   // -- a tiny buffer is enough. The background build stops once the watermark is this far
@@ -191,13 +187,15 @@ class EpubReaderActivity final : public Activity {
   void onExit() override;
   void loop() override;
   void render(RenderLock&& lock) override;
-  // Full CPU speed + fast loop ticks while a section build runs: at the low-power
-  // frequency a giant chapter's background rebuild stretches from ~40s to many
-  // minutes, so the reader exits before it can finalize and the next open restarts
-  // it from page 0. Reverts to normal power behavior the moment the build finishes,
-  // and while the build is heap-paused (no work is happening, so spinning at full
-  // speed would only burn battery; the paused gate still retries every loop pass).
-  bool skipLoopDelay() override { return section && section->isBuilding() && !buildHeapPaused; }
+  // Full CPU speed only when a background build tick is due. Between ticks, let the regular
+  // loop delay poll buttons and yield time to the render task instead of spinning on deferred
+  // parsing work.
+  bool skipLoopDelay() override {
+    return section && section->isBuilding() && !buildHeapPaused &&
+           (section->isPartial() ||
+            static_cast<int>(section->pageCount) < section->currentPage + BUILD_WINDOW_AHEAD) &&
+           millis() - lastBackgroundBuildMs >= BACKGROUND_BUILD_INTERVAL_MS;
+  }
   bool isReaderActivity() const override { return true; }
   bool handleForcedRefresh() override {
     {
