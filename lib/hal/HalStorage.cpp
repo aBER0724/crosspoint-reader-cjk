@@ -86,9 +86,26 @@ bool HalStorage::rename(const char* oldPath, const char* newPath) {
 
 bool HalStorage::rmdir(const char* path) { HAL_STORAGE_WRAPPED_CALL(rmdir, path); }
 
-uint64_t HalStorage::freeBytes() { HAL_STORAGE_WRAPPED_CALL(freeBytes, ); }
+uint64_t HalStorage::freeBytes() {
+  StorageLock lock;
 
-uint64_t HalStorage::totalBytes() { HAL_STORAGE_WRAPPED_CALL(totalBytes, ); }
+  if (!SDCard.ready()) {
+    return 0;
+  }
+
+  const uint64_t total = SDCard.sdTotalBytes();
+  if (total == 0) {
+    return 0;
+  }
+
+  const uint64_t used = SDCard.sdUsedBytes();
+  return used <= total ? total - used : 0;
+}
+
+uint64_t HalStorage::totalBytes() {
+  StorageLock lock;
+  return SDCard.ready() ? SDCard.sdTotalBytes() : 0;
+}
 
 bool HalStorage::openFileForRead(const char* moduleName, const char* path, HalFile& file) {
   StorageLock lock;  // ensure thread safety for the duration of this function

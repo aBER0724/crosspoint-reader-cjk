@@ -40,8 +40,9 @@ RefreshDecision chooseReaderRefresh(const RefreshContext& context) {
   RefreshDecision decision{};
   decision.nextCadenceRemaining = decrementCadence(cadenceRemaining);
   const bool quickConsecutiveTurn = context.consecutiveTurns > 1;
-  decision.runGrayscalePass = context.textAntiAliasing && context.grayscaleRequested && context.containsImages &&
-                              !context.externalFontEnabled && !context.lowMemory && !quickConsecutiveTurn;
+  decision.runGrayscalePass = !context.darkMode && context.textAntiAliasing && context.grayscaleRequested &&
+                              context.containsImages && !context.externalFontEnabled && !context.lowMemory &&
+                              !quickConsecutiveTurn;
 
   if (context.chapterBoundary) {
     decision.mode = context.darkMode ? RefreshMode::DarkRedrive : RefreshMode::Half;

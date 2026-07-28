@@ -8,17 +8,18 @@ At a high level, it is firmware that uses an activity-driven application archite
 
 ```mermaid
 graph TD
-    A[Hardware: ESP32-C3 + SD + E-ink + Buttons] --> B[open-x4-sdk HAL]
-    B --> C[src/main.cpp runtime loop]
-    C --> D[Activities layer]
-    C --> E[State and settings]
-    D --> F[Reader flows]
-    D --> G[Home/Library/Settings flows]
-    D --> H[Network/Web server flows]
-    F --> I[lib/Epub parsing + layout + hyphenation]
-    I --> J[SD cache in .crosspoint]
-    D --> K[GfxRenderer]
-    K --> L[E-ink display buffer]
+    A[Hardware: ESP32-C3 + SD + E-ink + Buttons] --> B[freeink-sdk]
+    B --> C[lib/hal wrappers]
+    C --> D[src/main.cpp runtime loop]
+    D --> E[Activities layer]
+    D --> F[State and settings]
+    E --> G[Reader flows]
+    E --> H[Home/Library/Settings flows]
+    E --> I[Network/Web server flows]
+    G --> J[lib/Epub parsing + layout + hyphenation]
+    J --> K[SD cache in .crosspoint]
+    E --> L[GfxRenderer]
+    L --> M[E-ink display buffer]
 ```
 
 ## Runtime lifecycle
@@ -179,9 +180,10 @@ When editing related source assets, regenerate via normal build steps/scripts.
 - `src/`: app orchestration, settings/state, and activity implementations
 - `src/network/`: web server and OTA/update networking
 - `src/components/`: theming and shared UI components
+- `lib/hal/`: hardware abstraction wrappers around freeink-sdk
 - `lib/Epub/`: EPUB parser, layout, CSS handling, and hyphenation
 - `lib/`: supporting libraries (fonts, text, filesystem helpers, etc.)
-- `open-x4-sdk/`: hardware SDK submodule (display, input, storage, battery)
+- `freeink-sdk/`: hardware SDK submodule (display, input, storage, battery). Docs: https://freeink.org/docs
 - `docs/`: user and technical documentation
 
 ## Embedded constraints that shape design

@@ -41,6 +41,7 @@ class OtaUpdateActivity : public Activity {
   const OtaProgressGlyph* findOtaProgressGlyph(char ch) const;
   void drawOtaProgressText(const char* text, int y);
   void renderOtaProgressOnly(unsigned int percentage, size_t processedSize, size_t totalSize);
+  void runUpdateInstall();
 
  public:
   explicit OtaUpdateActivity(GfxRenderer& renderer, MappedInputManager& mappedInput)

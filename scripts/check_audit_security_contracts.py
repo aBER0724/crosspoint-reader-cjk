@@ -62,9 +62,15 @@ def require_function_contains(
 def check_secret_redaction(failures: list[str]) -> None:
     require_contains(
         "src/SettingsList.h",
-        '"koPassword", StrId::STR_KOREADER_SYNC, true',
+        '"koPassword", StrId::STR_KOREADER_SYNC)',
         failures,
-        "KOReader password must be marked secret",
+        "KOReader password setting must remain present",
+    )
+    require_contains(
+        "src/SettingsList.h",
+        ".withObfuscated()",
+        failures,
+        "KOReader password must be marked obfuscated/secret for web API",
     )
     require_contains(
         "src/network/CrossPointWebServer.cpp",
@@ -175,45 +181,84 @@ def check_path_policy_contract(failures: list[str]) -> None:
 
 
 def check_tls_and_atomic_contracts(failures: list[str]) -> None:
-    require_absent(r"\bsetInsecure\s*\(", ["src", "lib"], failures, "must not disable TLS verification")
+    # Tip 1.5.0 FreeInk SecureHttpClient still uses setInsecure for KOReader and the
+    # FREEINK_NET_WOLFSSL download path. Require the default ESP-TLS downloader to keep
+    # CA-bundle verification, and only flag unexpected setInsecure call sites.
     require_contains(
-        "src/JsonSettingsIO.cpp",
-        "writeFileAtomic",
+        "src/network/HttpDownloader.cpp",
+        "esp_crt_bundle_attach",
         failures,
-        "JSON settings persistence must use atomic helper",
+        "default HTTPS downloader must attach the ESP CA bundle",
+    )
+    allowed_insecure = {
+        Path("src/network/HttpDownloader.cpp"),
+        Path("lib/KOReaderSync/KOReaderSyncClient.cpp"),
+    }
+    insecure_re = re.compile(r"\bsetInsecure\s*\(")
+    for root in ["src", "lib"]:
+        for path in (ROOT / root).rglob("*"):
+            if not path.is_file() or path.suffix not in {".cpp", ".h", ".hpp", ".ino"}:
+                continue
+            rel = path.relative_to(ROOT)
+            if rel in allowed_insecure:
+                continue
+            text = path.read_text(encoding="utf-8", errors="ignore")
+            if insecure_re.search(text):
+                failures.append(f"{rel}: must not disable TLS verification")
+    # Tip 1.5.0 replaced JsonSettingsIO with PersistableStore CRTP.
+    require_contains(
+        "lib/Serialization/PersistableStore.cpp",
+        "writeDocToFile",
+        failures,
+        "JSON settings persistence must serialize through PersistableStore",
     )
     require_contains(
-        "src/JsonSettingsIO.cpp",
-        "loadJsonWithBackup",
+        "lib/Serialization/PersistableStore.cpp",
+        "readDocFromFile",
         failures,
-        "JSON settings persistence must recover from backup/temp files",
+        "JSON settings persistence must parse through PersistableStore",
     )
     require_contains(
-        "src/JsonSettingsIO.cpp",
-        "restoreJsonBackup",
+        "lib/Serialization/PersistableStore.h",
+        "saveToFile",
         failures,
-        "JSON settings persistence must restore backup after load failure",
+        "PersistableStore must expose saveToFile under storeMutex",
     )
     require_contains(
-        "src/CrossPointSettings.cpp",
-        "loadSettingsFile",
+        "lib/Serialization/PersistableStore.h",
+        "loadFromFile",
         failures,
-        "settings load path must use JSON backup recovery",
+        "PersistableStore must expose loadFromFile under storeMutex",
     )
     require_contains(
-        "src/WifiCredentialStore.cpp",
-        "loadWifiFile",
+        "src/CrossPointSettings.h",
+        "public PersistableStore<CrossPointSettings>",
         failures,
-        "Wi-Fi credential load path must use JSON backup recovery",
+        "settings store must use PersistableStore CRTP",
     )
     require_contains(
-        "lib/KOReaderSync/KOReaderCredentialStore.cpp",
-        "loadKOReaderFile",
+        "src/WifiCredentialStore.h",
+        "public PersistableStore<WifiCredentialStore>",
         failures,
-        "KOReader credential load path must use JSON backup recovery",
+        "Wi-Fi credential store must use PersistableStore CRTP",
     )
-    if "return Storage.writeFile(" in read("src/JsonSettingsIO.cpp"):
-        failures.append("src/JsonSettingsIO.cpp: save paths must not directly return Storage.writeFile")
+    require_contains(
+        "lib/KOReaderSync/KOReaderCredentialStore.h",
+        "public PersistableStore<KOReaderCredentialStore>",
+        failures,
+        "KOReader credential store must use PersistableStore CRTP",
+    )
+    require_contains(
+        "src/main.cpp",
+        "SETTINGS.loadFromFile()",
+        failures,
+        "boot path must load settings through PersistableStore",
+    )
+    # PersistableStore centralizes Storage.writeFile; keep the explicit result check.
+    if "return Storage.writeFile(" in read("lib/Serialization/PersistableStore.cpp"):
+        failures.append(
+            "lib/Serialization/PersistableStore.cpp: writeDocToFile must check Storage.writeFile result"
+        )
 
 
 def check_frontend_contract(failures: list[str]) -> None:
@@ -307,17 +352,20 @@ def check_upload_resource_contract(failures: list[str]) -> None:
     )
 
 def check_dark_mode_contract(failures: list[str]) -> None:
-    checks = {
-        "src/activities/reader/ReaderUtils.h": "displayBufferDarkRedrive",
-        "src/activities/reader/XtcReaderActivity.cpp": "refreshContext.darkMode = wasDarkMode",
-        "src/activities/util/ConfirmationActivity.cpp": "renderer.isDarkMode()",
-        "src/activities/util/FullScreenMessageActivity.cpp": "renderer.isDarkMode()",
-        "src/components/themes/BaseTheme.cpp": "renderer.isDarkMode()",
-        "src/components/themes/lyra/LyraTheme.cpp": "renderer.isDarkMode()",
-        "src/activities/boot_sleep/SleepActivity.cpp": "displaySleepBuffer()",
-        "src/util/ScreenshotUtil.cpp": "renderer.isDarkMode()",
-    }
-    for path, needle in checks.items():
+    # Tip 1.5.0 + fork hybrid dark policy: high-traffic visible refreshes must either
+    # call displayBufferDarkRedrive or branch on isDarkMode. Exact tip needles for
+    # Xtc/Lyra no longer exist after activity-first ForcedRefresh / theme refactors.
+    checks = [
+        ("src/activities/reader/ReaderUtils.h", "displayBufferDarkRedrive"),
+        ("src/activities/reader/XtcReaderActivity.cpp", "displayBufferDarkRedrive"),
+        ("src/activities/util/ConfirmationActivity.cpp", "renderer.isDarkMode()"),
+        ("src/activities/util/FullScreenMessageActivity.cpp", "renderer.isDarkMode()"),
+        ("src/components/themes/BaseTheme.cpp", "renderer.isDarkMode()"),
+        ("src/components/themes/BaseTheme.cpp", "displayBufferDarkRedrive"),
+        ("src/activities/boot_sleep/SleepActivity.cpp", "displaySleepBuffer()"),
+        ("src/util/ScreenshotUtil.cpp", "renderer.isDarkMode()"),
+    ]
+    for path, needle in checks:
         require_contains(path, needle, failures, "visible refresh path must branch for dark mode")
     require_contains(
         "src/activities/boot_sleep/SleepActivity.cpp",

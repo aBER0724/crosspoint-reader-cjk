@@ -52,6 +52,22 @@ class CrossPointWebServer {
     UploadState() { buffer.resize(UPLOAD_BUFFER_SIZE); }
   } upload;
 
+  // Used by font upload handler (.cpfont multipart upload)
+  struct FontUploadState {
+    FsFile file;
+    std::string familyName;
+    std::string filePath;
+    bool valid = false;
+    bool magicChecked = false;
+    size_t bytesWritten = 0;
+
+    static constexpr size_t BUFFER_SIZE = 4096;
+    std::vector<uint8_t> buffer;
+    size_t bufferPos = 0;
+
+    FontUploadState() { buffer.resize(BUFFER_SIZE); }
+  } fontUpload;
+
   CrossPointWebServer();
   ~CrossPointWebServer();
 
@@ -77,6 +93,7 @@ class CrossPointWebServer {
   std::unique_ptr<WebServer> server = nullptr;
   std::unique_ptr<WebSocketsServer> wsServer = nullptr;
   bool running = false;
+  bool watchdogTaskRegistered = false;
   bool apMode = false;  // true when running in AP mode, false for STA mode
   uint16_t port = 80;
   uint16_t wsPort = 81;  // WebSocket port
@@ -122,6 +139,13 @@ class CrossPointWebServer {
   void handleWifiSave() const;
   void handleWifiList() const;
   void handleWifiDelete() const;
+
+  // Font management handlers
+  void handleFontsPage() const;
+  void handleFontList() const;
+  void handleFontUploadData();
+  void handleFontUpload();
+  void handleFontDelete();
 
   // OPDS server handlers
   void handleGetOpdsServers() const;

@@ -13,11 +13,12 @@
 #include "util/ExternalFontLabel.h"
 
 namespace {
-constexpr int kBuiltinReaderFontCount = 3;
+// OpenDyslexic is no longer a built-in FONT_FAMILY value; legacy saves migrate to
+// sdFontFamilyName="OpenDyslexic" and appear via FontManager external/SD fonts.
+constexpr int kBuiltinReaderFontCount = 2;
 constexpr CrossPointSettings::FONT_FAMILY kBuiltinReaderFonts[kBuiltinReaderFontCount] = {
-    CrossPointSettings::NOTOSERIF, CrossPointSettings::NOTOSANS, CrossPointSettings::OPENDYSLEXIC};
-constexpr StrId kBuiltinReaderFontLabels[kBuiltinReaderFontCount] = {StrId::STR_NOTO_SERIF, StrId::STR_NOTO_SANS,
-                                                                     StrId::STR_OPEN_DYSLEXIC};
+    CrossPointSettings::NOTOSERIF, CrossPointSettings::NOTOSANS};
+constexpr StrId kBuiltinReaderFontLabels[kBuiltinReaderFontCount] = {StrId::STR_NOTO_SERIF, StrId::STR_NOTO_SANS};
 }  // namespace
 
 void FontSelectActivity::onEnter() {

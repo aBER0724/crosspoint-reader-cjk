@@ -1,42 +1,143 @@
 #include "EpubReaderMenuActivity.h"
 
-#include <FontManager.h>
 #include <GfxRenderer.h>
 #include <I18n.h>
 
-#include <cstdio>
-
-#include "CrossPointSettings.h"
 #include "MappedInputManager.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
-#include "util/ExternalFontLabel.h"
 
-namespace {
-constexpr int kBuiltinReaderFontCount = 3;
-constexpr CrossPointSettings::FONT_FAMILY kBuiltinReaderFonts[kBuiltinReaderFontCount] = {
-    CrossPointSettings::NOTOSERIF, CrossPointSettings::NOTOSANS, CrossPointSettings::OPENDYSLEXIC};
-constexpr StrId kBuiltinReaderFontLabels[kBuiltinReaderFontCount] = {StrId::STR_NOTO_SERIF, StrId::STR_NOTO_SANS,
-                                                                     StrId::STR_OPEN_DYSLEXIC};
-}  // namespace
+EpubReaderMenuActivity::EpubReaderMenuActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
+                                               const std::string& title, const int currentPage, const int totalPages,
+                                               const int bookProgressPercent, const uint8_t currentOrientation,
+                                               const bool hasFootnotes, const bool hasBookmarks)
+    : Activity("EpubReaderMenu", renderer, mappedInput),
+      menuItems(buildMenuItems(hasFootnotes, hasBookmarks)),
+      title(title),
+      pendingOrientation(currentOrientation),
+      currentPage(currentPage),
+      totalPages(totalPages),
+      bookProgressPercent(bookProgressPercent) {}
+
+std::vector<EpubReaderMenuActivity::MenuItem> EpubReaderMenuActivity::buildMenuItems(bool hasFootnotes,
+                                                                                     bool hasBookmarks) {
+  std::vector<MenuItem> items;
+  items.reserve(13);
+  items.push_back({MenuAction::SELECT_CHAPTER, StrId::STR_SELECT_CHAPTER});
+  if (hasFootnotes) {
+    items.push_back({MenuAction::FOOTNOTES, StrId::STR_FOOTNOTES});
+  }
+  if (hasBookmarks) {
+    items.push_back({MenuAction::BOOKMARKS, StrId::STR_BOOKMARKS});
+  }
+  items.push_back({MenuAction::TOGGLE_BOOKMARK, StrId::STR_TOGGLE_BOOKMARK});
+  items.push_back({MenuAction::DICTIONARY, StrId::STR_LOOKUP});
+  items.push_back({MenuAction::ROTATE_SCREEN, StrId::STR_ORIENTATION});
+  items.push_back({MenuAction::AUTO_PAGE_TURN, StrId::STR_AUTO_TURN_PAGES_PER_MIN});
+  items.push_back({MenuAction::GO_TO_PERCENT, StrId::STR_GO_TO_PERCENT});
+  items.push_back({MenuAction::SCREENSHOT, StrId::STR_SCREENSHOT_BUTTON});
+  items.push_back({MenuAction::DISPLAY_QR, StrId::STR_DISPLAY_QR});
+  items.push_back({MenuAction::GO_HOME, StrId::STR_GO_HOME_BUTTON});
+  items.push_back({MenuAction::SYNC, StrId::STR_SYNC_PROGRESS});
+  items.push_back({MenuAction::DELETE_CACHE, StrId::STR_DELETE_CACHE});
+  return items;
+}
 
 void EpubReaderMenuActivity::onEnter() {
   Activity::onEnter();
-  skipNextButtonCheck = true;
   requestUpdate();
 }
 
 void EpubReaderMenuActivity::onExit() { Activity::onExit(); }
 
+void EpubReaderMenuActivity::closeCancelled() {
+  ActivityResult result;
+  result.isCancelled = true;
+  result.data = MenuResult{-1, pendingOrientation, selectedPageTurnOption};
+  setResult(std::move(result));
+  finish();
+}
+
+bool EpubReaderMenuActivity::handleHomeGesture() {
+  closeCancelled();
+  return true;
+}
+
 void EpubReaderMenuActivity::loop() {
-  if (skipNextButtonCheck) {
-    const bool confirmCleared = !mappedInput.isPressed(MappedInputManager::Button::Confirm) &&
-                                !mappedInput.wasReleased(MappedInputManager::Button::Confirm);
-    const bool backCleared = !mappedInput.isPressed(MappedInputManager::Button::Back) &&
-                             !mappedInput.wasReleased(MappedInputManager::Button::Back);
-    if (confirmCleared && backCleared) {
-      skipNextButtonCheck = false;
+  if (optionPopup.handleInput(mappedInput, [this] { requestUpdate(); })) {
+    // The popup acts on button press; if that input closed it, the trailing
+    // release must be swallowed below (Back would close the menu, Confirm
+    // would re-activate the selected item).
+    popupClosing = !optionPopup.isActive();
+    return;
+  }
+  if (popupClosing) {
+    if (mappedInput.isPressed(MappedInputManager::Button::Back) ||
+        mappedInput.isPressed(MappedInputManager::Button::Confirm)) {
+      return;  // closing press still held
     }
+    popupClosing = false;
+    if (mappedInput.wasReleased(MappedInputManager::Button::Back) ||
+        mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+      return;  // swallow the release that closed the popup
+    }
+  }
+
+  if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
+    closeCancelled();
+    return;
+  }
+
+  auto activateSelected = [this] {
+    const auto selectedAction = menuItems[selectedIndex].action;
+    if (selectedAction == MenuAction::ROTATE_SCREEN) {
+      optionPopup.show(StrId::STR_ORIENTATION, orientationLabels.data(), static_cast<int>(orientationLabels.size()),
+                       pendingOrientation, [this](int idx) {
+                         pendingOrientation = idx;
+                         requestUpdate();
+                       });
+      requestUpdate();
+      return;
+    }
+
+    if (selectedAction == MenuAction::AUTO_PAGE_TURN) {
+      optionPopup.show(I18N.get(StrId::STR_AUTO_TURN_PAGES_PER_MIN), pageTurnLabels.data(),
+                       static_cast<int>(pageTurnLabels.size()), selectedPageTurnOption, [this](int idx) {
+                         selectedPageTurnOption = idx;
+                         requestUpdate();
+                       });
+      requestUpdate();
+      return;
+    }
+
+    setResult(MenuResult{static_cast<int>(selectedAction), pendingOrientation, selectedPageTurnOption});
+    finish();
+  };
+
+  auto metrics = UITheme::getInstance().getMetrics();
+  Rect screen = UITheme::getInstance().getScreenSafeArea(renderer, true, false);
+  const int contentTop =
+      screen.y + metrics.topPadding + metrics.headerHeight + metrics.tabBarHeight + metrics.verticalSpacing;
+  const int contentHeight = screen.height - contentTop - metrics.verticalSpacing;
+  switch (handleListTouch(selectedIndex, static_cast<int>(menuItems.size()), contentTop, contentHeight, false)) {
+    case ListTouchResult::Activated:
+      activateSelected();
+      return;
+    case ListTouchResult::Consumed:
+      return;
+    case ListTouchResult::None:
+      break;
+  }
+
+  const auto swipe = mappedInput.wasSwipe();
+  if (swipe == MappedInputManager::SwipeDir::Up) {
+    selectedIndex = ButtonNavigator::nextIndex(selectedIndex, static_cast<int>(menuItems.size()));
+    requestUpdate();
+    return;
+  }
+  if (swipe == MappedInputManager::SwipeDir::Down) {
+    selectedIndex = ButtonNavigator::previousIndex(selectedIndex, static_cast<int>(menuItems.size()));
+    requestUpdate();
     return;
   }
 
@@ -51,69 +152,22 @@ void EpubReaderMenuActivity::loop() {
     requestUpdate();
   });
 
-  // Use local variables for items we need to check after potential deletion
   if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
-    const auto selectedAction = menuItems[selectedIndex].action;
-    if (selectedAction == MenuAction::ROTATE_SCREEN) {
-      // Cycle orientation preview locally; actual rotation happens on menu exit.
-      pendingOrientation = (pendingOrientation + 1) % orientationLabels.size();
-      requestUpdate();
-      return;
-    }
-
-    if (selectedAction == MenuAction::STYLE_FIRST_LINE_INDENT || selectedAction == MenuAction::STYLE_INVERT_IMAGES) {
-      // Toggle-style actions keep the reader menu open; refresh the row value in-place.
-      if (selectedAction == MenuAction::STYLE_FIRST_LINE_INDENT) {
-        SETTINGS.firstLineIndent = !SETTINGS.firstLineIndent;
-        SETTINGS.saveToFile();
-      } else if (selectedAction == MenuAction::STYLE_INVERT_IMAGES) {
-        SETTINGS.invertImages = !SETTINGS.invertImages;
-        SETTINGS.saveToFile();
-        renderer.setInvertImagesInDarkMode(SETTINGS.invertImages);
-      }
-      requestUpdate();
-      return;
-    }
-
-    // Set result with the chosen action and return to caller
-    setResult(ActivityResult(MenuResult{static_cast<int>(selectedAction), pendingOrientation}));
-    finish();
-    return;
-  } else if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
-    // Return the pending orientation to the parent so it can apply on exit.
-    ActivityResult result(MenuResult{-1, pendingOrientation});
-    result.isCancelled = true;
-    setResult(std::move(result));
-    finish();
+    activateSelected();
     return;
   }
 }
 
 void EpubReaderMenuActivity::render(RenderLock&&) {
-  renderer.clearScreen();
-  const auto pageWidth = renderer.getScreenWidth();
-  const auto orientation = renderer.getOrientation();
-  // Landscape orientation: button hints are drawn along a vertical edge, so we
-  // reserve a horizontal gutter to prevent overlap with menu content.
-  const bool isLandscapeCw = orientation == GfxRenderer::Orientation::LandscapeClockwise;
-  const bool isLandscapeCcw = orientation == GfxRenderer::Orientation::LandscapeCounterClockwise;
-  // Inverted portrait: button hints appear near the logical top, so we reserve
-  // vertical space to keep the header and list clear.
-  const bool isPortraitInverted = orientation == GfxRenderer::Orientation::PortraitInverted;
-  const int hintGutterWidth = (isLandscapeCw || isLandscapeCcw) ? 30 : 0;
-  // Landscape CW places hints on the left edge; CCW keeps them on the right.
-  const int contentX = isLandscapeCw ? hintGutterWidth : 0;
-  const int contentWidth = pageWidth - hintGutterWidth;
-  const int hintGutterHeight = isPortraitInverted ? 50 : 0;
-  const int contentY = hintGutterHeight;
+  if (optionPopup.processRender(renderer, mappedInput)) return;
 
-  // Title
-  const std::string truncTitle =
-      renderer.truncatedText(UI_12_FONT_ID, title.c_str(), contentWidth - 40, EpdFontFamily::BOLD);
-  // Manual centering so we can respect the content gutter.
-  const int titleX =
-      contentX + (contentWidth - renderer.getTextWidth(UI_12_FONT_ID, truncTitle.c_str(), EpdFontFamily::BOLD)) / 2;
-  renderer.drawText(UI_12_FONT_ID, titleX, 15 + contentY, truncTitle.c_str(), true, EpdFontFamily::BOLD);
+  renderer.clearScreen();
+
+  auto metrics = UITheme::getInstance().getMetrics();
+  Rect screen = UITheme::getInstance().getScreenSafeArea(renderer, true, false);
+
+  GUI.drawHeader(renderer, Rect{screen.x, screen.y + metrics.topPadding, screen.width, metrics.headerHeight},
+                 title.c_str());
 
   // Progress summary
   std::string progressLine;
@@ -122,72 +176,39 @@ void EpubReaderMenuActivity::render(RenderLock&&) {
                    std::to_string(totalPages) + std::string(tr(STR_PAGES_SEPARATOR));
   }
   progressLine += std::string(tr(STR_BOOK_PREFIX)) + std::to_string(bookProgressPercent) + "%";
-  renderer.drawCenteredText(UI_10_FONT_ID, 45 + contentY, progressLine.c_str());
+  GUI.drawSubHeader(
+      renderer,
+      Rect{screen.x, screen.y + metrics.topPadding + metrics.headerHeight, screen.width, metrics.tabBarHeight},
+      progressLine.c_str());
 
-  // Menu Items
-  const int startY = 75 + contentY;
-  constexpr int lineHeight = 30;
+  const int contentTop =
+      screen.y + metrics.topPadding + metrics.headerHeight + metrics.tabBarHeight + metrics.verticalSpacing;
+  const int contentHeight = screen.height - contentTop - metrics.verticalSpacing;
 
-  for (size_t i = 0; i < menuItems.size(); ++i) {
-    const int displayY = startY + (i * lineHeight);
-    const bool isSelected = (static_cast<int>(i) == selectedIndex);
-
-    if (isSelected) {
-      // Highlight only the content area so we don't paint over hint gutters.
-      renderer.fillRect(contentX, displayY, contentWidth - 1, lineHeight, true);
-    }
-
-    renderer.drawText(UI_10_FONT_ID, contentX + 20, displayY, I18N.get(menuItems[i].labelId), !isSelected);
-
-    const std::string value = getMenuItemValue(menuItems[i].action);
-    if (!value.empty()) {
-      const auto width = renderer.getTextWidth(UI_10_FONT_ID, value.c_str());
-      renderer.drawText(UI_10_FONT_ID, contentX + contentWidth - 20 - width, displayY, value.c_str(), !isSelected);
-    }
-  }
+  GUI.drawList(
+      renderer, Rect{screen.x, contentTop, screen.width, contentHeight}, menuItems.size(), selectedIndex,
+      [this](int index) { return I18N.get(menuItems[index].labelId); }, nullptr, nullptr,
+      [this](int index) {
+        const auto value = menuItems[index].action;
+        if (value == MenuAction::ROTATE_SCREEN) {
+          // Render current orientation value on the right edge of the content area.
+          return I18N.get(orientationLabels[pendingOrientation]);
+        } else if (value == MenuAction::AUTO_PAGE_TURN) {
+          // Render current page turn value on the right edge of the content area.
+          return pageTurnLabels[selectedPageTurnOption];
+        } else {
+          return "";
+        }
+      },
+      true);
 
   // Footer / Hints
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 
-  renderer.displayBuffer();
-}
-
-std::string EpubReaderMenuActivity::getCurrentFontLabel() const {
-  const int currentExternal = FontMgr.getSelectedIndex();
-  if (currentExternal >= 0) {
-    const FontInfo* info = FontMgr.getFontInfo(currentExternal);
-    return info ? buildExternalFontLabel(info->filename, info->name, info->size,
-                                         ExternalFont::canFitGlyph(info->width, info->height))
-                : std::string(tr(STR_EXTERNAL_FONT));
-  }
-
-  for (int i = 0; i < kBuiltinReaderFontCount; ++i) {
-    if (SETTINGS.fontFamily == static_cast<uint8_t>(kBuiltinReaderFonts[i])) {
-      return std::string(I18N.get(kBuiltinReaderFontLabels[i]));
-    }
-  }
-  return std::string(I18N.get(kBuiltinReaderFontLabels[0]));
-}
-
-std::string EpubReaderMenuActivity::getMenuItemValue(const MenuAction action) const {
-  switch (action) {
-    case MenuAction::ROTATE_SCREEN:
-      return std::string(I18N.get(orientationLabels[pendingOrientation]));
-    case MenuAction::STYLE_FIRST_LINE_INDENT:
-      return SETTINGS.firstLineIndent ? std::string(tr(STR_STATE_ON)) : std::string(tr(STR_STATE_OFF));
-    case MenuAction::STYLE_INVERT_IMAGES:
-      return SETTINGS.invertImages ? std::string(tr(STR_STATE_ON)) : std::string(tr(STR_STATE_OFF));
-    case MenuAction::STYLE_FONT_FAMILY:
-      return getCurrentFontLabel();
-    case MenuAction::STYLE_LINE_SPACING: {
-      char spacingBuf[16];
-      snprintf(spacingBuf, sizeof(spacingBuf), "%.2fx", static_cast<float>(SETTINGS.lineSpacing) / 100.0f);
-      return spacingBuf;
-    }
-    case MenuAction::STYLE_STATUS_BAR:
-      return "";
-    default:
-      return "";
+  if (renderer.isDarkMode()) {
+    renderer.displayBufferDarkRedrive();
+  } else {
+    renderer.displayBuffer();
   }
 }
