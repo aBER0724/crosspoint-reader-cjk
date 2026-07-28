@@ -104,17 +104,42 @@ if (parsedSize != fileSize) {
 
 ## `section.bin`
 
-### Version 8
+### Version 30
 
-ImHex Pattern:
+Each file in `sections/*.bin` stores one laid-out spine section. The header is
+also the cache-busting key: if any layout-affecting setting differs from the
+current reader settings, the section is discarded and rebuilt.
+
+Version 30 is binary-identical to version 29. The version was bumped because
+Arabic contextual shaping changed text measurement (`getTextAdvanceX` now
+measures the shaped visual text), so word positions cached by v29 no longer
+match what `drawText` renders.
+
+Version 28 introduced serialized word style bits for underline, strikethrough,
+superscript, and subscript. The format also includes:
+
+- cache-busting fields for paragraph alignment, hyphenation, embedded CSS,
+  image rendering mode, and Focus Reading
+- page offset LUT
+- anchor-to-page map for fragment and footnote navigation
+- paragraph and list-item LUTs used by KOReader sync page refinement
+- optional per-word Focus Reading split metadata
+- per-page footnote entries
+- serialized word style bits for underline, strikethrough, superscript, and
+  subscript
+- flat TextBlock word storage (v29): per-word arrays plus one shared
+  NUL-terminated text blob, replacing v28's length-prefixed word strings. The
+  on-disk order mirrors the in-RAM arena so the firmware reads a whole block
+  payload with a single allocation and a single SD read
+
+ImHex pattern:
 
 ```c++
 import std.mem;
 import std.string;
 import std.core;
 
-// === Configuration ===
-#define EXPECTED_VERSION 8
+#define EXPECTED_VERSION 30
 #define MAX_STRING_LENGTH 65535
 
 // === String Structure ===
@@ -149,6 +174,51 @@ enum BlockStyle : u8 {
     LEFT_ALIGN = 1,
     CENTER_ALIGN = 2,
     RIGHT_ALIGN = 3,
+    NONE = 4
+};
+
+struct BlockStyle {
+    TextAlign alignment;
+    bool textAlignDefined;
+    s16 marginTop;
+    s16 marginBottom;
+    s16 marginLeft;
+    s16 marginRight;
+    s16 paddingTop;
+    s16 paddingBottom;
+    s16 paddingLeft;
+    s16 paddingRight;
+    s16 textIndent;
+    bool textIndentDefined;
+    bool isRtl;
+    bool directionDefined;
+};
+
+struct TextBlock {
+    u16 wordCount;
+    u8 hasFocus;
+    u16 textBytes [[comment("Total size of text[], including one NUL per word")]];
+
+    if (wordCount > 0) {
+        u16 textOff[wordCount] [[comment("Byte offset of word i's text within text[]")]];
+        s16 wordXPos[wordCount];
+        if (hasFocus != 0) {
+            u16 wordFocusSuffixX[wordCount] [[comment("Suffix x offset from word start")]];
+        }
+        WordStyle wordStyle[wordCount];
+        if (hasFocus != 0) {
+            u8 wordFocusBoundary[wordCount] [[comment("UTF-8 byte boundary between bold prefix and suffix")]];
+        }
+        char text[textBytes] [[comment("All words back to back, each NUL-terminated")]];
+    }
+
+    BlockStyle blockStyle;
+};
+
+struct ImageBlock {
+    String imagePath;
+    s16 width;
+    s16 height;
 };
 
 struct PageLine {

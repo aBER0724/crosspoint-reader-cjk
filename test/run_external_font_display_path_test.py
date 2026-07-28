@@ -348,11 +348,12 @@ CASES = [
         ],
     },
     {
-        "name": "EInkDisplay window refresh syncs dual-buffer previous frame",
-        "path": ROOT / "open-x4-sdk" / "libs" / "display" / "EInkDisplay" / "src" / "EInkDisplay.cpp",
+        "name": "FreeInkDisplay window refresh keeps dual-buffer previous frame",
+        "path": ROOT / "freeink-sdk" / "libs" / "display" / "FreeInkDisplay" / "src" / "driver" / "Ssd1677Driver.cpp",
         "required": [
-            'memcpy(&frameBufferActive[dstOffset], &windowBuffer[row * windowWidthBytes], windowWidthBytes);',
-            'writeRamBuffer(CMD_WRITE_RAM_RED, windowBuffer.data(), windowBufferSize);',
+            'memcpy(&windowBuffer[dstOffset], &fb[srcOffset], windowWidthBytes);',
+            'writeRam(bus, CMD_WRITE_RAM_RED, previousWindow.data(), windowBufferSize);',
+            'writeRam(bus, CMD_WRITE_RAM_RED, windowBuffer.data(), windowBufferSize);',
         ],
         "forbidden": [],
     },
@@ -360,10 +361,12 @@ CASES = [
         "name": "ReaderUtils still owns dark-mode reader redrive",
         "path": ROOT / "src" / "activities" / "reader" / "ReaderUtils.h",
         "required": [
-            'case ReaderRuntime::RefreshMode::DarkRedrive:',
+            'if (renderer.isDarkMode() || decision.mode == ReaderRuntime::RefreshMode::DarkRedrive) {',
             'renderer.displayBufferDarkRedrive();',
         ],
-        "forbidden": [],
+        "forbidden": [
+            'case ReaderRuntime::RefreshMode::DarkRedrive:',
+        ],
     },
     {
         "name": "CrossPointWebServer options use shared external font label helper",

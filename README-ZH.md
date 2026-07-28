@@ -172,7 +172,7 @@ pio run
 ## 📜 致谢
 
 - [CrossPoint Reader](https://github.com/daveallie/crosspoint-reader) - 原始项目
-- [open-x4-sdk](https://github.com/daveallie/open-x4-sdk) - Xteink X4 开发 SDK
+- [freeink-sdk](https://github.com/aBER0724/freeink-sdk) - FreeInk device SDK
 
 ---
 

@@ -8,11 +8,20 @@
 #include "MappedInputManager.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "util/BookCacheUtils.h"
 
 void ClearCacheActivity::onEnter() {
   Activity::onEnter();
 
   state = WARNING;
+  const char* options[] = {tr(STR_CANCEL), tr(STR_CLEAR_BUTTON)};
+  confirmPopup.show(tr(STR_CLEAR_READING_CACHE), options, 2, 0, [this](int idx) {
+    if (idx == 1) {
+      beginClear();
+    } else {
+      goBack();
+    }
+  });
   requestUpdate();
 }
 
@@ -25,6 +34,14 @@ void ClearCacheActivity::render(RenderLock&&) {
 
   renderer.clearScreen();
 
+  const auto refreshDisplay = [this] {
+    if (renderer.isDarkMode()) {
+      renderer.displayBufferDarkRedrive();
+    } else {
+      renderer.displayBuffer();
+    }
+  };
+
   GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, tr(STR_CLEAR_READING_CACHE));
 
   if (state == WARNING) {
@@ -34,15 +51,17 @@ void ClearCacheActivity::render(RenderLock&&) {
     renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2 + 10, tr(STR_CLEAR_CACHE_WARNING_3), true);
     renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2 + 30, tr(STR_CLEAR_CACHE_WARNING_4), true);
 
+    if (confirmPopup.processRender(renderer, mappedInput)) return;
+
     const auto labels = mappedInput.mapLabels(tr(STR_CANCEL), tr(STR_CLEAR_BUTTON), "", "");
     GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
-    renderer.displayBuffer();
+    refreshDisplay();
     return;
   }
 
   if (state == CLEARING) {
     renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2, tr(STR_CLEARING_CACHE));
-    renderer.displayBuffer();
+    refreshDisplay();
     return;
   }
 
@@ -56,7 +75,7 @@ void ClearCacheActivity::render(RenderLock&&) {
 
     const auto labels = mappedInput.mapLabels(tr(STR_BACK), "", "", "");
     GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
-    renderer.displayBuffer();
+    refreshDisplay();
     return;
   }
 
@@ -67,9 +86,19 @@ void ClearCacheActivity::render(RenderLock&&) {
 
     const auto labels = mappedInput.mapLabels(tr(STR_BACK), "", "", "");
     GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
-    renderer.displayBuffer();
+    refreshDisplay();
     return;
   }
+}
+
+void ClearCacheActivity::beginClear() {
+  LOG_DBG("CLEAR_CACHE", "User confirmed, starting cache clear");
+  {
+    RenderLock lock(*this);
+    state = CLEARING;
+  }
+  requestUpdateAndWait();
+  clearCache();
 }
 
 void ClearCacheActivity::clearCache() {
@@ -94,8 +123,8 @@ void ClearCacheActivity::clearCache() {
     file.getName(name, sizeof(name));
     String itemName(name);
 
-    // Only delete directories starting with epub_ or xtc_
-    if (file.isDirectory() && (itemName.startsWith("epub_") || itemName.startsWith("xtc_"))) {
+    // Only delete directories matching known book cache names.
+    if (file.isDirectory() && isBookCacheDirectoryName(itemName.c_str())) {
       String fullPath = "/.crosspoint/" + itemName;
       LOG_DBG("CLEAR_CACHE", "Removing cache: %s", fullPath.c_str());
 
@@ -121,15 +150,10 @@ void ClearCacheActivity::clearCache() {
 
 void ClearCacheActivity::loop() {
   if (state == WARNING) {
-    if (mappedInput.wasPressed(MappedInputManager::Button::Confirm)) {
-      LOG_DBG("CLEAR_CACHE", "User confirmed, starting cache clear");
-      {
-        RenderLock lock;
-        state = CLEARING;
-      }
-      requestUpdateAndWait();
+    if (confirmPopup.handleInput(mappedInput, [this] { requestUpdate(); })) return;
 
-      clearCache();
+    if (mappedInput.wasPressed(MappedInputManager::Button::Confirm)) {
+      beginClear();
     }
 
     if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
@@ -140,7 +164,9 @@ void ClearCacheActivity::loop() {
   }
 
   if (state == SUCCESS || state == FAILED) {
-    if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
+    int x = 0;
+    int y = 0;
+    if (mappedInput.wasPressed(MappedInputManager::Button::Back) || mappedInput.wasScreenTapped(x, y)) {
       goBack();
     }
     return;

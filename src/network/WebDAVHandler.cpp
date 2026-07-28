@@ -4,9 +4,9 @@
 #include <FsHelpers.h>
 #include <HalStorage.h>
 #include <Logging.h>
-#include <esp_task_wdt.h>
 
-#include <utility>
+#include "util/BookCacheUtils.h"
+#include "util/TaskWatchdog.h"
 
 #include "StoragePathPolicy.h"
 #include "WebAdminAuth.h"
@@ -141,6 +141,7 @@ void WebDAVHandler::raw(WebServer& server, const String& uri, HTTPRaw& raw) {
 
   } else if (raw.status == RAW_WRITE) {
     if (_putFile && _putOk) {
+      resetTaskWatchdogIfSubscribed();
       if (transferTimedOut(_putStartTime)) {
         _putOk = false;
         _putStatusCode = 408;
@@ -165,7 +166,6 @@ void WebDAVHandler::raw(WebServer& server, const String& uri, HTTPRaw& raw) {
         Storage.remove((_putPath + ".davtmp").c_str());
         return;
       }
-      esp_task_wdt_reset();
       size_t written = _putFile.write(raw.buf, raw.currentSize);
       if (written != raw.currentSize) {
         _putOk = false;
@@ -349,7 +349,7 @@ void WebDAVHandler::handlePropfind(WebServer& s) {
 
       file.close();
       yield();
-      esp_task_wdt_reset();
+      resetTaskWatchdogIfSubscribed();
       file = root.openNextFile();
     }
   }
@@ -737,7 +737,7 @@ void WebDAVHandler::handleCopy(WebServer& s) {
   uint8_t buf[4096];
   bool copyOk = true;
   while (srcFile.available()) {
-    esp_task_wdt_reset();
+    resetTaskWatchdogIfSubscribed();
     int bytesRead = srcFile.read(buf, sizeof(buf));
     if (bytesRead <= 0) break;
     size_t written = dstFile.write(buf, bytesRead);

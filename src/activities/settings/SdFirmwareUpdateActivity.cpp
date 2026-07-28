@@ -140,6 +140,7 @@ void SdFirmwareUpdateActivity::startInstall() {
 
 void SdFirmwareUpdateActivity::onEnter() {
   Activity::onEnter();
+  LOG_INF("SD_OTA", "SdFirmwareUpdateActivity recovery=%d", recoveryMode ? 1 : 0);
   scanDone = false;
   candidateCount = 0;
   invalidCandidateCount = 0;
@@ -163,7 +164,13 @@ void SdFirmwareUpdateActivity::loop() {
 
   if (state == SELECT_FILE) {
     if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
-      finish();
+      if (recoveryMode) {
+        scanDone = false;
+        state = SCANNING;
+        requestUpdate();
+      } else {
+        finish();
+      }
       return;
     }
 
@@ -202,6 +209,10 @@ void SdFirmwareUpdateActivity::loop() {
           state = SELECT_FILE;
         }
         requestUpdate();
+      } else if (recoveryMode) {
+        scanDone = false;
+        state = SCANNING;
+        requestUpdate();
       } else {
         finish();
       }
@@ -211,7 +222,13 @@ void SdFirmwareUpdateActivity::loop() {
 
   if (state == FAILED || state == NO_FILE) {
     if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
-      finish();
+      if (recoveryMode) {
+        scanDone = false;
+        state = SCANNING;
+        requestUpdate();
+      } else {
+        finish();
+      }
     }
     return;
   }
@@ -239,11 +256,16 @@ void SdFirmwareUpdateActivity::render(RenderLock&&) {
   const auto height = renderer.getLineHeight(UI_10_FONT_ID);
 
   renderer.clearScreen();
-  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, tr(STR_INSTALL_FIRMWARE_SD));
+  const char* headerText = recoveryMode ? tr(STR_RECOVERY_MODE) : tr(STR_INSTALL_FIRMWARE_SD);
+  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, headerText);
 
   if (state == SCANNING) {
     renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2, tr(STR_SD_FIRMWARE_SCANNING));
-    renderer.displayBuffer();
+    if (renderer.isDarkMode()) {
+      renderer.displayBufferDarkRedrive();
+    } else {
+      renderer.displayBuffer();
+    }
     return;
   }
 
@@ -252,7 +274,11 @@ void SdFirmwareUpdateActivity::render(RenderLock&&) {
     renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2, message, true);
     const auto labels = mappedInput.mapLabels(tr(STR_BACK), "", "", "");
     GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
-    renderer.displayBuffer();
+    if (renderer.isDarkMode()) {
+      renderer.displayBufferDarkRedrive();
+    } else {
+      renderer.displayBuffer();
+    }
     return;
   }
 
@@ -268,7 +294,11 @@ void SdFirmwareUpdateActivity::render(RenderLock&&) {
 
     const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
     GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
-    renderer.displayBuffer();
+    if (renderer.isDarkMode()) {
+      renderer.displayBufferDarkRedrive();
+    } else {
+      renderer.displayBuffer();
+    }
     return;
   }
 
@@ -293,7 +323,11 @@ void SdFirmwareUpdateActivity::render(RenderLock&&) {
 
     const auto labels = mappedInput.mapLabels(tr(STR_CANCEL), tr(STR_UPDATE), "", "");
     GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
-    renderer.displayBuffer();
+    if (renderer.isDarkMode()) {
+      renderer.displayBufferDarkRedrive();
+    } else {
+      renderer.displayBuffer();
+    }
     return;
   }
 
@@ -330,7 +364,11 @@ void SdFirmwareUpdateActivity::render(RenderLock&&) {
     renderer.drawCenteredText(UI_10_FONT_ID, y, tr(STR_SD_FIRMWARE_DO_NOT_POWER_OFF), true);
     const auto labels = mappedInput.mapLabels("", "", "", "");
     GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
-    renderer.displayBuffer();
+    if (renderer.isDarkMode()) {
+      renderer.displayBufferDarkRedrive();
+    } else {
+      renderer.displayBuffer();
+    }
     return;
   }
 
@@ -339,7 +377,11 @@ void SdFirmwareUpdateActivity::render(RenderLock&&) {
     renderer.drawCenteredText(UI_10_FONT_ID, top + height + metrics.verticalSpacing, errorMessageFor(lastInstallError));
     const auto labels = mappedInput.mapLabels(tr(STR_BACK), "", "", "");
     GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
-    renderer.displayBuffer();
+    if (renderer.isDarkMode()) {
+      renderer.displayBufferDarkRedrive();
+    } else {
+      renderer.displayBuffer();
+    }
     return;
   }
 
@@ -349,12 +391,20 @@ void SdFirmwareUpdateActivity::render(RenderLock&&) {
                               tr(STR_SD_FIRMWARE_PRESS_CONFIRM_RESTART));
     const auto labels = mappedInput.mapLabels("", tr(STR_CONFIRM), "", "");
     GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
-    renderer.displayBuffer();
+    if (renderer.isDarkMode()) {
+      renderer.displayBufferDarkRedrive();
+    } else {
+      renderer.displayBuffer();
+    }
     return;
   }
 
   if (state == SHUTTING_DOWN) {
     renderer.drawCenteredText(UI_10_FONT_ID, top, tr(STR_UPDATE_COMPLETE), true, EpdFontFamily::BOLD);
-    renderer.displayBuffer();
+    if (renderer.isDarkMode()) {
+      renderer.displayBufferDarkRedrive();
+    } else {
+      renderer.displayBuffer();
+    }
   }
 }

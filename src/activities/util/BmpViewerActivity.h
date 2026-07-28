@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <vector>
 
 #include "../Activity.h"
 #include "MappedInputManager.h"
@@ -14,5 +15,10 @@ class BmpViewerActivity final : public Activity {
   void loop() override;
 
  private:
+  void loadSiblingImages();
+  void doSetSleepCover();
+
   std::string filePath;
+  std::vector<std::string> siblingImages;
+  int currentImageIndex = -1;
 };
