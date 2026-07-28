@@ -11,7 +11,11 @@
 #include "ButtonRemapActivity.h"
 #include "ClearCacheActivity.h"
 #include "CrossPointSettings.h"
+#include <ExternalFont.h>
+#include <FontManager.h>
+
 #include "FontDownloadActivity.h"
+#include "FontSelectActivity.h"
 #include "KOReaderSettingsActivity.h"
 #include "LanguageSelectActivity.h"
 #include "MappedInputManager.h"
@@ -26,6 +30,7 @@
 #include "activities/util/IntervalSelectionActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "util/ExternalFontLabel.h"
 
 const StrId SettingsActivity::categoryNames[categoryCount] = {StrId::STR_CAT_DISPLAY, StrId::STR_CAT_READER,
                                                               StrId::STR_CAT_CONTROLS, StrId::STR_CAT_SYSTEM};
@@ -83,8 +88,11 @@ void SettingsActivity::rebuildSettingsLists() {
   readerSettings.insert(readerSettings.begin(),
                         SettingInfo::Action(StrId::STR_TEXT_SETTINGS, SettingAction::TextSettings));
   readerSettings.insert(readerSettings.begin() + 1,
+                        SettingInfo::Action(StrId::STR_EXT_READER_FONT, SettingAction::SelectReaderFont));
+  readerSettings.insert(readerSettings.begin() + 2,
                         SettingInfo::Action(StrId::STR_MANAGE_FONTS, SettingAction::DownloadFonts));
   readerSettings.push_back(SettingInfo::Action(StrId::STR_CUSTOMISE_STATUS_BAR, SettingAction::CustomiseStatusBar));
+  displaySettings.push_back(SettingInfo::Action(StrId::STR_EXT_UI_FONT, SettingAction::SelectUiFont));
 
   // Update currentSettings pointer and count for the active category
   switch (selectedCategoryIndex) {
@@ -410,6 +418,24 @@ void SettingsActivity::toggleCurrentSetting() {
                                  rebuildSettingsLists();
                                });
         break;
+      case SettingAction::SelectReaderFont:
+        startActivityForResult(
+            std::make_unique<FontSelectActivity>(renderer, mappedInput, FontSelectActivity::SelectMode::Reader),
+            [this](const ActivityResult&) {
+              SETTINGS.saveToFile();
+              rebuildSettingsLists();
+              requestUpdate();
+            });
+        break;
+      case SettingAction::SelectUiFont:
+        startActivityForResult(
+            std::make_unique<FontSelectActivity>(renderer, mappedInput, FontSelectActivity::SelectMode::UI),
+            [this](const ActivityResult&) {
+              SETTINGS.saveToFile();
+              rebuildSettingsLists();
+              requestUpdate();
+            });
+        break;
       case SettingAction::Language:
         startActivityForResult(std::make_unique<LanguageSelectActivity>(renderer, mappedInput), resultHandler);
         break;
@@ -523,6 +549,25 @@ void SettingsActivity::render(RenderLock&&) {
             }
           } else {
             valueText = std::to_string(SETTINGS.*(setting.valuePtr));
+          }
+        } else if (setting.type == SettingType::ACTION && setting.nameId == StrId::STR_EXT_READER_FONT) {
+          if (FontMgr.getSelectedIndex() >= 0) {
+            const FontInfo* info = FontMgr.getFontInfo(FontMgr.getSelectedIndex());
+            valueText = info ? buildExternalFontLabel(info->filename, info->name, info->size,
+                                                      ExternalFont::canFitGlyph(info->width, info->height))
+                             : tr(STR_EXTERNAL_FONT);
+          } else {
+            valueText = tr(STR_BUILTIN_DISABLED);
+          }
+        } else if (setting.type == SettingType::ACTION && setting.nameId == StrId::STR_EXT_UI_FONT) {
+          if (FontMgr.isUiFontEnabled()) {
+            const int idx = FontMgr.getUiSelectedIndex();
+            const FontInfo* info = FontMgr.getFontInfo(idx);
+            valueText = info ? buildExternalFontLabel(info->filename, info->name, info->size,
+                                                      ExternalFont::canFitGlyph(info->width, info->height))
+                             : tr(STR_EXTERNAL_FONT);
+          } else {
+            valueText = tr(STR_BUILTIN_DISABLED);
           }
         }
         return valueText;
