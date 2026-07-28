@@ -25,6 +25,8 @@ enum class SettingAction {
   Language,
   DownloadFonts,
   TextSettings,
+  SelectReaderFont,
+  SelectUiFont,
 };
 
 struct SettingInfo {
