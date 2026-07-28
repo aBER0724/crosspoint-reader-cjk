@@ -352,10 +352,57 @@ void LyraTheme::drawButtonHints(GfxRenderer& renderer, const char* btn1, const c
     return;
   }
 
-  const GfxRenderer::Orientation orig_orientation = renderer.getOrientation();
-  renderer.setOrientation(GfxRenderer::Orientation::Portrait);
+  const auto orient = renderer.getOrientation();
+  const auto previousRenderMode = renderer.getRenderMode();
+  renderer.setRenderMode(GfxRenderer::BW);
+  const auto restoreRenderMode = [&renderer, previousRenderMode]() { renderer.setRenderMode(previousRenderMode); };
+
+  // Landscape orientations: front bezel maps to a vertical edge of the logical
+  // landscape screen (right in CCW = native panel, left in CW = 180° from
+  // native). Draw labels as a rotated vertical strip on that edge so they sit
+  // next to the actual physical buttons. See BaseTheme::drawButtonHints for
+  // the rotation derivation.
+  if (orient == GfxRenderer::Orientation::LandscapeClockwise ||
+      orient == GfxRenderer::Orientation::LandscapeCounterClockwise) {
+    const int screenWidth = renderer.getScreenWidth();
+    const int screenHeight = renderer.getScreenHeight();
+    constexpr int stripWidth = LyraMetrics::values.buttonHintsHeight;
+    constexpr int hintHeight = 80;  // portrait buttonWidth
+    constexpr int textYOffset = 7;
+    constexpr int x4Positions[] = {58, 146, 254, 342};
+    constexpr int x3Positions[] = {65, 157, 291, 383};
+    const int* positions = gpio.deviceIsX3() ? x3Positions : x4Positions;
+    const char* labels[] = {btn1, btn2, btn3, btn4};
+
+    const bool isCCW = orient == GfxRenderer::Orientation::LandscapeCounterClockwise;
+    const int stripX = isCCW ? screenWidth - stripWidth : 0;
+    const bool roundLeft = isCCW;
+    const bool roundRight = !isCCW;
+
+    for (int i = 0; i < 4; i++) {
+      if (labels[i] == nullptr || labels[i][0] == '\0') continue;
+      const int slotY = isCCW ? (screenHeight - hintHeight - positions[i]) : positions[i];
+
+      renderer.fillRoundedRect(stripX, slotY, stripWidth, hintHeight, cornerRadius, Color::White);
+      // Round only the corners on the side that points away from the bezel
+      // edge so the strip looks "attached" to that edge.
+      renderer.drawRoundedRect(stripX, slotY, stripWidth, hintHeight, 1, cornerRadius, /*topLeft=*/roundLeft,
+                               /*topRight=*/roundRight, /*bottomLeft=*/roundLeft, /*bottomRight=*/roundRight, true);
+
+      const int textWidth = renderer.getTextWidth(SMALL_FONT_ID, labels[i]);
+      const int textHeight = renderer.getTextHeight(SMALL_FONT_ID);
+      const int textX = stripX + (stripWidth - textHeight) / 2 - textYOffset;
+      const int textY = slotY + (hintHeight + textWidth) / 2;
+      renderer.drawTextRotated90CW(SMALL_FONT_ID, textX, textY, labels[i], true);
+    }
+    restoreRenderMode();
+    return;
+  }
 
   const int pageHeight = renderer.getScreenHeight();
+  const bool placeAtTop = orient == GfxRenderer::Orientation::PortraitInverted;
+  const bool roundTop = !placeAtTop;
+  const bool roundBottom = placeAtTop;
   constexpr int buttonWidth = 80;
   constexpr int smallButtonHeight = 15;
   constexpr int buttonHeight = LyraMetrics::values.buttonHintsHeight;
@@ -366,27 +413,27 @@ void LyraTheme::drawButtonHints(GfxRenderer& renderer, const char* btn1, const c
   constexpr int x3ButtonPositions[] = {65, 157, 291, 383};
   const int* buttonPositions = gpio.deviceIsX3() ? x3ButtonPositions : x4ButtonPositions;
   const char* labels[] = {btn1, btn2, btn3, btn4};
+  const int buttonTop = placeAtTop ? 0 : pageHeight - buttonY;
+  const int smallButtonTop = placeAtTop ? 0 : pageHeight - smallButtonHeight;
 
   for (int i = 0; i < 4; i++) {
     const int x = buttonPositions[i];
     if (labels[i] != nullptr && labels[i][0] != '\0') {
       // Draw the filled background and border for a FULL-sized button
-      renderer.fillRoundedRect(x, pageHeight - buttonY, buttonWidth, buttonHeight, cornerRadius, Color::White);
-      renderer.drawRoundedRect(x, pageHeight - buttonY, buttonWidth, buttonHeight, 1, cornerRadius, true, true, false,
-                               false, true);
+      renderer.fillRoundedRect(x, buttonTop, buttonWidth, buttonHeight, cornerRadius, Color::White);
+      renderer.drawRoundedRect(x, buttonTop, buttonWidth, buttonHeight, 1, cornerRadius, roundTop, roundTop,
+                               roundBottom, roundBottom, true);
       const int textWidth = renderer.getTextWidth(SMALL_FONT_ID, labels[i]);
       const int textX = x + (buttonWidth - 1 - textWidth) / 2;
-      renderer.drawText(SMALL_FONT_ID, textX, pageHeight - buttonY + textYOffset, labels[i]);
+      renderer.drawText(SMALL_FONT_ID, textX, buttonTop + textYOffset, labels[i], true);
     } else {
       // Draw the filled background and border for a SMALL-sized button
-      renderer.fillRoundedRect(x, pageHeight - smallButtonHeight, buttonWidth, smallButtonHeight, cornerRadius,
-                               Color::White);
-      renderer.drawRoundedRect(x, pageHeight - smallButtonHeight, buttonWidth, smallButtonHeight, 1, cornerRadius, true,
-                               true, false, false, true);
+      renderer.fillRoundedRect(x, smallButtonTop, buttonWidth, smallButtonHeight, cornerRadius, Color::White);
+      renderer.drawRoundedRect(x, smallButtonTop, buttonWidth, smallButtonHeight, 1, cornerRadius, roundTop, roundTop,
+                               roundBottom, roundBottom, true);
     }
   }
-
-  renderer.setOrientation(orig_orientation);
+  restoreRenderMode();
 }
 
 void LyraTheme::drawSideButtonHints(const GfxRenderer& renderer, const char* topBtn, const char* bottomBtn) const {

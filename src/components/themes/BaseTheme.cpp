@@ -176,10 +176,60 @@ void BaseTheme::drawButtonHints(GfxRenderer& renderer, const char* btn1, const c
     return;
   }
 
-  const GfxRenderer::Orientation orig_orientation = renderer.getOrientation();
-  renderer.setOrientation(GfxRenderer::Orientation::Portrait);
+  const auto orient = renderer.getOrientation();
+  const auto previousRenderMode = renderer.getRenderMode();
+  renderer.setRenderMode(GfxRenderer::BW);
+  const auto restoreRenderMode = [&renderer, previousRenderMode]() { renderer.setRenderMode(previousRenderMode); };
+
+  // Landscape orientations: the X4's front bezel is on the panel's right
+  // short edge (verified by the rotation transform — Portrait labels at
+  // logical y=760 land at panel x=760, just inside the right short edge).
+  // After rendering rotation, that physical edge becomes the *vertical*
+  // edge of the logical landscape screen, NOT the horizontal bottom. So
+  // the labels need to be drawn as a rotated vertical strip:
+  //   - LandscapeCCW: native panel orientation; bezel maps to logical right edge.
+  //   - LandscapeCW:  180° from CCW;            bezel maps to logical left edge.
+  if (orient == GfxRenderer::Orientation::LandscapeClockwise ||
+      orient == GfxRenderer::Orientation::LandscapeCounterClockwise) {
+    const int screenWidth = renderer.getScreenWidth();
+    const int screenHeight = renderer.getScreenHeight();
+    constexpr int stripWidth = BaseMetrics::values.buttonHintsHeight;  // = 40 (portrait button height)
+    constexpr int hintHeight = 106;                                    // portrait buttonWidth, now strip step
+    constexpr int textYOffset = 7;
+    constexpr int x4Positions[] = {25, 130, 245, 350};
+    constexpr int x3Positions[] = {38, 154, 268, 384};
+    const int* positions = gpio.deviceIsX3() ? x3Positions : x4Positions;
+    const char* labels[] = {btn1, btn2, btn3, btn4};
+
+    const bool isCCW = orient == GfxRenderer::Orientation::LandscapeCounterClockwise;
+    // CCW: bezel on logical right edge. CW: bezel on logical left edge.
+    const int stripX = isCCW ? screenWidth - stripWidth : 0;
+
+    for (int i = 0; i < 4; i++) {
+      if (labels[i] == nullptr || labels[i][0] == '\0') continue;
+
+      // Per-button y position is the inverse of the rotation that produced
+      // the panel coordinate of this button. In CCW logical (= panel),
+      // panel y for button i = panelHeight - 1 - (positions[i] + hintHeight - 1)
+      //                       = screenHeight - hintHeight - positions[i].
+      // In CW logical (180° from CCW), the y value collapses to positions[i].
+      const int slotY = isCCW ? (screenHeight - hintHeight - positions[i]) : positions[i];
+
+      renderer.fillRect(stripX, slotY, stripWidth, hintHeight, false);
+      renderer.drawRect(stripX, slotY, stripWidth, hintHeight, true);
+
+      const int textWidth = renderer.getTextWidth(UI_10_FONT_ID, labels[i]);
+      const int textHeight = renderer.getTextHeight(UI_10_FONT_ID);
+      const int textX = stripX + (stripWidth - textHeight) / 2 - textYOffset;
+      const int textY = slotY + (hintHeight + textWidth) / 2;
+      renderer.drawTextRotated90CW(UI_10_FONT_ID, textX, textY, labels[i], true);
+    }
+    restoreRenderMode();
+    return;
+  }
 
   const int pageHeight = renderer.getScreenHeight();
+  const bool placeAtTop = orient == GfxRenderer::Orientation::PortraitInverted;
   constexpr int buttonWidth = 106;
   constexpr int buttonHeight = BaseMetrics::values.buttonHintsHeight;
   constexpr int buttonY = BaseMetrics::values.buttonHintsHeight;  // Distance from bottom
@@ -189,20 +239,20 @@ void BaseTheme::drawButtonHints(GfxRenderer& renderer, const char* btn1, const c
   constexpr int x3ButtonPositions[] = {38, 154, 268, 384};
   const int* buttonPositions = gpio.deviceIsX3() ? x3ButtonPositions : x4ButtonPositions;
   const char* labels[] = {btn1, btn2, btn3, btn4};
+  const int buttonTop = placeAtTop ? 0 : pageHeight - buttonY;
 
   for (int i = 0; i < 4; i++) {
     // Only draw if the label is non-empty
     if (labels[i] != nullptr && labels[i][0] != '\0') {
       const int x = buttonPositions[i];
-      renderer.fillRect(x, pageHeight - buttonY, buttonWidth, buttonHeight, false);
-      renderer.drawRect(x, pageHeight - buttonY, buttonWidth, buttonHeight);
+      renderer.fillRect(x, buttonTop, buttonWidth, buttonHeight, false);
+      renderer.drawRect(x, buttonTop, buttonWidth, buttonHeight, true);
       const int textWidth = renderer.getTextWidth(UI_10_FONT_ID, labels[i]);
       const int textX = x + (buttonWidth - 1 - textWidth) / 2;
-      renderer.drawText(UI_10_FONT_ID, textX, pageHeight - buttonY + textYOffset, labels[i]);
+      renderer.drawText(UI_10_FONT_ID, textX, buttonTop + textYOffset, labels[i], true);
     }
   }
-
-  renderer.setOrientation(orig_orientation);
+  restoreRenderMode();
 }
 
 void BaseTheme::drawSideButtonHints(const GfxRenderer& renderer, const char* topBtn, const char* bottomBtn) const {
