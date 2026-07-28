@@ -51,57 +51,42 @@ void HomeActivity::loadRecentBooks(int maxBooks) {
   }
 }
 
-void HomeActivity::loadRecentCovers(int coverHeight) {
-  recentsLoading = true;
-  bool showingLoading = false;
-  Rect popupRect;
+void HomeActivity::loadNextRecentCover(int coverHeight) {
+  // Generate at most one missing cover per call so home navigation stays responsive
+  // even after thumb_v2 cache misses force mass regeneration.
+  while (nextRecentCoverIndex < recentBooks.size()) {
+    RecentBook& book = recentBooks[nextRecentCoverIndex++];
+    if (book.coverBmpPath.empty()) {
+      continue;
+    }
 
-  int progress = 0;
-  for (RecentBook& book : recentBooks) {
-    if (!book.coverBmpPath.empty()) {
-      std::string coverPath = UITheme::getCoverThumbPath(book.coverBmpPath, coverHeight);
-      if (!Storage.exists(coverPath.c_str())) {
-        // If epub, try to load the metadata for title/author and cover
-        if (FsHelpers::hasEpubExtension(book.path)) {
-          Epub epub(book.path, "/.crosspoint");
-          // Skip loading css since we only need metadata here
-          epub.load(false, true);
+    const std::string coverPath = UITheme::getCoverThumbPath(book.coverBmpPath, coverHeight);
+    if (Storage.exists(coverPath.c_str())) {
+      continue;
+    }
 
-          // Try to generate thumbnail image for Continue Reading card
-          if (!showingLoading) {
-            showingLoading = true;
-            popupRect = GUI.drawPopup(renderer, tr(STR_LOADING_POPUP));
-          }
-          GUI.fillPopupProgress(renderer, popupRect, 10 + progress * (90 / recentBooks.size()));
-          bool success = epub.generateThumbBmp(coverHeight);
-          if (!success) {
-            RECENT_BOOKS.updateBook(book.path, book.title, book.author, "");
-            book.coverBmpPath = "";
-          }
-          coverRendered = false;
-          requestUpdate();
-        } else if (FsHelpers::hasXtcExtension(book.path)) {
-          // Handle XTC file
-          Xtc xtc(book.path, "/.crosspoint");
-          if (xtc.load()) {
-            // Try to generate thumbnail image for Continue Reading card
-            if (!showingLoading) {
-              showingLoading = true;
-              popupRect = GUI.drawPopup(renderer, tr(STR_LOADING_POPUP));
-            }
-            GUI.fillPopupProgress(renderer, popupRect, 10 + progress * (90 / recentBooks.size()));
-            bool success = xtc.generateThumbBmp(coverHeight);
-            if (!success) {
-              RECENT_BOOKS.updateBook(book.path, book.title, book.author, "");
-              book.coverBmpPath = "";
-            }
-            coverRendered = false;
-            requestUpdate();
-          }
-        }
+    bool generated = false;
+    if (FsHelpers::hasEpubExtension(book.path)) {
+      Epub epub(book.path, "/.crosspoint");
+      // Skip CSS; metadata/cover only.
+      if (epub.load(false, true)) {
+        generated = epub.generateThumbBmp(coverHeight);
+      }
+    } else if (FsHelpers::hasXtcExtension(book.path)) {
+      Xtc xtc(book.path, "/.crosspoint");
+      if (xtc.load()) {
+        generated = xtc.generateThumbBmp(coverHeight);
       }
     }
-    progress++;
+
+    if (!generated) {
+      RECENT_BOOKS.updateBook(book.path, book.title, book.author, "");
+      book.coverBmpPath = "";
+    }
+
+    coverRendered = false;
+    requestUpdate();
+    return;
   }
 
   recentsLoaded = true;
@@ -115,6 +100,10 @@ void HomeActivity::onEnter() {
 
   const auto& metrics = UITheme::getInstance().getMetrics();
   loadRecentBooks(metrics.homeRecentBooksCount);
+  nextRecentCoverIndex = 0;
+  recentsLoaded = recentBooks.empty();
+  recentsLoading = false;
+  nextRecentCoverLoadAt = millis() + RECENT_COVER_LOAD_IDLE_MS;
 
   const auto base = static_cast<int>(recentBooks.size());
   selectorIndex = initialMenuItem == HomeMenuItem::NONE ? 0 : base + menuItemToIndex(initialMenuItem, hasOpdsServers);
@@ -205,22 +194,26 @@ void HomeActivity::loop() {
 
   buttonNavigator.onNext([this, menuCount] {
     selectorIndex = ButtonNavigator::nextIndex(selectorIndex, menuCount);
+    nextRecentCoverLoadAt = millis() + RECENT_COVER_LOAD_IDLE_MS;
     requestUpdate();
   });
 
   buttonNavigator.onPrevious([this, menuCount] {
     selectorIndex = ButtonNavigator::previousIndex(selectorIndex, menuCount);
+    nextRecentCoverLoadAt = millis() + RECENT_COVER_LOAD_IDLE_MS;
     requestUpdate();
   });
 
   const auto swipe = mappedInput.wasSwipe();
   if (swipe == MappedInputManager::SwipeDir::Up) {
     selectorIndex = ButtonNavigator::nextIndex(selectorIndex, menuCount);
+    nextRecentCoverLoadAt = millis() + RECENT_COVER_LOAD_IDLE_MS;
     requestUpdate();
     return;
   }
   if (swipe == MappedInputManager::SwipeDir::Down) {
     selectorIndex = ButtonNavigator::previousIndex(selectorIndex, menuCount);
+    nextRecentCoverLoadAt = millis() + RECENT_COVER_LOAD_IDLE_MS;
     requestUpdate();
     return;
   }
@@ -242,6 +235,7 @@ void HomeActivity::loop() {
       ty >= metrics.homeTopPadding && ty < metrics.homeTopPadding + metrics.homeCoverTileHeight) {
     if (selectorIndex != 0) {
       selectorIndex = 0;
+      nextRecentCoverLoadAt = millis() + RECENT_COVER_LOAD_IDLE_MS;
       requestUpdate();
     }
     return;
@@ -268,6 +262,7 @@ void HomeActivity::loop() {
     if (menuTouch == MappedInputManager::RowTouch::Down) {
       if (selectorIndex != touchedIndex) {
         selectorIndex = touchedIndex;
+        nextRecentCoverLoadAt = millis() + RECENT_COVER_LOAD_IDLE_MS;
         requestUpdate();
       }
     } else {
@@ -279,6 +274,14 @@ void HomeActivity::loop() {
 
   if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
     activateSelection();
+    return;
+  }
+
+  if (firstRenderDone && !recentsLoaded && !recentsLoading && millis() >= nextRecentCoverLoadAt) {
+    recentsLoading = true;
+    loadNextRecentCover(metrics.homeCoverHeight);
+    recentsLoading = false;
+    nextRecentCoverLoadAt = millis() + RECENT_COVER_LOAD_INTERVAL_MS;
   }
 }
 
@@ -344,9 +347,6 @@ void HomeActivity::render(RenderLock&&) {
   if (!firstRenderDone) {
     firstRenderDone = true;
     requestUpdate();
-  } else if (!recentsLoaded && !recentsLoading) {
-    recentsLoading = true;
-    loadRecentCovers(metrics.homeCoverHeight);
   }
 }
 
