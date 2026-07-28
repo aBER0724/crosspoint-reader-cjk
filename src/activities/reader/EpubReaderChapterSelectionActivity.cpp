@@ -3,6 +3,8 @@
 #include <GfxRenderer.h>
 #include <I18n.h>
 
+#include <algorithm>
+
 #include "MappedInputManager.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
@@ -20,6 +22,8 @@ void EpubReaderChapterSelectionActivity::onEnter() {
   if (selectorIndex == -1) {
     selectorIndex = 0;
   }
+  lastRenderedSelectorIndex = -1;
+  fullRedrawRequired = true;
 
   // Trigger first update
   requestUpdate();
@@ -104,18 +108,30 @@ void EpubReaderChapterSelectionActivity::loop() {
 }
 
 void EpubReaderChapterSelectionActivity::render(RenderLock&&) {
-  renderer.clearScreen();
-
   auto metrics = UITheme::getInstance().getMetrics();
   Rect screen = UITheme::getInstance().getScreenSafeArea(renderer, true, false);
-
-  GUI.drawHeader(renderer, Rect{screen.x, screen.y + metrics.topPadding, screen.width, metrics.headerHeight},
-                 tr(STR_SELECT_CHAPTER));
-
   const int contentTop = screen.y + metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
   const int contentHeight = screen.height - contentTop - metrics.verticalSpacing;
-
   const int totalItems = getTotalItems();
+  const int pageItems = GUI.getListPageItems(contentHeight, false);
+  const bool selectionChanged = lastRenderedSelectorIndex >= 0 && lastRenderedSelectorIndex != selectorIndex;
+  const bool sameListPage = selectionChanged && lastRenderedSelectorIndex / pageItems == selectorIndex / pageItems;
+  const bool partialUpdate = !renderer.isDarkMode() && !fullRedrawRequired && sameListPage;
+
+  if (partialUpdate) {
+    const int firstRow = std::min(lastRenderedSelectorIndex % pageItems, selectorIndex % pageItems);
+    const int lastRow = std::max(lastRenderedSelectorIndex % pageItems, selectorIndex % pageItems);
+    constexpr int selectionBleed = 2;
+    const int dirtyY = contentTop + firstRow * GUI.getListRowStep(false) - selectionBleed;
+    const int dirtyHeight = (lastRow - firstRow + 1) * GUI.getListRowStep(false) + selectionBleed * 2;
+    renderer.fillRect(screen.x, dirtyY, screen.width, dirtyHeight, false);
+    renderer.setPartialUpdateRect(screen.x, dirtyY, screen.width, dirtyHeight);
+  } else {
+    renderer.clearScreen();
+    GUI.drawHeader(renderer, Rect{screen.x, screen.y + metrics.topPadding, screen.width, metrics.headerHeight},
+                   tr(STR_SELECT_CHAPTER));
+  }
+
   GUI.drawList(renderer, Rect{screen.x, contentTop, screen.width, contentHeight}, totalItems, selectorIndex,
                [this](int index) {
                  auto item = epub->getTocItem(index);
@@ -123,12 +139,18 @@ void EpubReaderChapterSelectionActivity::render(RenderLock&&) {
                  return indent + item.title;
                });
 
-  const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
-  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+  if (!partialUpdate) {
+    const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
+    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+  }
 
-  if (renderer.isDarkMode()) {
+  if (partialUpdate) {
+    renderer.displayBuffer();
+  } else if (renderer.isDarkMode()) {
     renderer.displayBufferDarkRedrive();
   } else {
     renderer.displayBuffer();
   }
+  lastRenderedSelectorIndex = selectorIndex;
+  fullRedrawRequired = false;
 }

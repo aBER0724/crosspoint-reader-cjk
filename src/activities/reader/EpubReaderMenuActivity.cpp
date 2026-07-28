@@ -3,6 +3,8 @@
 #include <GfxRenderer.h>
 #include <I18n.h>
 
+#include <algorithm>
+
 #include "MappedInputManager.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
@@ -45,6 +47,8 @@ std::vector<EpubReaderMenuActivity::MenuItem> EpubReaderMenuActivity::buildMenuI
 
 void EpubReaderMenuActivity::onEnter() {
   Activity::onEnter();
+  lastRenderedSelectedIndex = -1;
+  fullRedrawRequired = true;
   requestUpdate();
 }
 
@@ -159,31 +163,50 @@ void EpubReaderMenuActivity::loop() {
 }
 
 void EpubReaderMenuActivity::render(RenderLock&&) {
-  if (optionPopup.processRender(renderer, mappedInput)) return;
-
-  renderer.clearScreen();
+  if (optionPopup.processRender(renderer, mappedInput)) {
+    fullRedrawRequired = true;
+    return;
+  }
 
   auto metrics = UITheme::getInstance().getMetrics();
   Rect screen = UITheme::getInstance().getScreenSafeArea(renderer, true, false);
 
-  GUI.drawHeader(renderer, Rect{screen.x, screen.y + metrics.topPadding, screen.width, metrics.headerHeight},
-                 title.c_str());
-
-  // Progress summary
-  std::string progressLine;
-  if (totalPages > 0) {
-    progressLine = std::string(tr(STR_CHAPTER_PREFIX)) + std::to_string(currentPage) + "/" +
-                   std::to_string(totalPages) + std::string(tr(STR_PAGES_SEPARATOR));
-  }
-  progressLine += std::string(tr(STR_BOOK_PREFIX)) + std::to_string(bookProgressPercent) + "%";
-  GUI.drawSubHeader(
-      renderer,
-      Rect{screen.x, screen.y + metrics.topPadding + metrics.headerHeight, screen.width, metrics.tabBarHeight},
-      progressLine.c_str());
-
   const int contentTop =
       screen.y + metrics.topPadding + metrics.headerHeight + metrics.tabBarHeight + metrics.verticalSpacing;
   const int contentHeight = screen.height - contentTop - metrics.verticalSpacing;
+  const int pageItems = GUI.getListPageItems(contentHeight, false);
+  const bool selectionChanged = lastRenderedSelectedIndex >= 0 && lastRenderedSelectedIndex != selectedIndex;
+  const bool sameListPage = selectionChanged && lastRenderedSelectedIndex / pageItems == selectedIndex / pageItems;
+  const bool partialUpdate = !renderer.isDarkMode() && !fullRedrawRequired && sameListPage;
+
+  if (partialUpdate) {
+    const int firstRow = std::min(lastRenderedSelectedIndex % pageItems, selectedIndex % pageItems);
+    const int lastRow = std::max(lastRenderedSelectedIndex % pageItems, selectedIndex % pageItems);
+    constexpr int selectionBleed = 2;
+    const int dirtyY = contentTop + firstRow * GUI.getListRowStep(false) - selectionBleed;
+    const int dirtyHeight = (lastRow - firstRow + 1) * GUI.getListRowStep(false) + selectionBleed * 2;
+    renderer.fillRect(screen.x, dirtyY, screen.width, dirtyHeight, false);
+    renderer.setPartialUpdateRect(screen.x, dirtyY, screen.width, dirtyHeight);
+  } else {
+    renderer.clearScreen();
+  }
+
+  if (!partialUpdate) {
+    GUI.drawHeader(renderer, Rect{screen.x, screen.y + metrics.topPadding, screen.width, metrics.headerHeight},
+                   title.c_str());
+
+    // Progress summary
+    std::string progressLine;
+    if (totalPages > 0) {
+      progressLine = std::string(tr(STR_CHAPTER_PREFIX)) + std::to_string(currentPage) + "/" +
+                     std::to_string(totalPages) + std::string(tr(STR_PAGES_SEPARATOR));
+    }
+    progressLine += std::string(tr(STR_BOOK_PREFIX)) + std::to_string(bookProgressPercent) + "%";
+    GUI.drawSubHeader(
+        renderer,
+        Rect{screen.x, screen.y + metrics.topPadding + metrics.headerHeight, screen.width, metrics.tabBarHeight},
+        progressLine.c_str());
+  }
 
   GUI.drawList(
       renderer, Rect{screen.x, contentTop, screen.width, contentHeight}, menuItems.size(), selectedIndex,
@@ -202,13 +225,19 @@ void EpubReaderMenuActivity::render(RenderLock&&) {
       },
       true);
 
-  // Footer / Hints
-  const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
-  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+  if (!partialUpdate) {
+    // Footer / Hints
+    const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
+    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+  }
 
-  if (renderer.isDarkMode()) {
+  if (partialUpdate) {
+    renderer.displayBuffer();
+  } else if (renderer.isDarkMode()) {
     renderer.displayBufferDarkRedrive();
   } else {
     renderer.displayBuffer();
   }
+  lastRenderedSelectedIndex = selectedIndex;
+  fullRedrawRequired = false;
 }

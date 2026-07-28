@@ -1503,8 +1503,12 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
   forcedRefreshPending = false;
   // The grayscale LUT uses FAST/HALF waveforms. In dark mode retain the BW page
   // and always re-drive it instead of issuing a visible FAST/HALF refresh.
-  const bool needsTextGrayscale = SETTINGS.textAntiAliasing && !darkMode;
-  const bool needsAnyGrayscale = (needsTextGrayscale || pageHasImages) && !darkMode;
+  // Match the lightweight reader policy used before the deferred-refresh port:
+  // the costly grayscale pipeline is reserved for image pages. Rendering text
+  // AA on every ordinary page adds several full display passes and keeps the
+  // render lock held long enough to make page turns and menu transitions lag.
+  const bool needsTextGrayscale = SETTINGS.textAntiAliasing && pageHasImages && !darkMode;
+  const bool needsAnyGrayscale = pageHasImages && !darkMode;
   const bool tiledGrayscale = needsAnyGrayscale && renderer.supportsStripGrayscale();
   // Whole-plane buffering only pays when the BW refresh genuinely runs async
   // underneath it; on blocking panels (X3) it would just spend ~50 KB for the
