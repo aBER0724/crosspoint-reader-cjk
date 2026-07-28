@@ -15,6 +15,7 @@
 #include <functional>
 #include <iterator>
 #include <limits>
+#include <optional>
 
 #include "../../util/BookmarkFile.h"
 #include "BookmarkEntry.h"
@@ -1485,11 +1486,14 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
     ~PxcSlotGuard() { ImageBlock::releaseRenderCache(); }
   } pxcSlotGuard;
 
-  // Font prewarm: scan pass accumulates text, then prewarm, then real render
-  auto* fcm = renderer.getFontCacheManager();
-  auto scope = fcm->createPrewarmScope();
-  page->render(renderer, fontId, orientedMarginLeft, orientedMarginTop);  // scan pass
-  scope.endScanAndPrewarm();
+  // Font prewarm: scan pass accumulates text, then prewarm, then real render.
+  // Keep this optional so a missing FCM cannot blank the whole page render path.
+  std::optional<FontCacheManager::PrewarmScope> prewarmScope;
+  if (auto* fcm = renderer.getFontCacheManager()) {
+    prewarmScope.emplace(fcm->createPrewarmScope());
+    page->render(renderer, fontId, orientedMarginLeft, orientedMarginTop);  // scan pass
+    prewarmScope->endScanAndPrewarm();
+  }
   const auto tPrewarm = millis();
 
   const bool darkMode = renderer.isDarkMode();

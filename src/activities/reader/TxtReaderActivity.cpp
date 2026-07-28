@@ -397,11 +397,13 @@ void TxtReaderActivity::renderPage() {
     }
   };
 
-  // Font prewarm: scan pass accumulates text, then prewarm, then real render
-  auto* fcm = renderer.getFontCacheManager();
-  auto scope = fcm->createPrewarmScope();
-  renderLines();  // scan pass — text accumulated, no drawing
-  scope.endScanAndPrewarm();
+  // Font prewarm: scan pass accumulates text, then prewarm, then real render.
+  // Keep this optional so a missing FCM cannot blank the whole page render path.
+  if (auto* fcm = renderer.getFontCacheManager()) {
+    auto scope = fcm->createPrewarmScope();
+    renderLines();  // scan pass - text accumulated, no drawing
+    scope.endScanAndPrewarm();
+  }
 
   // BW rendering
   renderLines();

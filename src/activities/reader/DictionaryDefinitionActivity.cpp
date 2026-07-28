@@ -241,10 +241,11 @@ void DictionaryDefinitionActivity::render(RenderLock&&) {
   // of one on-demand overflow read per character on every page turn.
   const int fontId = SETTINGS.getReaderFontId();
   const int bodyStartY = contentY + metrics.topPadding + metrics.headerHeight;
-  auto* fcm = renderer.getFontCacheManager();
-  auto scope = fcm->createPrewarmScope();
-  drawBody(fontId, contentX + SIDE_PADDING, bodyStartY);  // scan pass: records codepoints only
-  scope.endScanAndPrewarm();
+  if (auto* fcm = renderer.getFontCacheManager()) {
+    auto scope = fcm->createPrewarmScope();
+    drawBody(fontId, contentX + SIDE_PADDING, bodyStartY);  // scan pass: records codepoints only
+    scope.endScanAndPrewarm();
+  }
   drawBody(fontId, contentX + SIDE_PADDING, bodyStartY);
 
   const auto labels =
