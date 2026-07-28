@@ -766,9 +766,18 @@ void BaseTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, const std:
 }
 
 void BaseTheme::drawButtonMenu(GfxRenderer& renderer, Rect rect, int buttonCount, int selectedIndex,
-                               const std::function<std::string(int index)>& buttonLabel,
+                               const std::function<const char*(int index)>& buttonLabel,
                                const std::function<UIIcon(int index)>& rowIcon) const {
-  for (int i = 0; i < buttonCount; ++i) {
+  drawButtonMenuRange(renderer, rect, buttonCount, selectedIndex, buttonLabel, rowIcon, 0, buttonCount - 1);
+}
+
+void BaseTheme::drawButtonMenuRange(GfxRenderer& renderer, Rect rect, int buttonCount, int selectedIndex,
+                                    const std::function<const char*(int index)>& buttonLabel,
+                                    const std::function<UIIcon(int index)>& rowIcon, int firstIndex,
+                                    int lastIndex) const {
+  const int first = std::max(0, firstIndex);
+  const int last = std::min(buttonCount - 1, lastIndex);
+  for (int i = first; i <= last; ++i) {
     const int tileY = BaseMetrics::values.verticalSpacing + rect.y +
                       static_cast<int>(i) * (BaseMetrics::values.menuRowHeight + BaseMetrics::values.menuSpacing);
 
@@ -782,8 +791,7 @@ void BaseTheme::drawButtonMenu(GfxRenderer& renderer, Rect rect, int buttonCount
                         rect.width - BaseMetrics::values.contentSidePadding * 2, BaseMetrics::values.menuRowHeight);
     }
 
-    std::string labelStr = buttonLabel(i);
-    const char* label = labelStr.c_str();
+    const char* label = buttonLabel(i);
     const int textWidth = renderer.getTextWidth(UI_10_FONT_ID, label);
     const int textX = rect.x + (rect.width - textWidth) / 2;
     const int lineHeight = renderer.getLineHeight(UI_10_FONT_ID);
@@ -792,6 +800,16 @@ void BaseTheme::drawButtonMenu(GfxRenderer& renderer, Rect rect, int buttonCount
     // Invert text when the tile is selected, to contrast with the filled background
     renderer.drawText(UI_10_FONT_ID, textX, textY, label, selectedIndex != i);
   }
+}
+
+Rect BaseTheme::getHomeMenuDirtyRect(const Rect menuRect, const int previousIndex, const int currentIndex) const {
+  const int firstIndex = std::min(previousIndex, currentIndex);
+  const int lastIndex = std::max(previousIndex, currentIndex);
+  const int rowStep = BaseMetrics::values.menuRowHeight + BaseMetrics::values.menuSpacing;
+  const int y = menuRect.y + BaseMetrics::values.verticalSpacing + firstIndex * rowStep;
+  const int bottom =
+      menuRect.y + BaseMetrics::values.verticalSpacing + lastIndex * rowStep + BaseMetrics::values.menuRowHeight;
+  return Rect{menuRect.x, y, menuRect.width, bottom - y};
 }
 
 Rect BaseTheme::drawPopup(const GfxRenderer& renderer, const char* message) const {

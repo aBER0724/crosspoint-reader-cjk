@@ -335,7 +335,6 @@ int GfxRenderer::resolveTextFontId(const int fontId, const char* text, const Epd
     }
   }
   return primaryFontId;
-
 }
 
 // Translate logical (x,y) coordinates to physical panel coordinates based on current orientation
@@ -2115,6 +2114,10 @@ void GfxRenderer::displayBuffer(const HalDisplay::RefreshMode refreshMode) const
         refreshMode == HalDisplay::FAST_REFRESH &&
         logicalRectToPhysicalWindow(orientation, partialX_, partialY_, partialW_, partialH_, getScreenWidth(),
                                     getScreenHeight(), panelWidth, panelHeight, &physicalWindow);
+#if defined(SSD1677_PROBE_DEBUG) && SSD1677_PROBE_DEBUG
+    LOG_INF("GFX", "partial logical=%d,%d %dx%d physical=%d %u,%u %ux%u", partialX_, partialY_, partialW_, partialH_,
+            hasPhysicalWindow ? 1 : 0, physicalWindow.x, physicalWindow.y, physicalWindow.width, physicalWindow.height);
+#endif
     partialX_ = partialY_ = partialW_ = partialH_ = 0;
     if (hasPhysicalWindow) {
       if (darkMode) {
