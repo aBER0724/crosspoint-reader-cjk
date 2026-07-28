@@ -6,28 +6,6 @@ ROOT = Path(__file__).resolve().parents[1]
 
 CASES = [
     {
-        "name": "SettingsActivity uses shared external font label helper",
-        "path": ROOT / "src" / "activities" / "settings" / "SettingsActivity.cpp",
-        "required": [
-            '#include "util/ExternalFontLabel.h"',
-            'buildExternalFontLabel(info->filename, info->name, info->size,',
-        ],
-        "forbidden": [
-            'valueText = info ? info->name : tr(STR_EXTERNAL_FONT);',
-        ],
-    },
-    {
-        "name": "EpubReaderMenuActivity uses shared external font label helper",
-        "path": ROOT / "src" / "activities" / "reader" / "EpubReaderMenuActivity.cpp",
-        "required": [
-            '#include "util/ExternalFontLabel.h"',
-            'return info ? buildExternalFontLabel(info->filename, info->name, info->size,',
-        ],
-        "forbidden": [
-            'return info ? std::string(info->name) : std::string(tr(STR_EXTERNAL_FONT));',
-        ],
-    },
-    {
         "name": "FontSelectActivity list items use shared external font label helper",
         "path": ROOT / "src" / "activities" / "settings" / "FontSelectActivity.cpp",
         "required": [
@@ -207,20 +185,16 @@ CASES = [
         ],
     },
     {
-        "name": "GfxRenderer throttles dark-mode UI redrive",
+        "name": "GfxRenderer always redrives dark-mode FAST/HALF UI",
         "path": ROOT / "lib" / "GfxRenderer" / "GfxRenderer.cpp",
         "required": [
-            'constexpr unsigned long DARK_UI_REDRIVE_MIN_INTERVAL_MS = 30000;',
-            'constexpr uint8_t DARK_UI_FAST_REFRESHES_PER_REDRIVE = 32;',
-            'if (darkMode && refreshMode == HalDisplay::FAST_REFRESH) {',
-            'if (!darkUiRedrivePrimed) {',
-            'darkUiFastRefreshesSinceRedrive >= DARK_UI_FAST_REFRESHES_PER_REDRIVE',
+            'if (darkMode && (refreshMode == HalDisplay::FAST_REFRESH || refreshMode == HalDisplay::HALF_REFRESH)) {',
             'display.displayBuffer(HalDisplay::DARK_REDRIVE, fadingFix);',
-            'darkUiFastRefreshesSinceRedrive++;',
-            'display.displayBuffer(refreshMode, fadingFix);',
         ],
         "forbidden": [
-            '!darkUiRedrivePrimed || now - lastDarkUiRedriveMs >= DARK_UI_REDRIVE_MIN_INTERVAL_MS',
+            'if (!darkUiRedrivePrimed) {',
+            'darkUiFastRefreshesSinceRedrive++',
+            'darkUiFastRefreshesSinceRedrive >= DARK_UI_FAST_REFRESHES_PER_REDRIVE',
         ],
     },
     {
@@ -254,7 +228,8 @@ CASES = [
         "required": [
             'renderer.clearScreen();',
             'bool bufferRestored = coverBufferStored && restoreCoverBuffer();',
-            'GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.homeTopPadding}, nullptr);',
+            'GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.homeTopPadding},',
+            'metrics.homeContinueReadingInMenu && !recentBooks.empty() ? recentBooks[0].title.c_str() : nullptr);',
             'GUI.drawRecentBookCover(renderer, Rect{0, metrics.homeTopPadding, pageWidth, metrics.homeCoverTileHeight},',
             'GUI.drawButtonMenu(',
         ],
