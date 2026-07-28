@@ -169,7 +169,10 @@ class ChapterHtmlSlimParser {
   // the caller can stop once enough pages are built and resume on a later tick.
   enum class ParseStatus { More, Done, Error };
   bool beginParse();
-  ParseStatus parseStep();
+  // maxBytes == 0 uses the normal parser buffer. Background indexing supplies
+  // a smaller value so a single cooperative tick cannot hold the CPU/SD card
+  // for a long stretch before reader input is checked again.
+  ParseStatus parseStep(size_t maxBytes = 0);
   bool finishParse();  // flush the trailing page and tear down; returns true
   void abortParse();   // tear down without flushing (error / abandon)
 

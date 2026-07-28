@@ -52,10 +52,9 @@ Section::Section(const std::shared_ptr<Epub>& epub, const int spineIndex, GfxRen
       renderer(renderer),
       filePath(epub->getCachePath() + "/sections/" + std::to_string(spineIndex) + ".bin") {}
 
-// Suspend any in-progress build so every section.reset() / navigation / sleep path
-// persists the pages already laid out as a partial .bin instead of discarding them
-// (no-op once a build has completed or never started).
-Section::~Section() { suspendBuild(); }
+// Section destruction happens on navigation and activity teardown. Never commit a partial
+// cache here: the commit writes several tables and can block button handling for seconds.
+Section::~Section() { discardBuild(); }
 
 uint32_t Section::onPageComplete(std::unique_ptr<Page> page) {
   if (!file) {
@@ -399,7 +398,7 @@ bool Section::startBuild(const ReaderRenderSpec& spec, const std::function<void(
   return true;
 }
 
-bool Section::buildSomeMore(const int maxPages, const int maxParseSteps) {
+bool Section::buildSomeMore(const int maxPages, const int maxParseSteps, const size_t maxParseBytes) {
   if (!build_ || !build_->parser) {
     LOG_ERR("SCT", "buildSomeMore with no active build");
     return false;
@@ -410,7 +409,7 @@ bool Section::buildSomeMore(const int maxPages, const int maxParseSteps) {
   const int startCount = builtPageCount_;
   int parseSteps = 0;
   for (;;) {
-    const auto status = build_->parser->parseStep();
+    const auto status = build_->parser->parseStep(maxParseBytes);
     ++parseSteps;
     if (status == ChapterHtmlSlimParser::ParseStatus::Error) {
       LOG_ERR("SCT", "Parse error during incremental build");
@@ -643,6 +642,24 @@ void Section::suspendBuild() {
     file.close();
     Storage.remove(binTmpPath().c_str());
   }
+  if (!build_->reusedHtml && Storage.exists(build_->tmpHtmlPath.c_str())) {
+    Storage.remove(build_->tmpHtmlPath.c_str());
+  }
+  build_.reset();
+  buildComplete_ = false;
+  pageCount = partial_ ? partialPageCount_ : 0;
+  builtPageCount_ = 0;
+}
+
+void Section::discardBuild() {
+  if (!build_) return;
+  if (build_->parser) build_->parser->abortParse();
+  if (build_->cssParser) build_->cssParser->clear();
+  if (file) {
+    // Explicit close() required before remove (member variable, O_RDWR handle).
+    file.close();
+  }
+  Storage.remove(binTmpPath().c_str());
   if (!build_->reusedHtml && Storage.exists(build_->tmpHtmlPath.c_str())) {
     Storage.remove(build_->tmpHtmlPath.c_str());
   }

@@ -1399,14 +1399,15 @@ bool ChapterHtmlSlimParser::beginParse() {
   return true;
 }
 
-ChapterHtmlSlimParser::ParseStatus ChapterHtmlSlimParser::parseStep() {
-  void* const buf = XML_GetBuffer(xmlParser_, PARSE_BUFFER_SIZE);
+ChapterHtmlSlimParser::ParseStatus ChapterHtmlSlimParser::parseStep(const size_t maxBytes) {
+  const size_t bufferSize = maxBytes == 0 ? PARSE_BUFFER_SIZE : std::min(maxBytes, PARSE_BUFFER_SIZE);
+  void* const buf = XML_GetBuffer(xmlParser_, bufferSize);
   if (!buf) {
     LOG_ERR("EHP", "Couldn't allocate memory for buffer");
     return ParseStatus::Error;
   }
 
-  const size_t len = parseFile_.read(buf, PARSE_BUFFER_SIZE);
+  const size_t len = parseFile_.read(buf, bufferSize);
 
   if (len == 0 && parseFile_.available() > 0) {
     LOG_ERR("EHP", "File read error");

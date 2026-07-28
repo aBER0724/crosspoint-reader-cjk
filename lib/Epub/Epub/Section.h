@@ -96,7 +96,7 @@ class Section {
   bool startBuild(const ReaderRenderSpec& spec, const std::function<void()>& popupFn = nullptr);
   // Lay out up to maxPages more pages (maxPages <= 0 = build to completion). Returns
   // false on error (the build is abandoned). Sets isBuildComplete() when finished.
-  bool buildSomeMore(int maxPages, int maxParseSteps = 0);
+  bool buildSomeMore(int maxPages, int maxParseSteps = 0, size_t maxParseBytes = 0);
   bool isBuilding() const { return static_cast<bool>(build_); }
   bool isBuildComplete() const { return buildComplete_; }
   // Best-known total page count: the exact pageCount once finalized, or a smoothed byte-based
@@ -104,11 +104,15 @@ class Section {
   // is still building, so "page X of Y" / progress don't read off the small build watermark.
   uint16_t estimatedTotalPages() const;
   void abandonBuild();
+  // Stop an in-progress build without committing its temporary .part file. A
+  // previously committed partial/finalized cache stays intact, so navigation
+  // and teardown never perform a multi-operation SD write on the input path.
+  void discardBuild();
   // Persist an in-progress build as a partial section file (version sentinel + LUTs +
   // watermark trailer) instead of discarding it, so the next open of this spine can show
-  // its pages instantly and only rebuild in the background. Called by the destructor, so
-  // any teardown path (exit, sleep, navigation) keeps the work already done. Keeps a
-  // pre-existing partial when it covers more pages than this build reached.
+  // its pages instantly and only rebuild in the background. This is deliberately explicit:
+  // callers must schedule it away from interactive navigation paths. Keeps a pre-existing
+  // partial when it covers more pages than this build reached.
   void suspendBuild();
   // True when a partial file was loaded: pageCount is a watermark, not the chapter total.
   bool isPartial() const { return partial_; }
