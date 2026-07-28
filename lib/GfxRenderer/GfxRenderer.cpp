@@ -304,18 +304,22 @@ void GfxRenderer::insertFont(const int fontId, EpdFontFamily font) {
 }
 
 int GfxRenderer::resolveTextFontId(const int fontId, const char* text, const EpdFontFamily::Style style) const {
+  // External reader fonts use synthetic negative IDs that are not registered in
+  // fontMap. Resolve them to the built-in fallback family first so measure/draw
+  // paths can still use EPD metrics for glyphs the external font does not cover.
+  const int primaryFontId = getEffectiveFontId(fontId);
   if (fallbackFontMap_.empty() || text == nullptr || *text == '\0') {
-    return fontId;
+    return primaryFontId;
   }
-  const auto fbIt = fallbackFontMap_.find(fontId);
+  const auto fbIt = fallbackFontMap_.find(primaryFontId);
   if (fbIt == fallbackFontMap_.end()) {
-    return fontId;  // no fallback registered for this font
+    return primaryFontId;  // no fallback registered for this font
   }
   const int fallbackFontId = fbIt->second;
-  const auto fontIt = fontMap.find(fontId);
+  const auto fontIt = fontMap.find(primaryFontId);
   const auto fallbackIt = fontMap.find(fallbackFontId);
   if (fontIt == fontMap.end() || fallbackIt == fontMap.end()) {
-    return fontId;  // unknown primary or fallback not loaded — let the caller handle it
+    return primaryFontId;  // unknown primary or fallback not loaded - let the caller handle it
   }
   const EpdFontFamily& primary = fontIt->second;
   const EpdFontFamily& fallback = fallbackIt->second;
@@ -330,7 +334,8 @@ int GfxRenderer::resolveTextFontId(const int fontId, const char* text, const Epd
       return fallbackFontId;
     }
   }
-  return fontId;
+  return primaryFontId;
+
 }
 
 // Translate logical (x,y) coordinates to physical panel coordinates based on current orientation
