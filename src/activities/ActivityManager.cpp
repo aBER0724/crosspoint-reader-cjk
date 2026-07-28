@@ -46,7 +46,7 @@ void ActivityManager::renderTaskLoop() {
     ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
     // Acquire the lock before reading currentActivity to avoid a TOCTOU race
     // where the main task deletes the activity between the null-check and render().
-    RenderLock renderLock;
+    RenderLock renderLock(true, true);
     if (currentActivity) {
       HalPowerManager::Lock powerLock;  // Ensure we don't go into low-power mode while rendering
       currentActivity->render(std::move(renderLock));
@@ -185,6 +185,7 @@ void ActivityManager::exitActivity(const RenderLock& lock) {
 }
 
 void ActivityManager::replaceActivity(std::unique_ptr<Activity>&& newActivity) {
+  invalidateRender();
   // Note: no lock here, this is usually called by loop() and we may run into deadlock
   if (currentActivity) {
     // Defer launch if we're currently in an activity, to avoid deleting the current activity
@@ -260,6 +261,7 @@ void ActivityManager::goHome(HomeMenuItem initialMenuItem) {
 }
 
 void ActivityManager::pushActivity(std::unique_ptr<Activity>&& activity) {
+  invalidateRender();
   if (pendingActivity) {
     // Should never happen in practice
     LOG_ERR("ACT", "pendingActivity while pushActivity is not expected");
@@ -270,6 +272,7 @@ void ActivityManager::pushActivity(std::unique_ptr<Activity>&& activity) {
 }
 
 void ActivityManager::popActivity() {
+  invalidateRender();
   if (pendingActivity) {
     // Should never happen in practice
     LOG_ERR("ACT", "pendingActivity while popActivity is not expected");
@@ -287,6 +290,7 @@ bool ActivityManager::handleForcedRefresh() { return currentActivity && currentA
 bool ActivityManager::skipLoopDelay() const { return currentActivity && currentActivity->skipLoopDelay(); }
 
 void ActivityManager::requestUpdate(bool immediate) {
+  invalidateRender();
   if (immediate) {
     if (renderTaskHandle) {
       xTaskNotify(renderTaskHandle, 1, eIncrement);
@@ -298,6 +302,7 @@ void ActivityManager::requestUpdate(bool immediate) {
   }
 }
 void ActivityManager::requestUpdateAndWait() {
+  invalidateRender();
   if (!renderTaskHandle) {
     return;
   }
@@ -329,8 +334,12 @@ void ActivityManager::requestUpdateAndWait() {
 
 // RenderLock
 
-RenderLock::RenderLock(const bool wait) {
+RenderLock::RenderLock(const bool wait, const bool trackRenderGeneration)
+    : tracksRenderGeneration(trackRenderGeneration) {
   isLocked = xSemaphoreTake(activityManager.renderingMutex, wait ? portMAX_DELAY : 0) == pdTRUE;
+  if (isLocked && tracksRenderGeneration) {
+    renderGeneration = activityManager.renderGeneration.load(std::memory_order_relaxed);
+  }
 }
 
 RenderLock::RenderLock([[maybe_unused]] Activity&) {
@@ -350,6 +359,10 @@ void RenderLock::unlock() {
     xSemaphoreGive(activityManager.renderingMutex);
     isLocked = false;
   }
+}
+
+bool RenderLock::isStale() const {
+  return tracksRenderGeneration && renderGeneration != activityManager.renderGeneration.load(std::memory_order_relaxed);
 }
 
 /**

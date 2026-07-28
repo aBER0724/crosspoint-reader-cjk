@@ -1407,7 +1407,11 @@ void EpubReaderActivity::render(RenderLock&& lock) {
     currentPageFootnotes = std::move(p->footnotes);
 
     const auto start = millis();
-    renderContents(std::move(p), orientedMarginTop, orientedMarginRight, orientedMarginBottom, orientedMarginLeft);
+    renderContents(std::move(p), orientedMarginTop, orientedMarginRight, orientedMarginBottom, orientedMarginLeft,
+                   lock);
+    if (lock.isStale()) {
+      return;
+    }
     LOG_DBG("ERS", "Rendered page in %dms", millis() - start);
   }
   // Only persist when the position actually changed. render() also runs on menu,
@@ -1467,7 +1471,7 @@ bool EpubReaderActivity::saveProgress(int spineIndex, int currentPage, int pageC
 }
 void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int orientedMarginTop,
                                         const int orientedMarginRight, const int orientedMarginBottom,
-                                        const int orientedMarginLeft) {
+                                        const int orientedMarginLeft, const RenderLock& lock) {
   const auto t0 = millis();
   const int fontId = SETTINGS.getReaderFontId();
 
@@ -1600,8 +1604,26 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
         renderer.clearScreen(0x00);
         renderGrayscalePass();
         renderer.endStripTarget();
+        if (lock.isStale()) {
+          return false;
+        }
       }
+      return true;
     };
+
+    bool grayPlaneWritten = false;
+    const auto cancelStaleGrayscale = [&]() {
+      renderer.setRenderMode(GfxRenderer::BW);
+      if (grayPlaneWritten) {
+        renderer.cleanupGrayscaleWithFrameBuffer();
+      }
+      LOG_DBG("ERS", "Cancelled stale grayscale page render");
+    };
+
+    if (lock.isStale()) {
+      cancelStaleGrayscale();
+      return;
+    }
 
     // Tiered on heap pressure: two plane buffers hide both plane renders
     // inside the refresh wait; one hides the LSB render (its buffer is reused
@@ -1627,22 +1649,49 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
     auto msbPlaneBuf = (lsbPlaneBuf && planeBufFits()) ? makeUniqueNoThrow<uint8_t[]>(planeBytes) : nullptr;
 
     if (lsbPlaneBuf) {
-      renderPlaneToBuffer(true, lsbPlaneBuf.get());
-      if (msbPlaneBuf) renderPlaneToBuffer(false, msbPlaneBuf.get());
+      if (!renderPlaneToBuffer(true, lsbPlaneBuf.get())) {
+        cancelStaleGrayscale();
+        return;
+      }
+      if (msbPlaneBuf && !renderPlaneToBuffer(false, msbPlaneBuf.get())) {
+        cancelStaleGrayscale();
+        return;
+      }
       const auto tGrayRender = millis();
 
       renderer.waitRefreshComplete();
       const auto tWait = millis();
 
+      if (lock.isStale()) {
+        cancelStaleGrayscale();
+        return;
+      }
+
       renderer.writeGrayscalePlaneStrip(true, lsbPlaneBuf.get(), 0, gh);
+      grayPlaneWritten = true;
+      if (lock.isStale()) {
+        cancelStaleGrayscale();
+        return;
+      }
       if (msbPlaneBuf) {
         renderer.writeGrayscalePlaneStrip(false, msbPlaneBuf.get(), 0, gh);
       } else {
-        renderPlaneToBuffer(false, lsbPlaneBuf.get());
+        if (!renderPlaneToBuffer(false, lsbPlaneBuf.get())) {
+          cancelStaleGrayscale();
+          return;
+        }
         renderer.writeGrayscalePlaneStrip(false, lsbPlaneBuf.get(), 0, gh);
+      }
+      if (lock.isStale()) {
+        cancelStaleGrayscale();
+        return;
       }
       const auto tGrayWrite = millis();
 
+      if (lock.isStale()) {
+        cancelStaleGrayscale();
+        return;
+      }
       renderer.setRenderMode(GfxRenderer::BW);
       renderer.displayGrayBuffer();
       const auto tGrayDisplay = millis();
@@ -1663,6 +1712,10 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
       // async refresh first (no-op on blocking panels).
       auto scratch = makeUniqueNoThrow<uint8_t[]>(static_cast<size_t>(gwBytes) * STRIP_ROWS);
       renderer.waitRefreshComplete();
+      if (lock.isStale()) {
+        cancelStaleGrayscale();
+        return;
+      }
       if (!scratch) {
         LOG_ERR("ERS", "OOM: grayscale strip scratch (%d bytes); skipping AA this page", gwBytes * STRIP_ROWS);
         if (overlapRefresh) {
@@ -1682,7 +1735,16 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
           renderer.clearScreen(0x00);
           renderGrayscalePass();
           renderer.endStripTarget();
+          if (lock.isStale()) {
+            cancelStaleGrayscale();
+            return;
+          }
           renderer.writeGrayscalePlaneStrip(true, scratch.get(), y, rows);
+          grayPlaneWritten = true;
+          if (lock.isStale()) {
+            cancelStaleGrayscale();
+            return;
+          }
         }
         const auto tGrayLsb = millis();
 
@@ -1694,10 +1756,23 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
           renderer.clearScreen(0x00);
           renderGrayscalePass();
           renderer.endStripTarget();
+          if (lock.isStale()) {
+            cancelStaleGrayscale();
+            return;
+          }
           renderer.writeGrayscalePlaneStrip(false, scratch.get(), y, rows);
+          grayPlaneWritten = true;
+          if (lock.isStale()) {
+            cancelStaleGrayscale();
+            return;
+          }
         }
         const auto tGrayMsb = millis();
 
+        if (lock.isStale()) {
+          cancelStaleGrayscale();
+          return;
+        }
         renderer.setRenderMode(GfxRenderer::BW);
         renderer.displayGrayBuffer();
         const auto tGrayDisplay = millis();
@@ -1730,11 +1805,27 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
       }
       const auto tBwStore = millis();
 
+      const auto cancelStaleFallbackGrayscale = [&]() {
+        renderer.setRenderMode(GfxRenderer::BW);
+        renderer.restoreBwBuffer();
+        LOG_DBG("ERS", "Cancelled stale grayscale page render");
+      };
+
+      if (lock.isStale()) {
+        cancelStaleFallbackGrayscale();
+        return;
+      }
+
       renderer.clearScreen(0x00);
       renderer.setRenderMode(GfxRenderer::GRAYSCALE_LSB);
       renderGrayscalePass();
       renderer.copyGrayscaleLsbBuffers();
       const auto tGrayLsb = millis();
+
+      if (lock.isStale()) {
+        cancelStaleFallbackGrayscale();
+        return;
+      }
 
       // Render and copy to MSB buffer
       renderer.clearScreen(0x00);
@@ -1743,12 +1834,22 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
       renderer.copyGrayscaleMsbBuffers();
       const auto tGrayMsb = millis();
 
+      if (lock.isStale()) {
+        cancelStaleFallbackGrayscale();
+        return;
+      }
+
       // display grayscale part
       renderer.displayGrayBuffer();
       const auto tGrayDisplay = millis();
       renderer.setRenderMode(GfxRenderer::BW);
       renderer.restoreBwBuffer();
       const auto tBwRestore = millis();
+
+      if (lock.isStale()) {
+        LOG_DBG("ERS", "Cancelled stale grayscale page render");
+        return;
+      }
 
       const auto tEnd = millis();
       LOG_DBG("ERS",
@@ -1776,7 +1877,8 @@ void EpubReaderActivity::renderStatusBar() const {
   if (pageCount < 0) pageCount = 0;
   if (pageCount > 0 && currentPage > pageCount) currentPage = pageCount;
   if (pageCount == 0 && currentPage > 0) pageCount = currentPage;
-  const float sectionChapterProg = (pageCount > 0) ? (static_cast<float>(currentPage) / static_cast<float>(pageCount)) : 0;
+  const float sectionChapterProg =
+      (pageCount > 0) ? (static_cast<float>(currentPage) / static_cast<float>(pageCount)) : 0;
   const float bookProgress = epub->calculateProgress(currentSpineIndex, sectionChapterProg) * 100;
 
   std::string title;
