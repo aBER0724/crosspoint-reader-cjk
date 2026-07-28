@@ -61,6 +61,13 @@ class ActivityManager {
   // Must only be used via RenderLock
   SemaphoreHandle_t renderingMutex = nullptr;
 
+  // Bumped whenever new input supersedes the render currently in progress.
+  // Long-running render paths use this through RenderLock to stop at a safe
+  // boundary instead of making activity transitions wait for stale work.
+  std::atomic<uint32_t> renderGeneration{0};
+
+  void invalidateRender() { renderGeneration.fetch_add(1, std::memory_order_relaxed); }
+
   // Whether to trigger a render after the current loop()
   // This variable must only be set by the main loop, to avoid race conditions
   std::atomic<bool> requestedUpdate{false};

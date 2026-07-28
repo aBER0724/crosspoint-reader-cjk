@@ -88,7 +88,7 @@ class EpubReaderActivity final : public Activity {
   int lastSavedPageCount = -1;
 
   void renderContents(std::unique_ptr<Page> page, int orientedMarginTop, int orientedMarginRight,
-                      int orientedMarginBottom, int orientedMarginLeft);
+                      int orientedMarginBottom, int orientedMarginLeft, const RenderLock& lock);
   void renderStatusBar() const;
   // Pages laid out per incremental-build pump: on the render path (catching up to the page
   // being shown) and per loop() tick (background build of a large chapter). Background work is
@@ -196,8 +196,7 @@ class EpubReaderActivity final : public Activity {
   // parsing work.
   bool skipLoopDelay() override {
     return section && section->isBuilding() && !buildHeapPaused &&
-           (section->isPartial() ||
-            static_cast<int>(section->pageCount) < section->currentPage + BUILD_WINDOW_AHEAD) &&
+           (section->isPartial() || static_cast<int>(section->pageCount) < section->currentPage + BUILD_WINDOW_AHEAD) &&
            !RenderLock::peek() && millis() - lastReaderInputMs >= IDLE_READER_WORK_DELAY_MS &&
            millis() - lastBackgroundBuildMs >= BACKGROUND_BUILD_INTERVAL_MS;
   }
