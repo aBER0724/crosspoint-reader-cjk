@@ -1773,9 +1773,14 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
 void EpubReaderActivity::renderStatusBar() const {
   // Calculate progress in book. Use the estimated total while a giant spine is still building so
   // "page X of Y" and the progress bar don't read off the small build watermark.
-  const int currentPage = section->currentPage + 1;
-  const float pageCount = section->estimatedTotalPages();
-  const float sectionChapterProg = (pageCount > 0) ? (static_cast<float>(currentPage) / pageCount) : 0;
+  // Display values are clamped so transient rebuild/OOM states cannot show negative counters.
+  int currentPage = section ? section->currentPage + 1 : 0;
+  int pageCount = section ? static_cast<int>(section->estimatedTotalPages()) : 0;
+  if (currentPage < 0) currentPage = 0;
+  if (pageCount < 0) pageCount = 0;
+  if (pageCount > 0 && currentPage > pageCount) currentPage = pageCount;
+  if (pageCount == 0 && currentPage > 0) pageCount = currentPage;
+  const float sectionChapterProg = (pageCount > 0) ? (static_cast<float>(currentPage) / static_cast<float>(pageCount)) : 0;
   const float bookProgress = epub->calculateProgress(currentSpineIndex, sectionChapterProg) * 100;
 
   std::string title;

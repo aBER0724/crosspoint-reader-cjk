@@ -430,12 +430,18 @@ void TxtReaderActivity::renderPage() {
 }
 
 void TxtReaderActivity::renderStatusBar() const {
-  const float progress = totalPages > 0 ? (currentPage + 1) * 100.0f / totalPages : 0;
+  int displayPage = currentPage + 1;
+  int displayTotal = totalPages;
+  if (displayPage < 0) displayPage = 0;
+  if (displayTotal < 0) displayTotal = 0;
+  if (displayTotal > 0 && displayPage > displayTotal) displayPage = displayTotal;
+  if (displayTotal == 0 && displayPage > 0) displayTotal = displayPage;
+  const float progress = displayTotal > 0 ? displayPage * 100.0f / displayTotal : 0;
   std::string title;
   if (SETTINGS.statusBarSpec().showsTitle()) {
     title = txt->getTitle();
   }
-  GUI.drawStatusBar(renderer, progress, currentPage + 1, totalPages, title);
+  GUI.drawStatusBar(renderer, progress, displayPage, displayTotal, title);
 }
 
 void TxtReaderActivity::saveProgress() const {
