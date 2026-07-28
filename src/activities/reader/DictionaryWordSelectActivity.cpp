@@ -298,8 +298,10 @@ void DictionaryWordSelectActivity::render(RenderLock&&) {
     renderer.writeFramebufferRegion(snapshotX, snapshotY, snapshotW, snapshotH, snapshot.get());
     // The full path's PrewarmScope cleared the glyph cache on exit; batch-load
     // just the highlighted word's glyphs before drawing them white-on-black.
-    renderer.getFontCacheManager()->prewarmCache(
-        fontId, words[selected].text, static_cast<uint8_t>(1u << (static_cast<uint8_t>(words[selected].style) & 0x03)));
+    if (auto* fcmFast = renderer.getFontCacheManager()) {
+      fcmFast->prewarmCache(fontId, words[selected].text,
+                            static_cast<uint8_t>(1u << (static_cast<uint8_t>(words[selected].style) & 0x03)));
+    }
     if (drawHighlightWithSnapshot()) {
       drawHints();
       if (renderer.isDarkMode()) {
@@ -316,10 +318,11 @@ void DictionaryWordSelectActivity::render(RenderLock&&) {
 
   // Same prewarm-scan-then-render pass the reader uses, so SD-card fonts hit
   // the in-RAM glyph cache during the real draw.
-  auto* fcm = renderer.getFontCacheManager();
-  auto scope = fcm->createPrewarmScope();
-  page->render(renderer, fontId, marginLeft, marginTop);
-  scope.endScanAndPrewarm();
+  if (auto* fcm = renderer.getFontCacheManager()) {
+    auto scope = fcm->createPrewarmScope();
+    page->render(renderer, fontId, marginLeft, marginTop);
+    scope.endScanAndPrewarm();
+  }
   page->render(renderer, fontId, marginLeft, marginTop);
 
   if (!words.empty()) {
