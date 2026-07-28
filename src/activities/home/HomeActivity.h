@@ -24,6 +24,10 @@ class HomeActivity final : public Activity {
   bool backPressSeen = false;
   uint8_t* coverBuffer = nullptr;  // HomeActivity's own buffer for cover image
   size_t coverBufferSize = 0;      // Bytes allocated to coverBuffer
+  // Defer cover generation so menu navigation stays responsive after thumb
+  // cache version bumps force mass regeneration.
+  static constexpr unsigned long RECENT_COVER_LOAD_IDLE_MS = 5000;
+  static constexpr unsigned long RECENT_COVER_LOAD_INTERVAL_MS = 1000;
   // Logical rect last passed to drawRecentBookCover. The cover snapshot only
   // needs to cover this region, not the entire framebuffer, so we cache the
   // tile instead of all 48 KB. Set in render() before the call.
@@ -32,6 +36,8 @@ class HomeActivity final : public Activity {
   int coverRectW = 0;
   int coverRectH = 0;
   std::vector<RecentBook> recentBooks;
+  size_t nextRecentCoverIndex = 0;
+  unsigned long nextRecentCoverLoadAt = 0;
   const HomeMenuItem initialMenuItem;
 
   // Convert HomeMenuItem to menu index (used in onEnter)
@@ -71,7 +77,7 @@ class HomeActivity final : public Activity {
   bool restoreCoverBuffer();  // Restore frame buffer from stored cover
   void freeCoverBuffer();     // Free the stored cover buffer
   void loadRecentBooks(int maxBooks);
-  void loadRecentCovers(int coverHeight);
+  void loadNextRecentCover(int coverHeight);
 
  public:
   explicit HomeActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
