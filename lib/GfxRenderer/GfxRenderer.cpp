@@ -975,8 +975,7 @@ int GfxRenderer::measureTextAdvance(const int resolvedFontId, const EpdFontFamil
       }
 
       if (fastPrevCp != 0) {
-        fastWidthPx +=
-            snapTextAdvance(fastPrevAdvanceFP + fontFamily.getKerning(fastPrevCp, cp, style), isSupSub);
+        fastWidthPx += snapTextAdvance(fastPrevAdvanceFP + fontFamily.getKerning(fastPrevCp, cp, style), isSupSub);
       }
       fastPrevAdvanceFP = advanceFP;
       fastPrevCp = cp;
@@ -1142,10 +1141,9 @@ void GfxRenderer::drawText(const int fontId, const int x, const int y, const cha
                          : (hasFallback ? (isSupSub ? fallback.metrics.left / 2 : fallback.metrics.left) : 0);
     lastBaseWidth = glyph ? (isSupSub ? (glyph->width + 1) / 2 : glyph->width)
                           : (hasFallback ? (isSupSub ? (fallbackWidth + 1) / 2 : fallbackWidth) : 0);
-    const int fallbackTop =
-        hasFallback ? (isSupSub ? fallback.metrics.top / 2 - fallback.baselineOffset / 2
-                                : fallback.metrics.top - fallback.baselineOffset)
-                    : 0;
+    const int fallbackTop = hasFallback ? (isSupSub ? fallback.metrics.top / 2 - fallback.baselineOffset / 2
+                                                    : fallback.metrics.top - fallback.baselineOffset)
+                                        : 0;
     lastBaseTop = glyph ? (isSupSub ? glyph->top / 2 : glyph->top) : fallbackTop;
 
     if (glyph) {
@@ -2427,9 +2425,9 @@ int GfxRenderer::getSpaceWidth(const int fontId, const EpdFontFamily::Style styl
       ExternalFont* extFont = fm.getActiveFont();
       ExternalGlyphMetrics metrics{};
       if (extFont && extFont->getGlyphMetricsForLayout(' ', &metrics)) {
-        const int advance = getExternalGlyphAdvanceForRendering(metrics, extFont->getCharWidth(), 0,
-                                                                shouldUseCjkSymbolCellMetrics(' '),
-                                                                shouldUseGlyphBoundsForAdvance(' '));
+        const int advance =
+            getExternalGlyphAdvanceForRendering(metrics, extFont->getCharWidth(), 0, shouldUseCjkSymbolCellMetrics(' '),
+                                                shouldUseGlyphBoundsForAdvance(' '));
         return scalePositiveTextAdvance(advance, isSupSub);
       }
     }

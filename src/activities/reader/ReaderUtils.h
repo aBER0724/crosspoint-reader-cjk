@@ -5,11 +5,11 @@
 #include <HalGPIO.h>
 #include <HalTiltSensor.h>
 #include <Logging.h>
+#include <ReaderRuntimePolicy.h>
 #include <components/bars/tap-zones.h>
 
 #include "MappedInputManager.h"
 #include "activities/ActivityManager.h"
-#include <ReaderRuntimePolicy.h>
 
 namespace ReaderUtils {
 

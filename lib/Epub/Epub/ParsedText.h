@@ -38,9 +38,7 @@ class ParsedText {
   std::vector<bool> reorderedFocusSuffixScratch;
   std::vector<uint16_t> visualOrderScratch;
 
-  std::string_view wordView(size_t index) const {
-    return {wordArena.data() + wordOffsets[index], wordLengths[index]};
-  }
+  std::string_view wordView(size_t index) const { return {wordArena.data() + wordOffsets[index], wordLengths[index]}; }
   void pushWord(std::string_view word, EpdFontFamily::Style style, bool continues, bool noSpaceBefore = false,
                 bool isFocusSuffix = false);
   void replaceWord(size_t index, std::string_view word);

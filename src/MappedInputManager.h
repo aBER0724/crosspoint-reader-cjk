@@ -97,7 +97,6 @@ class MappedInputManager {
   const GfxRenderer* renderer = nullptr;
   Orientation effectiveOrientation = Orientation::Portrait;
 
-
   bool mapButton(Button button, bool (HalGPIO::*fn)(uint8_t) const) const;
   bool checkBluetooth(Button button, BtFn pageBackFn, BtFn pageForwardFn) const;
 

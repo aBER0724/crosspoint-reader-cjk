@@ -5,11 +5,10 @@
 #include <HalStorage.h>
 #include <Logging.h>
 
-#include "util/BookCacheUtils.h"
-#include "util/TaskWatchdog.h"
-
 #include "StoragePathPolicy.h"
 #include "WebAdminAuth.h"
+#include "util/BookCacheUtils.h"
+#include "util/TaskWatchdog.h"
 
 namespace {
 // RFC 1123 date format helper: "Sun, 06 Nov 1994 08:49:37 GMT"

@@ -173,8 +173,8 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
                           "uiTheme", StrId::STR_CAT_DISPLAY),
         SettingInfo::Toggle(StrId::STR_SUNLIGHT_FADING_FIX, &CrossPointSettings::fadingFix, "fadingFix",
                             StrId::STR_CAT_DISPLAY),
-        SettingInfo::Enum(StrId::STR_COLOR_MODE, &CrossPointSettings::colorMode,
-                          {StrId::STR_LIGHT, StrId::STR_DARK}, "colorMode", StrId::STR_CAT_DISPLAY),
+        SettingInfo::Enum(StrId::STR_COLOR_MODE, &CrossPointSettings::colorMode, {StrId::STR_LIGHT, StrId::STR_DARK},
+                          "colorMode", StrId::STR_CAT_DISPLAY),
         SettingInfo::Enum(StrId::STR_UI_ORIENTATION, &CrossPointSettings::uiOrientation,
                           {StrId::STR_PORTRAIT, StrId::STR_INVERTED}, "uiOrientation", StrId::STR_CAT_DISPLAY),
 

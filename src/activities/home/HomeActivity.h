@@ -16,9 +16,9 @@ class HomeActivity final : public Activity {
   bool recentsLoaded = false;
   bool firstRenderDone = false;
   bool hasOpdsServers = false;
-  bool coverRendered = false;      // Track if cover has been rendered once
-  bool coverBufferStored = false;  // Track if cover buffer is stored
-  bool coverBufferDarkMode = false; // Reject cover snapshots created for the opposite display mode
+  bool coverRendered = false;        // Track if cover has been rendered once
+  bool coverBufferStored = false;    // Track if cover buffer is stored
+  bool coverBufferDarkMode = false;  // Reject cover snapshots created for the opposite display mode
   // Home can be entered while Back is still held (e.g. leaving Settings with
   // Back): ignore that stale release until a fresh press is seen here.
   bool backPressSeen = false;

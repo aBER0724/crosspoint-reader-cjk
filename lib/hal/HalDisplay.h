@@ -14,7 +14,7 @@ class HalDisplay {
   enum RefreshMode {
     FULL_REFRESH,  // Full refresh with complete waveform
     HALF_REFRESH,  // Half refresh (1720ms) - balanced quality and speed
-    FAST_REFRESH,   // Fast refresh using custom LUT
+    FAST_REFRESH,  // Fast refresh using custom LUT
     // Re-drives all pixels without the dark-mode background fade caused by
     // ordinary FAST/HALF refresh waveforms.
     DARK_REDRIVE

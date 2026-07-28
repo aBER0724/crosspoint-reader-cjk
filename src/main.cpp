@@ -3,6 +3,7 @@
 #include <Epub.h>
 #include <FontCacheManager.h>
 #include <FontDecompressor.h>
+#include <FontManager.h>
 #include <GfxRenderer.h>
 #include <HalClock.h>
 #include <HalDisplay.h>
@@ -31,11 +32,10 @@
 #include "activities/settings/SdFirmwareUpdateActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
-#include "input/BluetoothPageTurnManager.h"
 #include "images/LoadingIcon.h"
+#include "input/BluetoothPageTurnManager.h"
 #include "util/ButtonNavigator.h"
 #include "util/ScreenshotUtil.h"
-#include <FontManager.h>
 
 GfxRenderer renderer(display);
 MappedInputManager mappedInputManager(gpio, &BLUETOOTH_PAGE_TURN.getState());
