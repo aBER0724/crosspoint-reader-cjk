@@ -354,8 +354,7 @@ void TxtReaderActivity::render(RenderLock&&) {
 
 void TxtReaderActivity::renderPage() {
   const int baseLineHeight = renderer.getLineHeight(cachedFontId);
-  const int lineHeight =
-      std::max(1, static_cast<int>(baseLineHeight * SETTINGS.getReaderLineCompression() + 0.5f));
+  const int lineHeight = std::max(1, static_cast<int>(baseLineHeight * SETTINGS.getReaderLineCompression() + 0.5f));
   const int contentWidth = viewportWidth;
 
   // Render text lines with alignment

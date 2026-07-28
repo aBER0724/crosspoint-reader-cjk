@@ -114,8 +114,8 @@ void BmpViewerActivity::onEnter() {
   const bool hasNext = siblingImages.size() > 1 && currentImageIndex >= 0 &&
                        currentImageIndex < static_cast<int>(siblingImages.size()) - 1;
   const bool isBmp = StringUtils::checkFileExtension(filePath, ".bmp");
-  const auto labels = mappedInput.mapLabels(tr(STR_BACK), isBmp ? tr(STR_SET_SLEEP_COVER) : "",
-                                            hasPrevious ? "<" : "", hasNext ? ">" : "");
+  const auto labels = mappedInput.mapLabels(tr(STR_BACK), isBmp ? tr(STR_SET_SLEEP_COVER) : "", hasPrevious ? "<" : "",
+                                            hasNext ? ">" : "");
 
   const int pageWidth = renderer.getScreenWidth();
   const int pageHeight = renderer.getScreenHeight();

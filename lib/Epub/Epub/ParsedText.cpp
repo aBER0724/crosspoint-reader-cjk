@@ -9,8 +9,8 @@
 #include <cmath>
 #include <functional>
 #include <limits>
-#include <string_view>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "hyphenation/Hyphenator.h"
@@ -409,8 +409,8 @@ void ParsedText::addWord(const std::string_view inputWord, const EpdFontFamily::
 
       if (targetBoldChars >= charCount) {
         // Whole segment is bold - no suffix split needed
-        pushWord(segment, static_cast<EpdFontFamily::Style>(baseStyle | EpdFontFamily::BOLD), attach,
-                 noSpaceBefore, false);
+        pushWord(segment, static_cast<EpdFontFamily::Style>(baseStyle | EpdFontFamily::BOLD), attach, noSpaceBefore,
+                 false);
       } else {
         countPtr = reinterpret_cast<const unsigned char*>(segment.data());
         for (size_t i = 0; i < targetBoldChars; ++i) {
@@ -613,11 +613,12 @@ std::vector<size_t> ParsedText::computeLineBreaks(const GfxRenderer& renderer, c
       if (j > static_cast<size_t>(i) && noSpaceBeforeVec[j]) {
         gap = 0;
       } else if (j > static_cast<size_t>(i) && !continuesVec[j]) {
-        gap =
-            renderer.getSpaceAdvance(fontId, lastCodepoint(wordView(j - 1)), firstCodepoint(wordView(j)), wordStyles[j - 1]);
+        gap = renderer.getSpaceAdvance(fontId, lastCodepoint(wordView(j - 1)), firstCodepoint(wordView(j)),
+                                       wordStyles[j - 1]);
       } else if (j > static_cast<size_t>(i) && continuesVec[j]) {
         // Cross-boundary kerning for continuation words (e.g. nonbreaking spaces, attached punctuation)
-        gap = renderer.getKerning(fontId, lastCodepoint(wordView(j - 1)), firstCodepoint(wordView(j)), wordStyles[j - 1]);
+        gap =
+            renderer.getKerning(fontId, lastCodepoint(wordView(j - 1)), firstCodepoint(wordView(j)), wordStyles[j - 1]);
       }
       currlen += wordWidths[j] + gap;
 

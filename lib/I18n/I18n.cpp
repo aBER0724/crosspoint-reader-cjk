@@ -2,8 +2,9 @@
 
 #include <HalStorage.h>
 #include <HardwareSerial.h>
-#include <cstring>
 #include <Serialization.h>
+
+#include <cstring>
 
 #include "I18nStrings.h"
 
@@ -82,7 +83,6 @@ void I18n::loadSettings() {
     Serial.printf("[I18N] Loaded language: %d\n", static_cast<int>(_language));
   }
 }
-
 
 Language I18n::languageFromCode(const char* code) {
   if (code == nullptr) {

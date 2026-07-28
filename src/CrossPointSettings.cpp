@@ -1,5 +1,6 @@
 #include "CrossPointSettings.h"
 
+#include <FontManager.h>
 #include <I18n.h>
 #include <Logging.h>
 #include <ObfuscationUtils.h>
@@ -11,7 +12,6 @@
 #include "I18nKeys.h"
 #include "SettingsList.h"
 #include "fontIds.h"
-#include <FontManager.h>
 
 namespace {
 
@@ -380,4 +380,3 @@ int CrossPointSettings::getBuiltInReaderFontId() const {
       }
   }
 }
-

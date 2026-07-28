@@ -296,9 +296,9 @@ bool MappedInputManager::wasHomeGesture() const {
 
 bool MappedInputManager::wasPressed(const Button button) const {
   if (button == Button::Back && wasBackGesture()) return true;
-  const bool physical = mapButton(button, &HalGPIO::wasPressed) ||
-                        checkBluetooth(button, &BluetoothPageTurnState::wasPageBackPressed,
-                                       &BluetoothPageTurnState::wasPageForwardPressed);
+  const bool physical =
+      mapButton(button, &HalGPIO::wasPressed) || checkBluetooth(button, &BluetoothPageTurnState::wasPageBackPressed,
+                                                                &BluetoothPageTurnState::wasPageForwardPressed);
 #ifdef ENABLE_SERIAL_INPUT_TEST
   return physical || testButtons[static_cast<size_t>(button)].pressed;
 #else
@@ -308,9 +308,9 @@ bool MappedInputManager::wasPressed(const Button button) const {
 
 bool MappedInputManager::wasReleased(const Button button) const {
   if (button == Button::Back && wasBackGesture()) return true;
-  const bool physical = mapButton(button, &HalGPIO::wasReleased) ||
-                        checkBluetooth(button, &BluetoothPageTurnState::wasPageBackReleased,
-                                       &BluetoothPageTurnState::wasPageForwardReleased);
+  const bool physical =
+      mapButton(button, &HalGPIO::wasReleased) || checkBluetooth(button, &BluetoothPageTurnState::wasPageBackReleased,
+                                                                 &BluetoothPageTurnState::wasPageForwardReleased);
 #ifdef ENABLE_SERIAL_INPUT_TEST
   return physical || testButtons[static_cast<size_t>(button)].released;
 #else
@@ -319,9 +319,9 @@ bool MappedInputManager::wasReleased(const Button button) const {
 }
 
 bool MappedInputManager::isPressed(const Button button) const {
-  const bool physical = mapButton(button, &HalGPIO::isPressed) ||
-                        checkBluetooth(button, &BluetoothPageTurnState::isPageBackPressed,
-                                       &BluetoothPageTurnState::isPageForwardPressed);
+  const bool physical =
+      mapButton(button, &HalGPIO::isPressed) ||
+      checkBluetooth(button, &BluetoothPageTurnState::isPageBackPressed, &BluetoothPageTurnState::isPageForwardPressed);
 #ifdef ENABLE_SERIAL_INPUT_TEST
   return physical || testButtons[static_cast<size_t>(button)].held;
 #else

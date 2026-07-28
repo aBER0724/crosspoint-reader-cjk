@@ -16,8 +16,8 @@ namespace {
 // OpenDyslexic is no longer a built-in FONT_FAMILY value; legacy saves migrate to
 // sdFontFamilyName="OpenDyslexic" and appear via FontManager external/SD fonts.
 constexpr int kBuiltinReaderFontCount = 2;
-constexpr CrossPointSettings::FONT_FAMILY kBuiltinReaderFonts[kBuiltinReaderFontCount] = {
-    CrossPointSettings::NOTOSERIF, CrossPointSettings::NOTOSANS};
+constexpr CrossPointSettings::FONT_FAMILY kBuiltinReaderFonts[kBuiltinReaderFontCount] = {CrossPointSettings::NOTOSERIF,
+                                                                                          CrossPointSettings::NOTOSANS};
 constexpr StrId kBuiltinReaderFontLabels[kBuiltinReaderFontCount] = {StrId::STR_NOTO_SERIF, StrId::STR_NOTO_SANS};
 }  // namespace
 

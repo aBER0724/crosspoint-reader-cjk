@@ -670,7 +670,7 @@ void CrossPointWebServer::scanFiles(const char* path, const std::function<bool(c
     }
 
     file.close();
-    yield();               // Yield to allow WiFi and other tasks to process during long scans
+    yield();                          // Yield to allow WiFi and other tasks to process during long scans
     resetTaskWatchdogIfSubscribed();  // Reset watchdog to prevent timeout on large directories
     file = root.openNextFile();
   }
@@ -2247,7 +2247,6 @@ void CrossPointWebServer::handleWifiDelete() const {
     server->send(404, "application/json", "{\"error\":\"Credential not found\"}");
   }
 }
-
 
 // --- Font management handlers ---
 

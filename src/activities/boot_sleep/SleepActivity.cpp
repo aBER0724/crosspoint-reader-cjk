@@ -22,8 +22,8 @@ void SleepActivity::onEnter() {
   sleepStartedInDarkMode = renderer.isDarkMode();
   const bool renderQuickResume =
       SETTINGS.sleepScreen == CrossPointSettings::SLEEP_SCREEN_MODE::QUICK_RESUME ||
-      (fromTimeout && SETTINGS.quickResumeSleepScreen ==
-                          CrossPointSettings::QUICK_RESUME_SLEEP_SCREEN::QUICK_RESUME_AFTER_TIMEOUT);
+      (fromTimeout &&
+       SETTINGS.quickResumeSleepScreen == CrossPointSettings::QUICK_RESUME_SLEEP_SCREEN::QUICK_RESUME_AFTER_TIMEOUT);
   if (renderQuickResume) {
     renderLastScreenSleepScreen();
     return;
@@ -354,8 +354,6 @@ void SleepActivity::renderLastScreenSleepScreen() const {
   renderer.drawImage(MoonIcon, 0, pageHeight - MOONICON_HEIGHT, MOONICON_WIDTH, MOONICON_HEIGHT);
   displaySleepBuffer();
 }
-
-
 
 void SleepActivity::renderBlankSleepScreen() const {
   renderer.clearScreen();
