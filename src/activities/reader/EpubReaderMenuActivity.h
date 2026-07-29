@@ -53,6 +53,7 @@ class EpubReaderMenuActivity final : public Activity {
   int selectedIndex = 0;
   int lastRenderedSelectedIndex = -1;
   bool fullRedrawRequired = true;
+  bool readerInputActive = false;
 
   ButtonNavigator buttonNavigator;
   OptionPopup optionPopup;

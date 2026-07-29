@@ -86,6 +86,13 @@ class GfxRenderer {
   mutable int partialY_ = 0;
   mutable int partialW_ = 0;
   mutable int partialH_ = 0;
+  // ActivityManager enables this only while the render task owns RenderLock.
+  // A complete frame can then be prepared while an earlier async waveform is
+  // running; the manager submits the newest prepared frame once the panel is
+  // idle instead of making the render task wait while holding the lock.
+  mutable bool deferRefreshWhileBusy_ = false;
+  mutable bool deferredRefreshPending_ = false;
+  mutable HalDisplay::RefreshMode deferredRefreshMode_ = HalDisplay::FAST_REFRESH;
 
   // Mutable because drawText() is const but needs to delegate scan-mode
   // recording to the (non-const) FontCacheManager. Same pragmatic compromise
@@ -252,7 +259,7 @@ class GfxRenderer {
   int getScreenHeight() const;
   void tapToLogical(float nx, float ny, int& outX, int& outY) const;
   void displayBuffer(HalDisplay::RefreshMode refreshMode = HalDisplay::FAST_REFRESH) const;
-  void displayBufferDarkRedrive() const { display.displayBuffer(HalDisplay::DARK_REDRIVE, fadingFix); }
+  void displayBufferDarkRedrive() const { displayBuffer(HalDisplay::DARK_REDRIVE); }
   // Set a one-shot partial refresh region in logical coordinates. The next FAST_REFRESH
   // displayBuffer() call refreshes only this region and then clears the region.
   void setPartialUpdateRect(int x, int y, int width, int height) const;
@@ -262,7 +269,18 @@ class GfxRenderer {
   // Falls back to a blocking refresh when fadingFix is enabled or the panel
   // lacks deferral support. See HalDisplay::displayBufferAsync for details.
   void displayBufferAsync(HalDisplay::RefreshMode refreshMode = HalDisplay::FAST_REFRESH) const;
+  // Reports a deferred panel refresh without waiting for it. ActivityManager
+  // uses this to coalesce interactive updates instead of holding RenderLock on
+  // a follow-up synchronous display call.
+  bool refreshBusy() const;
   void waitRefreshComplete() const;
+  // Rendering runs under ActivityManager's RenderLock. When this is enabled,
+  // display requests made during an active async waveform are retained as one
+  // full-frame refresh instead of waiting in the render task.
+  void setDeferRefreshWhileBusy(bool defer) { deferRefreshWhileBusy_ = defer; }
+  // Must be called while holding ActivityManager's RenderLock. Starts the
+  // most recently deferred full-frame update after the prior waveform ends.
+  bool flushDeferredRefresh();
   // True when displayBufferAsync() genuinely overlaps: panel defers and
   // fadingFix isn't forcing the blocking path. Callers can skip overlap
   // scaffolding (e.g. whole-plane grayscale buffers) when false.

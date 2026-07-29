@@ -68,9 +68,20 @@ class ActivityManager {
 
   void invalidateRender() { renderGeneration.fetch_add(1, std::memory_order_relaxed); }
 
-  // Whether to trigger a render after the current loop()
-  // This variable must only be set by the main loop, to avoid race conditions
+  // Whether to trigger a render after the current loop(). Both the main and
+  // render tasks may set it; atomic access coalesces concurrent requests.
   std::atomic<bool> requestedUpdate{false};
+
+  // State/completion serials let loop() distinguish a staged current frame
+  // from one that input has already superseded. A boolean can lose the race
+  // where a new notification arrives as the render task clears it.
+  std::atomic<uint32_t> renderRequestSerial{0};
+  std::atomic<uint32_t> completedRenderSerial{0};
+
+  // Protected by activityManagerSpinlock together with waitingTaskHandle.
+  uint32_t waitingRenderSerial = 0;
+
+  void notifyRenderTask();
 
  public:
   explicit ActivityManager(GfxRenderer& renderer, MappedInputManager& mappedInput)
@@ -111,10 +122,14 @@ class ActivityManager {
   bool handleForcedRefresh();
   bool skipLoopDelay() const;
 
-  // Mark the active render as stale without scheduling a replacement. Input
-  // paths use this to let an in-progress reader render release RenderLock
-  // before the action is finalized on button/touch release.
-  void cancelCurrentRender() { invalidateRender(); }
+  // Mark the active render and any staged framebuffer as stale without
+  // scheduling a replacement. Input paths use this to let an in-progress
+  // reader render release RenderLock before the action is finalized on
+  // button/touch release.
+  void cancelCurrentRender() {
+    invalidateRender();
+    renderRequestSerial.fetch_add(1, std::memory_order_relaxed);
+  }
 
   // If immediate is true, the update will be triggered immediately.
   // Otherwise, it will be deferred until the end of the current loop iteration.

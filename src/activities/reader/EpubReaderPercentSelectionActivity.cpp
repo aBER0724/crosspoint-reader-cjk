@@ -40,6 +40,25 @@ void EpubReaderPercentSelectionActivity::adjustPercent(const int delta) {
 }
 
 void EpubReaderPercentSelectionActivity::loop() {
+  const bool inputActive = mappedInput.wasAnyPressed() || mappedInput.wasAnyReleased() ||
+                           mappedInput.isPressed(MappedInputManager::Button::Back) ||
+                           mappedInput.isPressed(MappedInputManager::Button::Confirm) ||
+                           mappedInput.isPressed(MappedInputManager::Button::Left) ||
+                           mappedInput.isPressed(MappedInputManager::Button::Right) ||
+                           mappedInput.isPressed(MappedInputManager::Button::Up) ||
+                           mappedInput.isPressed(MappedInputManager::Button::Down) ||
+                           mappedInput.isPressed(MappedInputManager::Button::NavNext) ||
+                           mappedInput.isPressed(MappedInputManager::Button::NavPrevious) ||
+                           mappedInput.isPressed(MappedInputManager::Button::Power) || gpio.wasTouchActivity();
+  if (inputActive) {
+    if (!readerInputActive) {
+      activityManager.cancelCurrentRender();
+      readerInputActive = true;
+    }
+  } else {
+    readerInputActive = false;
+  }
+
   auto& theme = UITheme::getInstance();
   auto metrics = theme.getMetrics();
   Rect screen = theme.getScreenSafeArea(renderer, true, false);
@@ -172,11 +191,13 @@ void EpubReaderPercentSelectionActivity::render(RenderLock&&) {
   }
 
   if (partialUpdate) {
-    renderer.displayBuffer();
+    // The partial window API blocks on the previous waveform. The framebuffer
+    // already has the full current UI, so use an async complete-frame submit.
+    renderer.displayBufferAsync();
   } else if (renderer.isDarkMode()) {
     renderer.displayBufferDarkRedrive();
   } else {
-    renderer.displayBuffer();
+    renderer.displayBufferAsync();
   }
   lastRenderedPercent = percent;
   fullRedrawRequired = false;

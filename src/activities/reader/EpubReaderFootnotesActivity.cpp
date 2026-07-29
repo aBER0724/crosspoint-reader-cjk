@@ -1,6 +1,7 @@
 #include "EpubReaderFootnotesActivity.h"
 
 #include <GfxRenderer.h>
+#include <HalGPIO.h>
 #include <I18n.h>
 
 #include <algorithm>
@@ -18,6 +19,25 @@ void EpubReaderFootnotesActivity::onEnter() {
 void EpubReaderFootnotesActivity::onExit() { Activity::onExit(); }
 
 void EpubReaderFootnotesActivity::loop() {
+  const bool inputActive = mappedInput.wasAnyPressed() || mappedInput.wasAnyReleased() ||
+                           mappedInput.isPressed(MappedInputManager::Button::Back) ||
+                           mappedInput.isPressed(MappedInputManager::Button::Confirm) ||
+                           mappedInput.isPressed(MappedInputManager::Button::Left) ||
+                           mappedInput.isPressed(MappedInputManager::Button::Right) ||
+                           mappedInput.isPressed(MappedInputManager::Button::Up) ||
+                           mappedInput.isPressed(MappedInputManager::Button::Down) ||
+                           mappedInput.isPressed(MappedInputManager::Button::NavNext) ||
+                           mappedInput.isPressed(MappedInputManager::Button::NavPrevious) ||
+                           mappedInput.isPressed(MappedInputManager::Button::Power) || gpio.wasTouchActivity();
+  if (inputActive) {
+    if (!readerInputActive) {
+      activityManager.cancelCurrentRender();
+      readerInputActive = true;
+    }
+  } else {
+    readerInputActive = false;
+  }
+
   auto selectFootnote = [this] {
     if (selectedIndex >= 0 && selectedIndex < static_cast<int>(footnotes.size())) {
       setResult(FootnoteResult{footnotes[selectedIndex].href});
@@ -126,7 +146,7 @@ void EpubReaderFootnotesActivity::render(RenderLock&&) {
     if (renderer.isDarkMode()) {
       renderer.displayBufferDarkRedrive();
     } else {
-      renderer.displayBuffer();
+      renderer.displayBufferAsync();
     }
     return;
   }
@@ -162,6 +182,6 @@ void EpubReaderFootnotesActivity::render(RenderLock&&) {
   if (renderer.isDarkMode()) {
     renderer.displayBufferDarkRedrive();
   } else {
-    renderer.displayBuffer();
+    renderer.displayBufferAsync();
   }
 }

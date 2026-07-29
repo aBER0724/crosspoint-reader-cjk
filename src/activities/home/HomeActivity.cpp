@@ -507,7 +507,7 @@ void HomeActivity::render(RenderLock&&) {
   } else if (renderer.isDarkMode()) {
     renderer.displayBufferDarkRedrive();
   } else {
-    renderer.displayBuffer();
+    renderer.displayBufferAsync();
   }
 
   lastRenderedSelectorIndex = selectorIndex;
