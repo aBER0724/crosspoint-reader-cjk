@@ -3,6 +3,7 @@
 #include <Epub/FootnoteEntry.h>
 #include <Epub/Section.h>
 
+#include <atomic>
 #include <optional>
 
 #include "BookmarkEntry.h"
@@ -27,9 +28,10 @@ class EpubReaderActivity final : public Activity {
   int cachedSpineIndex = 0;
   int cachedChapterTotalPageCount = 0;
   unsigned long lastPageTurnTime = 0UL;
-  // User-driven navigation prioritizes latency over optional image quality work.
-  // It is consumed only after the target page has rendered successfully.
-  bool prioritizeNextPageRender = false;
+  // The earliest render generation requested by user navigation. A generation
+  // token, rather than a boolean, prevents an older render task from consuming
+  // a newer page turn's latency priority.
+  std::atomic<uint32_t> interactiveRenderGeneration{0};
   unsigned long pageTurnDuration = 0UL;
   // Signals that the next render should reposition within the newly loaded section
   // based on a cross-book percentage jump.
