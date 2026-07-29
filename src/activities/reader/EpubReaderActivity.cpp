@@ -3,6 +3,7 @@
 #include <Epub/Page.h>
 #include <Epub/blocks/TextBlock.h>
 #include <FontCacheManager.h>
+#include <FontManager.h>
 #include <FsHelpers.h>
 #include <GfxRenderer.h>
 #include <HalStorage.h>
@@ -1550,6 +1551,25 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
       pendingInteractiveGeneration != 0 && pendingInteractiveGeneration <= lock.generation() && !manualRefreshPending;
   if (interactiveRender) {
     LOG_DBG("ERS", "Interactive page render (generation %lu)", static_cast<unsigned long>(lock.generation()));
+  }
+
+  // Legacy external fonts keep glyphs on the SD card. Warming the page's
+  // distinct codepoints in file order avoids random reads during an idle
+  // redraw. User-driven renders must draw immediately instead: a whole-page
+  // scan and batch SD reads delay page turns, Back, Home, and the reader menu.
+  FontManager& fontManager = FontManager::getInstance();
+  if (!interactiveRender && fontManager.isExternalFontEnabled()) {
+    if (ExternalFont* externalFont = fontManager.getActiveFont()) {
+      std::vector<uint32_t> codepoints;
+      codepoints.reserve(externalFont->getPreloadLimit());
+      if (!page->collectCodepoints(codepoints, externalFont->getPreloadLimit(), &cancellation)) {
+        return;
+      }
+      if (!codepoints.empty() && !externalFont->preloadGlyphs(codepoints.data(), codepoints.size(),
+                                                              cancellation.isCancelled, cancellation.context)) {
+        return;
+      }
+    }
   }
 
   // SD-card glyphs benefit from a sequential prewarm pass. Built-in fonts already

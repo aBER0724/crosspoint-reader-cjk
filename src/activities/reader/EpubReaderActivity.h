@@ -6,6 +6,7 @@
 #include <atomic>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include "BookmarkEntry.h"
 #include "EndOfBookOptions.h"
