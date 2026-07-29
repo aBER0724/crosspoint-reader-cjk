@@ -443,6 +443,16 @@ void EpubReaderActivity::loop() {
                            touch.prev || touch.next;
   if (inputActive) {
     lastReaderInputMs = millis();
+    if (!readerInputActive) {
+      // Page turns and reader navigation normally run on release, but a page
+      // render can already be holding RenderLock when the user presses. Cancel
+      // it at the input edge so menu, Back, and the following page turn only
+      // wait for the current safe cancellation point.
+      activityManager.cancelCurrentRender();
+      readerInputActive = true;
+    }
+  } else {
+    readerInputActive = false;
   }
 
   if (automaticPageTurnActive) {

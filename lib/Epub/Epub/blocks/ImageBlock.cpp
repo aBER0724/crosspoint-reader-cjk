@@ -137,7 +137,8 @@ const uint8_t* pxcRowPtr(size_t rowStart, int bytesPerRow, uint8_t* tempRow) {
 
 // cacheFile is positioned just past the header. True when the slot holds the
 // full pixel payload for this cache path afterward.
-bool loadPxcSlot(uint64_t cacheHash, HalFile& cacheFile, uint16_t cachedWidth, uint16_t cachedHeight, int bytesPerRow) {
+bool loadPxcSlot(uint64_t cacheHash, HalFile& cacheFile, uint16_t cachedWidth, uint16_t cachedHeight, int bytesPerRow,
+                 const PageRenderCancellation* cancellation) {
   releasePxcSlot();
   if (bytesPerRow > PXC_MAX_BYTES_PER_ROW) {
     return false;
@@ -148,6 +149,10 @@ bool loadPxcSlot(uint64_t cacheHash, HalFile& cacheFile, uint16_t cachedWidth, u
     return false;
   }
   for (size_t i = 0; i < chunkCount; i++) {
+    if (cancellation && cancellation->requested()) {
+      releasePxcSlot();
+      return false;
+    }
     const size_t want = remaining < PXC_CHUNK_SIZE ? remaining : PXC_CHUNK_SIZE;
     if (ESP.getFreeHeap() < remaining + PXC_HEAP_RESERVE || ESP.getMaxAllocHeap() < want + PXC_MAX_ALLOC_RESERVE) {
       releasePxcSlot();
@@ -166,7 +171,7 @@ bool loadPxcSlot(uint64_t cacheHash, HalFile& cacheFile, uint16_t cachedWidth, u
   return true;
 }
 
-void renderRowsFromPxcSlot(GfxRenderer& renderer, int x, int y) {
+bool renderRowsFromPxcSlot(GfxRenderer& renderer, int x, int y, const PageRenderCancellation* cancellation) {
   const int bytesPerRow = (pxcSlotWidth + 3) / 4;
   uint8_t tempRow[PXC_MAX_BYTES_PER_ROW];
 
@@ -174,6 +179,9 @@ void renderRowsFromPxcSlot(GfxRenderer& renderer, int x, int y) {
   pw.init(renderer);
 
   for (int row = 0; row < pxcSlotHeight; row++) {
+    if ((row & 0x0f) == 0 && cancellation && cancellation->requested()) {
+      return false;
+    }
     const uint8_t* rowBuffer = pxcRowPtr((size_t)row * bytesPerRow, bytesPerRow, tempRow);
     pw.beginRow(y + row);
     int colStart, colEnd;
@@ -185,16 +193,16 @@ void renderRowsFromPxcSlot(GfxRenderer& renderer, int x, int y) {
       pw.writePixel(x + col, pixelValue);
     }
   }
+  return true;
 }
 
 bool renderFromCache(GfxRenderer& renderer, const std::string& cachePath, int x, int y, int expectedWidth,
-                     int expectedHeight) {
+                     int expectedHeight, const PageRenderCancellation* cancellation) {
   // A later pass of the same page render: the payload is already in RAM, skip
   // the file entirely.
   const uint64_t cacheHash = imagePathHash(cachePath);
   if (pxcSlotHash == cacheHash && pxcSlotWidth != 0) {
-    renderRowsFromPxcSlot(renderer, x, y);
-    return true;
+    return renderRowsFromPxcSlot(renderer, x, y, cancellation);
   }
 
   HalFile cacheFile;
@@ -223,8 +231,10 @@ bool renderFromCache(GfxRenderer& renderer, const std::string& cachePath, int x,
   // here would make 2+ image pages reload each other from SD on every pass
   // (all the SD traffic of streaming plus the slot alloc churn); instead later
   // images take the streaming path below, unchanged from pre-cache behavior.
-  if (pxcSlotHash == 0 && loadPxcSlot(cacheHash, cacheFile, cachedWidth, cachedHeight, bytesPerRow)) {
-    renderRowsFromPxcSlot(renderer, x, y);
+  if (pxcSlotHash == 0 && loadPxcSlot(cacheHash, cacheFile, cachedWidth, cachedHeight, bytesPerRow, cancellation)) {
+    if (!renderRowsFromPxcSlot(renderer, x, y, cancellation)) {
+      return false;
+    }
     LOG_DBG("IMG", "Cache render complete (payload now in RAM)");
     return true;
   }
@@ -257,6 +267,10 @@ bool renderFromCache(GfxRenderer& renderer, const std::string& cachePath, int x,
   int rowsInBuffer = 0;
   int bufferRow = 0;
   for (int row = 0; row < cachedHeight; row++) {
+    if ((row & 0x0f) == 0 && cancellation && cancellation->requested()) {
+      free(readBuffer);
+      return false;
+    }
     if (bufferRow >= rowsInBuffer) {
       const int toRead = (cachedHeight - row < rowsPerRead) ? (cachedHeight - row) : rowsPerRead;
       const size_t bytes = (size_t)toRead * bytesPerRow;
@@ -318,14 +332,18 @@ void ImageBlock::renderPlaceholder(GfxRenderer& renderer, const int x, const int
   }
 }
 
-void ImageBlock::render(GfxRenderer& renderer, const int x, const int y) {
+bool ImageBlock::render(GfxRenderer& renderer, const int x, const int y, const PageRenderCancellation* cancellation) {
   // The font-prewarm scan pass only accumulates glyphs; an image contributes
   // none, and its DirectPixelWriter output bypasses the renderer's scan-mode
   // suppression, so it would otherwise do a full (discarded) cache render every
   // page view. Skip it here. The image still draws in the real BW/grayscale
   // passes; on first view this just moves the one-time decode to the BW pass.
   FontCacheManager* fcm = renderer.getFontCacheManager();
-  if (fcm && fcm->isScanning()) return;
+  if (fcm && fcm->isScanning()) return true;
+
+  if (cancellation && cancellation->requested()) {
+    return false;
+  }
 
   LOG_DBG("IMG", "Rendering image at %d,%d: %s (%dx%d)", x, y, imagePath.c_str(), width, height);
 
@@ -336,7 +354,7 @@ void ImageBlock::render(GfxRenderer& renderer, const int x, const int y) {
   if (x < 0 || y < 0 || x + width > screenWidth || y + height > screenHeight) {
     LOG_ERR("IMG", "Invalid render position: (%d,%d) size (%dx%d) screen (%dx%d)", x, y, width, height, screenWidth,
             screenHeight);
-    return;
+    return true;
   }
 
   // Tiled grayscale (#2190): skip the whole image when it doesn't touch the
@@ -346,18 +364,21 @@ void ImageBlock::render(GfxRenderer& renderer, const int x, const int y) {
   // is orientation-aware and returns true when no strip is active, so the BW
   // pass and non-tiled controllers render the image exactly as before.
   if (!renderer.glyphIntersectsStrip(x, y, x + width - 1, y + height - 1)) {
-    return;
+    return true;
   }
 
   if (imageFailedThisSession(imagePath)) {
     renderPlaceholder(renderer, x, y);
-    return;
+    return true;
   }
 
   // Try to render from cache first
   std::string cachePath = getCachePath(imagePath);
-  if (renderFromCache(renderer, cachePath, x, y, width, height)) {
-    return;  // Successfully rendered from cache
+  if (renderFromCache(renderer, cachePath, x, y, width, height, cancellation)) {
+    return true;  // Successfully rendered from cache
+  }
+  if (cancellation && cancellation->requested()) {
+    return false;
   }
 
   // The build only header-probed the image for dimensions; pull the actual
@@ -366,6 +387,9 @@ void ImageBlock::render(GfxRenderer& renderer, const int x, const int y) {
     LOG_DBG("IMG", "Lazy-extracting %s -> %s", srcPath.c_str(), imagePath.c_str());
     if (!extractFn(extractCtx, srcPath.c_str(), imagePath.c_str())) {
       LOG_ERR("IMG", "Lazy extraction failed: %s", srcPath.c_str());
+    }
+    if (cancellation && cancellation->requested()) {
+      return false;
     }
   }
 
@@ -376,7 +400,7 @@ void ImageBlock::render(GfxRenderer& renderer, const int x, const int y) {
     LOG_ERR("IMG", "Image file not found: %s", imagePath.c_str());
     rememberImageFailure(imagePath);
     renderPlaceholder(renderer, x, y);
-    return;
+    return true;
   }
   size_t fileSize = file.size();
   file.close();
@@ -385,7 +409,7 @@ void ImageBlock::render(GfxRenderer& renderer, const int x, const int y) {
     LOG_ERR("IMG", "Image file is empty: %s", imagePath.c_str());
     rememberImageFailure(imagePath);
     renderPlaceholder(renderer, x, y);
-    return;
+    return true;
   }
 
   LOG_DBG("IMG", "Decoding and caching: %s", imagePath.c_str());
@@ -400,26 +424,35 @@ void ImageBlock::render(GfxRenderer& renderer, const int x, const int y) {
   config.performanceMode = false;
   config.useExactDimensions = true;  // Use pre-calculated dimensions to avoid rounding mismatches
   config.cachePath = cachePath;      // Enable caching during decode
+  config.cancellation = cancellation;
 
   ImageToFramebufferDecoder* decoder = ImageDecoderFactory::getDecoder(imagePath);
   if (!decoder) {
     LOG_ERR("IMG", "No decoder found for image: %s", imagePath.c_str());
     rememberImageFailure(imagePath);
     renderPlaceholder(renderer, x, y);
-    return;
+    return true;
   }
 
   LOG_DBG("IMG", "Using %s decoder", decoder->getFormatName());
 
+  if (cancellation && cancellation->requested()) {
+    return false;
+  }
+
   bool success = decoder->decodeToFramebuffer(imagePath, renderer, config);
+  if (cancellation && cancellation->requested()) {
+    return false;
+  }
   if (!success) {
     LOG_ERR("IMG", "Failed to decode image: %s", imagePath.c_str());
     rememberImageFailure(imagePath);
     renderPlaceholder(renderer, x, y);
-    return;
+    return true;
   }
 
   LOG_DBG("IMG", "Decode successful");
+  return true;
 }
 
 bool ImageBlock::serialize(HalFile& file) {

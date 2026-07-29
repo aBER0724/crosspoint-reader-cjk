@@ -52,6 +52,10 @@ class EpubReaderActivity final : public Activity {
   bool currentPageBookmarked = false;
   // Every input resets optional indexing work so it cannot run alongside taps.
   unsigned long lastReaderInputMs = 0;
+  // Stays set from the first press/touch edge through its release, so each
+  // input gesture cancels a stale render once instead of bumping its generation
+  // on every loop while a button is held.
+  bool readerInputActive = false;
   unsigned long lastBackgroundBuildMs = 0;
   bool bookmarkRemoved = false;  // true when last toggle removed (controls popup text)
   std::vector<BookmarkEntry> cachedBookmarks;

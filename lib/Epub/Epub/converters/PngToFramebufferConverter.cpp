@@ -205,6 +205,7 @@ void convertLineToGray(const uint8_t* pPixels, uint8_t* grayLine, int width, int
 int pngDrawCallback(PNGDRAW* pDraw) {
   PngContext* ctx = reinterpret_cast<PngContext*>(pDraw->pUser);
   if (!ctx || !ctx->config || !ctx->renderer || !ctx->grayLineBuffer) return 0;
+  if ((pDraw->y & 0x07) == 0 && ctx->config->cancellation && ctx->config->cancellation->requested()) return 0;
 
   int srcY = pDraw->y;
   int srcWidth = ctx->srcWidth;
@@ -239,6 +240,7 @@ int pngDrawCallback(PNGDRAW* pDraw) {
   pw.init(*ctx->renderer);
 
   for (int dstY = firstDstY; dstY < endDstY; dstY++) {
+    if ((dstY & 0x07) == 0 && ctx->config->cancellation && ctx->config->cancellation->requested()) return 0;
     ctx->lastDstY = dstY;
     int outY = ctx->config->y + dstY;
     if (outY >= ctx->screenHeight) continue;
