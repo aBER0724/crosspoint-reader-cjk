@@ -111,6 +111,11 @@ class ActivityManager {
   bool handleForcedRefresh();
   bool skipLoopDelay() const;
 
+  // Mark the active render as stale without scheduling a replacement. Input
+  // paths use this to let an in-progress reader render release RenderLock
+  // before the action is finalized on button/touch release.
+  void cancelCurrentRender() { invalidateRender(); }
+
   // If immediate is true, the update will be triggered immediately.
   // Otherwise, it will be deferred until the end of the current loop iteration.
   void requestUpdate(bool immediate = false);

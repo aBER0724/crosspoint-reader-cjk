@@ -64,8 +64,7 @@ bool PageImage::render(GfxRenderer& renderer, const int fontId, const int xOffse
   if (cancellation && cancellation->requested()) {
     return false;
   }
-  imageBlock->render(renderer, xPos + xOffset, yPos + yOffset);
-  return !cancellation || !cancellation->requested();
+  return imageBlock->render(renderer, xPos + xOffset, yPos + yOffset, cancellation);
 }
 
 void PageImage::renderPlaceholder(GfxRenderer& renderer, const int xOffset, const int yOffset) const {

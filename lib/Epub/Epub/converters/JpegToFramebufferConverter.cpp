@@ -121,6 +121,7 @@ constexpr int32_t FP_MASK = FP_ONE - 1;
 int jpegDrawCallback(JPEGDRAW* pDraw) {
   JpegContext* ctx = reinterpret_cast<JpegContext*>(pDraw->pUser);
   if (!ctx || !ctx->config || !ctx->renderer) return 0;
+  if (ctx->config->cancellation && ctx->config->cancellation->requested()) return 0;
 
   // In EIGHT_BIT_GRAYSCALE mode, pPixels contains 8-bit grayscale values
   // Buffer is densely packed: stride = pDraw->iWidth, valid columns = pDraw->iWidthUsed
@@ -189,6 +190,7 @@ int jpegDrawCallback(JPEGDRAW* pDraw) {
   // === 1:1 fast path: no scaling math ===
   if (fineScaleFPX == FP_ONE && fineScaleFPY == FP_ONE) {
     for (int dstY = dstYStart; dstY < dstYEnd; dstY++) {
+      if ((dstY & 0x07) == 0 && ctx->config->cancellation && ctx->config->cancellation->requested()) return 0;
       const int outY = cfgY + dstY;
       pw.beginRow(outY);
       if (caching) cw.beginRow(outY, cacheOriginY);
@@ -223,6 +225,7 @@ int jpegDrawCallback(JPEGDRAW* pDraw) {
     if (safeXStart > safeXEnd) safeXEnd = safeXStart;
 
     for (int dstY = dstYStart; dstY < dstYEnd; dstY++) {
+      if ((dstY & 0x07) == 0 && ctx->config->cancellation && ctx->config->cancellation->requested()) return 0;
       const int outY = cfgY + dstY;
       pw.beginRow(outY);
       if (caching) cw.beginRow(outY, cacheOriginY);
@@ -320,6 +323,7 @@ int jpegDrawCallback(JPEGDRAW* pDraw) {
 
   // === Nearest-neighbor (downscale: fineScale < 1.0) ===
   for (int dstY = dstYStart; dstY < dstYEnd; dstY++) {
+    if ((dstY & 0x07) == 0 && ctx->config->cancellation && ctx->config->cancellation->requested()) return 0;
     const int outY = cfgY + dstY;
     pw.beginRow(outY);
     if (caching) cw.beginRow(outY, cacheOriginY);

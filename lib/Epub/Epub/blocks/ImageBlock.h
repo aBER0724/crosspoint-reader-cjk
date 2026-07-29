@@ -5,6 +5,7 @@
 #include <string>
 
 #include "Block.h"
+#include "Epub/PageRenderCancellation.h"
 
 class ImageBlock final : public Block {
  public:
@@ -39,7 +40,7 @@ class ImageBlock final : public Block {
   BlockType getType() override { return IMAGE_BLOCK; }
   bool isEmpty() override { return false; }
 
-  void render(GfxRenderer& renderer, const int x, const int y);
+  bool render(GfxRenderer& renderer, int x, int y, const PageRenderCancellation* cancellation = nullptr);
   bool serialize(FsFile& file);
   static std::unique_ptr<ImageBlock> deserialize(FsFile& file);
 
