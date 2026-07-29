@@ -5,6 +5,7 @@
 
 #include <atomic>
 #include <optional>
+#include <string>
 
 #include "BookmarkEntry.h"
 #include "EndOfBookOptions.h"
@@ -90,12 +91,6 @@ class EpubReaderActivity final : public Activity {
   // tick; the blocking extension in render() remains the fallback past the watermark.
   bool partialRebuildStartFailed = false;
 
-  // Last position persisted by render()'s saveProgress, used to skip redundant
-  // writeAtomic calls on no-op re-renders (menu/bookmark/screenshot).
-  int lastSavedSpineIndex = -1;
-  int lastSavedPage = -1;
-  int lastSavedPageCount = -1;
-
   void renderContents(std::unique_ptr<Page> page, int orientedMarginTop, int orientedMarginRight,
                       int orientedMarginBottom, int orientedMarginLeft, const RenderLock& lock);
   void renderStatusBar() const;
@@ -173,6 +168,7 @@ class EpubReaderActivity final : public Activity {
   // No-op while the section is still building or when the pagination is unchanged (plain resume).
   bool applyDeferredReposition();
   bool saveProgress(int spineIndex, int currentPage, int pageCount);
+  void queueProgressSave();
   // Keep a user-visible return, jump, or page turn off the optional grayscale,
   // image placeholder, and double-refresh paths.
   void prioritizeNextReaderRender();
