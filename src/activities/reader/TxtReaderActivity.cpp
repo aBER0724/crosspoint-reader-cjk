@@ -4,6 +4,7 @@
 #include <BidiUtils.h>
 #include <FontCacheManager.h>
 #include <GfxRenderer.h>
+#include <HalGPIO.h>
 #include <HalStorage.h>
 #include <I18n.h>
 #include <Serialization.h>
@@ -62,12 +63,30 @@ void TxtReaderActivity::onExit() {
 }
 
 void TxtReaderActivity::loop() {
+  const auto touch = ReaderUtils::detectTouchPageTurn(renderer, mappedInput);
+  const bool inputActive = mappedInput.wasAnyPressed() || mappedInput.wasAnyReleased() ||
+                           mappedInput.isPressed(MappedInputManager::Button::Back) ||
+                           mappedInput.isPressed(MappedInputManager::Button::Confirm) ||
+                           mappedInput.isPressed(MappedInputManager::Button::PageBack) ||
+                           mappedInput.isPressed(MappedInputManager::Button::PageForward) ||
+                           mappedInput.isPressed(MappedInputManager::Button::Power) || gpio.wasTouchActivity() ||
+                           touch.prev || touch.next;
+  if (inputActive) {
+    if (!readerInputActive) {
+      // Input actions run on the main task. Stop the older render at its next
+      // safe boundary so Back/Home and the next page turn don't wait for it.
+      activityManager.cancelCurrentRender();
+      readerInputActive = true;
+    }
+  } else {
+    readerInputActive = false;
+  }
+
   if (ReaderUtils::handleBackNavigation(mappedInput, activityManager, txt ? txt->getPath().c_str() : "",
                                         {this, [](void* ctx) { static_cast<TxtReaderActivity*>(ctx)->onGoHome(); }})) {
     return;
   }
 
-  const auto touch = ReaderUtils::detectTouchPageTurn(renderer, mappedInput);
   auto [prevTriggered, nextTriggered, fromTilt] = ReaderUtils::detectPageTurn(mappedInput);
   prevTriggered = prevTriggered || touch.prev;
   nextTriggered = nextTriggered || touch.next;
@@ -88,9 +107,9 @@ void TxtReaderActivity::loop() {
   }
 }
 
-void TxtReaderActivity::initializeReader() {
+bool TxtReaderActivity::initializeReader(RenderLock& lock) {
   if (initialized) {
-    return;
+    return true;
   }
 
   // Store current settings for cache validation
@@ -120,18 +139,29 @@ void TxtReaderActivity::initializeReader() {
   // Try to load cached page index first
   if (!loadPageIndexCache()) {
     // Cache not found, build page index
-    buildPageIndex();
+    if (!buildPageIndex(lock)) {
+      return false;
+    }
     // Save to cache for next time
     savePageIndexCache();
+  }
+
+  if (lock.isStale()) {
+    return false;
   }
 
   // Load saved progress
   loadProgress();
 
+  if (lock.isStale()) {
+    return false;
+  }
+
   initialized = true;
+  return true;
 }
 
-void TxtReaderActivity::buildPageIndex() {
+bool TxtReaderActivity::buildPageIndex(RenderLock& lock) {
   pageOffsets.clear();
   pageOffsets.push_back(0);  // First page starts at offset 0
 
@@ -141,12 +171,21 @@ void TxtReaderActivity::buildPageIndex() {
   LOG_DBG("TRS", "Building page index for %zu bytes...", fileSize);
 
   GUI.drawPopup(renderer, tr(STR_INDEXING));
+  auto lastYieldMs = millis();
 
   while (offset < fileSize) {
+    if (lock.isStale()) {
+      pageOffsets.clear();
+      return false;
+    }
     std::vector<std::string> tempLines;
     size_t nextOffset = offset;
 
-    if (!loadPageAtOffset(offset, tempLines, nextOffset)) {
+    if (!loadPageAtOffset(offset, tempLines, nextOffset, &lock)) {
+      if (lock.isStale()) {
+        pageOffsets.clear();
+        return false;
+      }
       break;
     }
 
@@ -160,19 +199,30 @@ void TxtReaderActivity::buildPageIndex() {
       pageOffsets.push_back(offset);
     }
 
-    // Yield to other tasks periodically
-    if (pageOffsets.size() % 20 == 0) {
+    // Keep the input loop scheduled while the uncached index is being built.
+    // This is time based rather than page-count based because page layout cost
+    // varies significantly by font and language.
+    if (millis() - lastYieldMs >= 2) {
       vTaskDelay(1);
+      lastYieldMs = millis();
     }
+  }
+
+  if (lock.isStale()) {
+    pageOffsets.clear();
+    return false;
   }
 
   totalPages = pageOffsets.size();
   LOG_DBG("TRS", "Built page index: %d pages", totalPages);
+  return true;
 }
 
-bool TxtReaderActivity::loadPageAtOffset(size_t offset, std::vector<std::string>& outLines, size_t& nextOffset) {
+bool TxtReaderActivity::loadPageAtOffset(size_t offset, std::vector<std::string>& outLines, size_t& nextOffset,
+                                         const RenderLock* lock) {
   outLines.clear();
   const size_t fileSize = txt->getFileSize();
+  const auto isStale = [lock]() { return lock != nullptr && lock->isStale(); };
 
   if (offset >= fileSize) {
     return false;
@@ -192,6 +242,11 @@ bool TxtReaderActivity::loadPageAtOffset(size_t offset, std::vector<std::string>
   }
   buffer[chunkSize] = '\0';
 
+  if (isStale()) {
+    free(buffer);
+    return false;
+  }
+
   // Prime the SD card font's advance table with this chunk's codepoints.
   // Without this, every getTextAdvanceX() call in the wrap loop below triggers
   // on-demand glyph loads through the 8-slot overflow ring buffer, which
@@ -201,15 +256,29 @@ bool TxtReaderActivity::loadPageAtOffset(size_t offset, std::vector<std::string>
   // font, so the cost amortizes to ~ASCII-size after the first chunk.
   if (renderer.isSdCardFont(cachedFontId)) {
     renderer.ensureSdCardFontReady(cachedFontId, reinterpret_cast<const char*>(buffer), /*styleMask=*/0x01);
+    if (isStale()) {
+      free(buffer);
+      return false;
+    }
   }
 
   // Parse lines from buffer
   size_t pos = 0;
 
   while (pos < chunkSize && static_cast<int>(outLines.size()) < linesPerPage) {
+    if (isStale()) {
+      outLines.clear();
+      free(buffer);
+      return false;
+    }
     // Find end of line
     size_t lineEnd = pos;
     while (lineEnd < chunkSize && buffer[lineEnd] != '\n') {
+      if ((lineEnd & 0x7F) == 0 && isStale()) {
+        outLines.clear();
+        free(buffer);
+        return false;
+      }
       lineEnd++;
     }
 
@@ -254,7 +323,12 @@ bool TxtReaderActivity::loadPageAtOffset(size_t offset, std::vector<std::string>
       // Find break point
       size_t breakPos = line.length();
       while (breakPos > 0 && renderer.getTextAdvanceX(cachedFontId, line.substr(0, breakPos).c_str(),
-                                                      EpdFontFamily::REGULAR) > viewportWidth) {
+                                                       EpdFontFamily::REGULAR) > viewportWidth) {
+        if ((breakPos & 0x7F) == 0 && isStale()) {
+          outLines.clear();
+          free(buffer);
+          return false;
+        }
         // Try to break at space
         size_t spacePos = line.rfind(' ', breakPos - 1);
         if (spacePos != std::string::npos && spacePos > 0) {
@@ -309,19 +383,23 @@ bool TxtReaderActivity::loadPageAtOffset(size_t offset, std::vector<std::string>
     nextOffset = fileSize;
   }
 
+  const bool hasLines = !outLines.empty() && !isStale();
+  if (!hasLines) {
+    outLines.clear();
+  }
   free(buffer);
 
-  return !outLines.empty();
+  return hasLines;
 }
 
-void TxtReaderActivity::render(RenderLock&&) {
+void TxtReaderActivity::render(RenderLock&& lock) {
   if (!txt) {
     return;
   }
 
   // Initialize reader if not done
-  if (!initialized) {
-    initializeReader();
+  if (!initialized && !initializeReader(lock)) {
+    return;
   }
 
   if (pageOffsets.empty()) {
@@ -343,16 +421,24 @@ void TxtReaderActivity::render(RenderLock&&) {
   size_t offset = pageOffsets[currentPage];
   size_t nextOffset;
   currentPageLines.clear();
-  loadPageAtOffset(offset, currentPageLines, nextOffset);
+  loadPageAtOffset(offset, currentPageLines, nextOffset, &lock);
+
+  if (lock.isStale()) {
+    return;
+  }
 
   renderer.clearScreen();
-  renderPage();
+  renderPage(lock);
+
+  if (lock.isStale()) {
+    return;
+  }
 
   // Save progress
   saveProgress();
 }
 
-void TxtReaderActivity::renderPage() {
+void TxtReaderActivity::renderPage(RenderLock& lock) {
   const int baseLineHeight = renderer.getLineHeight(cachedFontId);
   const int lineHeight = std::max(1, static_cast<int>(baseLineHeight * SETTINGS.getReaderLineCompression() + 0.5f));
   const int contentWidth = viewportWidth;
@@ -361,6 +447,9 @@ void TxtReaderActivity::renderPage() {
   auto renderLines = [&]() {
     int y = cachedOrientedMarginTop;
     for (const auto& line : currentPageLines) {
+      if (lock.isStale()) {
+        return false;
+      }
       if (!line.empty()) {
         int x = cachedOrientedMarginLeft;
         const bool lineIsRtl = BidiUtils::startsWithRtl(line.c_str(), BidiUtils::RTL_PARAGRAPH_PROBE_DEPTH);
@@ -395,19 +484,23 @@ void TxtReaderActivity::renderPage() {
       }
       y += lineHeight;
     }
+    return true;
   };
 
   // Font prewarm: scan pass accumulates text, then prewarm, then real render.
   // Keep this optional so a missing FCM cannot blank the whole page render path.
   if (auto* fcm = renderer.getFontCacheManager()) {
     auto scope = fcm->createPrewarmScope();
-    renderLines();  // scan pass - text accumulated, no drawing
+    if (!renderLines()) return;  // scan pass - text accumulated, no drawing
     scope.endScanAndPrewarm();
   }
 
   // BW rendering
-  renderLines();
+  if (!renderLines()) return;
   renderStatusBar();
+  if (lock.isStale()) {
+    return;
+  }
 
   ReaderRuntime::RefreshContext refreshContext{};
   refreshContext.readerKind = ReaderRuntime::ReaderKind::Txt;
@@ -420,11 +513,12 @@ void TxtReaderActivity::renderPage() {
   refreshContext.refreshFrequency = SETTINGS.getRefreshFrequency();
 
   const auto decision = ReaderRuntime::chooseReaderRefresh(refreshContext);
-  ReaderUtils::displayWithRefreshDecision(renderer, decision);
+  const bool asyncTextRefresh = !renderer.isDarkMode() && !decision.runGrayscalePass && renderer.supportsAsyncRefresh();
+  ReaderUtils::displayWithRefreshDecision(renderer, decision, asyncTextRefresh);
   pagesUntilFullRefresh = decision.nextCadenceRemaining;
 
   if (decision.runGrayscalePass) {
-    ReaderUtils::renderAntiAliased(renderer, [&renderLines]() { renderLines(); });
+    ReaderUtils::renderAntiAliased(renderer, [&renderLines]() { return renderLines(); });
   }
   // scope destructor clears font cache via FontCacheManager
 }
