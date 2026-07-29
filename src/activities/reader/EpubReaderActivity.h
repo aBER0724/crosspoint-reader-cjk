@@ -60,6 +60,9 @@ class EpubReaderActivity final : public Activity {
   // on every loop while a button is held.
   bool readerInputActive = false;
   unsigned long lastBackgroundBuildMs = 0;
+  // The requested page or anchor has not been laid out yet. The main loop then
+  // advances the build in short, urgent slices instead of making render() wait.
+  std::atomic<bool> waitingForCurrentPage{false};
   bool bookmarkRemoved = false;  // true when last toggle removed (controls popup text)
   std::vector<BookmarkEntry> cachedBookmarks;
   // Tracks whether this book is currently removed from Recent Books by the
@@ -94,10 +97,13 @@ class EpubReaderActivity final : public Activity {
   void renderContents(std::unique_ptr<Page> page, int orientedMarginTop, int orientedMarginRight,
                       int orientedMarginBottom, int orientedMarginLeft, const RenderLock& lock);
   void renderStatusBar() const;
-  // Pages laid out per incremental-build pump: on the render path (catching up to the page
-  // being shown) and per loop() tick (background build of a large chapter). Background work is
-  // strictly limited to one page so a parser/SD burst cannot delay interactive input.
+  // Pages laid out per incremental-build pump. Both render() and the urgent
+  // main-loop path use a fixed parser budget so a sparse page cannot monopolize
+  // RenderLock while the parser searches for its next page boundary.
   static constexpr int BUILD_PAGES_PER_CHUNK = 1;
+  static constexpr int FOREGROUND_BUILD_PARSE_STEPS_PER_TICK = 1;
+  static constexpr size_t FOREGROUND_BUILD_PARSE_BYTES_PER_TICK = 1024;
+  static constexpr unsigned long FOREGROUND_BUILD_INTERVAL_MS = 10;
   static constexpr int BACKGROUND_BUILD_PAGES_PER_TICK = 1;
   static constexpr int BACKGROUND_BUILD_PARSE_STEPS_PER_TICK = 1;
   static constexpr size_t BACKGROUND_BUILD_PARSE_BYTES_PER_TICK = 256;
@@ -145,24 +151,13 @@ class EpubReaderActivity final : public Activity {
   // per page rebuilt, this margin gives the rebuild ample runway to catch up (and finalize)
   // before the reader arrives.
   static constexpr int PARTIAL_REBUILD_START_MARGIN = 15;
-  // Show the indexing popup when an initial build must lay out more than this many pages up front
-  // (a deep resume/jump into a not-yet-built section), so it isn't a silent wait. Kept independent
-  // of the small look-ahead window so ordinary landings stay popup-free.
-  static constexpr int BUILD_POPUP_PAGE_THRESHOLD = 20;
-  // Also show the popup when first building a spine larger than this (uncompressed bytes): its
-  // whole HTML must be inflated before page 1 can lay out (the giant single-spine case), which is
-  // a multi-second wait. Normal chapters are well under this and stay popup-free.
-  static constexpr size_t BUILD_POPUP_BYTE_THRESHOLD = 96 * 1024;
-  // Deadline backstop for the predictive gates above: if the blocking build-to-target still
-  // hasn't produced the landing page this long after the build started, surface the popup
-  // mid-build. Builds that finish under the deadline stay popup-free.
-  static constexpr unsigned long BUILD_POPUP_DEADLINE_MS = 1000;
-  // True only during onEnter's blocking build-to-target phase, until the popup has been
-  // drawn. Gates showBuildPopup() so the parser's popup callback (which persists into
-  // background buildSomeMore chunks) can never draw over a displayed page.
-  bool buildPopupPending = false;
-  // Draw the indexing popup mid-build (parser image-probe callback and deadline backstop).
-  void showBuildPopup();
+  // Resolve a fragment anchor from pages laid out so far. Call only while the
+  // section is protected by RenderLock.
+  bool resolvePendingAnchor();
+  // Cancels an urgent build wait before discarding the active section. All
+  // navigation paths that replace a section use this to avoid carrying an
+  // obsolete wait state into the next render.
+  void resetSection();
   // Remap the cached relative reading position once the section's real page count is known
   // (used after a settings change re-paginates a chapter). Returns true if currentPage moved.
   // No-op while the section is still building or when the pagination is unchanged (plain resume).
@@ -203,10 +198,12 @@ class EpubReaderActivity final : public Activity {
   // loop delay poll buttons and yield time to the render task instead of spinning on deferred
   // parsing work.
   bool skipLoopDelay() override {
-    return section && section->isBuilding() && !buildHeapPaused &&
-           (section->isPartial() || static_cast<int>(section->pageCount) < section->currentPage + BUILD_WINDOW_AHEAD) &&
-           !RenderLock::peek() && millis() - lastReaderInputMs >= IDLE_READER_WORK_DELAY_MS &&
-           millis() - lastBackgroundBuildMs >= BACKGROUND_BUILD_INTERVAL_MS;
+    const bool waiting = waitingForCurrentPage.load(std::memory_order_acquire);
+    return section && section->isBuilding() && (waiting || !buildHeapPaused) &&
+           (waiting || section->isPartial() ||
+            static_cast<int>(section->pageCount) < section->currentPage + BUILD_WINDOW_AHEAD) &&
+           !RenderLock::peek() && (waiting || millis() - lastReaderInputMs >= IDLE_READER_WORK_DELAY_MS) &&
+           millis() - lastBackgroundBuildMs >= (waiting ? FOREGROUND_BUILD_INTERVAL_MS : BACKGROUND_BUILD_INTERVAL_MS);
   }
   bool isReaderActivity() const override { return true; }
   bool handleForcedRefresh() override {
