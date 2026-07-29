@@ -12,8 +12,8 @@
 
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
+#include "EpubReaderUtils.h"
 #include "MappedInputManager.h"
-#include "ProgressFile.h"
 #include "ReaderRuntimePolicy.h"
 #include "ReaderUtils.h"
 #include "RecentBooksStore.h"
@@ -42,7 +42,7 @@ void TxtReaderActivity::onEnter() {
   auto filePath = txt->getPath();
   auto fileName = filePath.substr(filePath.rfind('/') + 1);
   APP_STATE.openEpubPath = filePath;
-  APP_STATE.saveToFile();
+  activityManager.queueAppStateSave();
   RECENT_BOOKS.addBook(filePath, fileName, "", "");
 
   // Trigger first update
@@ -57,8 +57,9 @@ void TxtReaderActivity::onExit() {
 
   pageOffsets.clear();
   currentPageLines.clear();
+  saveProgress();
   APP_STATE.readerActivityLoadCount = 0;
-  APP_STATE.saveToFile();
+  activityManager.queueAppStateSave();
   txt.reset();
 }
 
@@ -96,10 +97,12 @@ void TxtReaderActivity::loop() {
 
   if (prevTriggered && currentPage > 0) {
     currentPage--;
+    prioritizeNextReaderRender();
     requestUpdate();
   } else if (nextTriggered) {
     if (currentPage < totalPages - 1) {
       currentPage++;
+      prioritizeNextReaderRender();
       requestUpdate();
     } else {
       onGoHome();
@@ -323,7 +326,7 @@ bool TxtReaderActivity::loadPageAtOffset(size_t offset, std::vector<std::string>
       // Find break point
       size_t breakPos = line.length();
       while (breakPos > 0 && renderer.getTextAdvanceX(cachedFontId, line.substr(0, breakPos).c_str(),
-                                                       EpdFontFamily::REGULAR) > viewportWidth) {
+                                                      EpdFontFamily::REGULAR) > viewportWidth) {
         if ((breakPos & 0x7F) == 0 && isStale()) {
           outLines.clear();
           free(buffer);
@@ -428,17 +431,21 @@ void TxtReaderActivity::render(RenderLock&& lock) {
   }
 
   renderer.clearScreen();
-  renderPage(lock);
+  const uint32_t pendingInteractiveGeneration = interactiveRenderGeneration.load(std::memory_order_acquire);
+  const bool interactiveRender = pendingInteractiveGeneration != 0 && pendingInteractiveGeneration <= lock.generation();
+  renderPage(lock, interactiveRender);
 
   if (lock.isStale()) {
     return;
   }
 
-  // Save progress
+  consumeInteractiveRender(lock);
+
+  // Atomic FAT replacement runs only after the UI has been idle.
   saveProgress();
 }
 
-void TxtReaderActivity::renderPage(RenderLock& lock) {
+void TxtReaderActivity::renderPage(RenderLock& lock, const bool interactiveRender) {
   const int baseLineHeight = renderer.getLineHeight(cachedFontId);
   const int lineHeight = std::max(1, static_cast<int>(baseLineHeight * SETTINGS.getReaderLineCompression() + 0.5f));
   const int contentWidth = viewportWidth;
@@ -487,12 +494,14 @@ void TxtReaderActivity::renderPage(RenderLock& lock) {
     return true;
   };
 
-  // Font prewarm: scan pass accumulates text, then prewarm, then real render.
-  // Keep this optional so a missing FCM cannot blank the whole page render path.
-  if (auto* fcm = renderer.getFontCacheManager()) {
-    auto scope = fcm->createPrewarmScope();
-    if (!renderLines()) return;  // scan pass - text accumulated, no drawing
-    scope.endScanAndPrewarm();
+  // A scan/prewarm pass doubles the text work. Keep it for idle redraws but
+  // draw immediately on a page turn or reader transition.
+  if (!interactiveRender) {
+    if (auto* fcm = renderer.getFontCacheManager()) {
+      auto scope = fcm->createPrewarmScope();
+      if (!renderLines()) return;  // scan pass - text accumulated, no drawing
+      scope.endScanAndPrewarm();
+    }
   }
 
   // BW rendering
@@ -506,7 +515,7 @@ void TxtReaderActivity::renderPage(RenderLock& lock) {
   refreshContext.readerKind = ReaderRuntime::ReaderKind::Txt;
   refreshContext.darkMode = renderer.isDarkMode();
   refreshContext.textAntiAliasing = SETTINGS.textAntiAliasing;
-  refreshContext.grayscaleRequested = SETTINGS.textAntiAliasing;
+  refreshContext.grayscaleRequested = !interactiveRender && SETTINGS.textAntiAliasing;
   refreshContext.lowMemory =
       ReaderRuntime::classifyReaderMemory(ESP.getFreeHeap()) != ReaderRuntime::MemoryDecision::Proceed;
   refreshContext.cadenceRemaining = pagesUntilFullRefresh;
@@ -544,8 +553,18 @@ void TxtReaderActivity::saveProgress() const {
   data[1] = (currentPage >> 8) & 0xFF;
   data[2] = 0;
   data[3] = 0;
-  if (!ProgressFile::writeAtomic(txt->getCachePath(), data, sizeof(data))) {
-    LOG_ERR("TRS", "Failed to save progress: page %d", currentPage);
+  if (txt) EpubReaderUtils::queueProgressSave(txt->getCachePath(), data, sizeof(data));
+}
+
+void TxtReaderActivity::prioritizeNextReaderRender() {
+  interactiveRenderGeneration.store(activityManager.nextRenderGeneration(), std::memory_order_release);
+}
+
+void TxtReaderActivity::consumeInteractiveRender(const RenderLock& lock) {
+  uint32_t expectedGeneration = interactiveRenderGeneration.load(std::memory_order_acquire);
+  if (expectedGeneration != 0 && expectedGeneration <= lock.generation()) {
+    interactiveRenderGeneration.compare_exchange_strong(expectedGeneration, 0, std::memory_order_release,
+                                                        std::memory_order_relaxed);
   }
 }
 

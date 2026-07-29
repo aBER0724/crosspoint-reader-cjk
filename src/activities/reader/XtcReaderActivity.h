@@ -9,6 +9,7 @@
 
 #include <Xtc.h>
 
+#include <atomic>
 #include <string>
 #include <utility>
 
@@ -21,6 +22,7 @@ class XtcReaderActivity final : public Activity {
   uint32_t currentPage = 0;
   int pagesUntilFullRefresh = 0;
   bool readerInputActive = false;
+  std::atomic<uint32_t> interactiveRenderGeneration{0};
   // Next-book suggestion menu for the End-of-Book screen
   EndOfBookOptions endOfBookOptions;
 
@@ -31,13 +33,15 @@ class XtcReaderActivity final : public Activity {
     std::string title;
   };
 
-  void renderPage(RenderLock& lock);
+  void renderPage(RenderLock& lock, bool interactiveRender);
   // Opens chapter selection when the book has chapters (short-press Confirm); no-op otherwise
-  void openChapterSelection();
+  bool openChapterSelection();
   void renderStatusBarOverlay(StatusBarOverlayPosition position) const;
   StatusBarInfo getStatusBarInfo() const;
   void saveProgress() const;
   void loadProgress();
+  void prioritizeNextReaderRender();
+  void consumeInteractiveRender(const RenderLock& lock);
 
  public:
   explicit XtcReaderActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, std::unique_ptr<Xtc> xtc)
