@@ -44,6 +44,10 @@ void ActivityManager::renderTaskTrampoline(void* param) {
 void ActivityManager::renderTaskLoop() {
   while (true) {
     ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+    // Finish a deferred panel refresh before taking RenderLock. Starting another
+    // display must wait for the panel, but activity transitions must remain able
+    // to acquire the lock and discard this stale render while it does.
+    renderer.waitRefreshComplete();
     // Acquire the lock before reading currentActivity to avoid a TOCTOU race
     // where the main task deletes the activity between the null-check and render().
     RenderLock renderLock(true, true);
