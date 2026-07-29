@@ -27,6 +27,9 @@ class EpubReaderActivity final : public Activity {
   int cachedSpineIndex = 0;
   int cachedChapterTotalPageCount = 0;
   unsigned long lastPageTurnTime = 0UL;
+  // A page turn prioritizes display latency over the optional grayscale pass.
+  // It is consumed only after that new page has rendered successfully.
+  bool skipGrayscaleForNextPageRender = false;
   unsigned long pageTurnDuration = 0UL;
   // Signals that the next render should reposition within the newly loaded section
   // based on a cross-book percentage jump.

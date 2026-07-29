@@ -9,6 +9,7 @@
 #include <I18n.h>
 #include <Logging.h>
 #include <Memory.h>
+#include <ReaderRuntimePolicy.h>
 #include <esp_system.h>
 
 #include <algorithm>
@@ -988,6 +989,9 @@ void EpubReaderActivity::toggleAutoPageTurn(const uint8_t selectedPageTurnOption
 }
 
 void EpubReaderActivity::pageTurn(bool isForwardTurn) {
+  const unsigned long now = millis();
+  skipGrayscaleForNextPageRender = true;
+
   if (isForwardTurn) {
     // Advance within the section while there are (or may still be) more pages: either a built
     // page ahead, or the section is still building (windowed), in which case more pages exist
@@ -1019,7 +1023,7 @@ void EpubReaderActivity::pageTurn(bool isForwardTurn) {
       }
     }
   }
-  lastPageTurnTime = millis();
+  lastPageTurnTime = now;
   lastReaderInputMs = lastPageTurnTime;
   requestUpdate();
 }
@@ -1458,6 +1462,7 @@ void EpubReaderActivity::render(RenderLock&& lock) {
     if (lock.isStale()) {
       return;
     }
+    skipGrayscaleForNextPageRender = false;
     LOG_DBG("ERS", "Rendered page in %dms", millis() - start);
   }
   // Only persist when the position actually changed. render() also runs on menu,
@@ -1568,14 +1573,19 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
   const bool pageHasImagesNeedingDecode = pageHasImages && page->hasImagesNeedingDecode();
   const bool manualRefreshPending = forcedRefreshPending;
   forcedRefreshPending = false;
+  const bool usingSdCardFont = renderer.isSdCardFont(fontId);
+  const bool lowMemory =
+      ReaderRuntime::classifyReaderMemory(ESP.getFreeHeap()) != ReaderRuntime::MemoryDecision::Proceed;
   // The grayscale LUT uses FAST/HALF waveforms. In dark mode retain the BW page
   // and always re-drive it instead of issuing a visible FAST/HALF refresh.
-  // Match the lightweight reader policy used before the deferred-refresh port:
-  // the costly grayscale pipeline is reserved for image pages. Rendering text
-  // AA on every ordinary page adds several full display passes and keeps the
-  // render lock held long enough to make page turns and menu transitions lag.
-  const bool needsTextGrayscale = SETTINGS.textAntiAliasing && pageHasImages && !darkMode;
-  const bool needsAnyGrayscale = pageHasImages && !darkMode;
+  // Grayscale is optional image quality work, not a page-turn requirement. It
+  // re-renders the whole page several times and holds RenderLock long enough to
+  // delay the reader menu, Back, and Home. Keep it off the interactive fast
+  // path for every page turn, SD fonts, and constrained heap.
+  const bool grayscaleAllowed =
+      !darkMode && SETTINGS.textAntiAliasing && !usingSdCardFont && !lowMemory && !skipGrayscaleForNextPageRender;
+  const bool needsTextGrayscale = grayscaleAllowed && pageHasImages;
+  const bool needsAnyGrayscale = grayscaleAllowed && pageHasImages;
   const bool tiledGrayscale = needsAnyGrayscale && renderer.supportsStripGrayscale();
   // Whole-plane buffering only pays when the BW refresh genuinely runs async
   // underneath it; on blocking panels (X3) it would just spend ~50 KB for the
