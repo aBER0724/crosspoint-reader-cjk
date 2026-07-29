@@ -20,6 +20,7 @@ class RenderLock {
   ~RenderLock();
   void unlock();
   bool locked() const { return isLocked; }
+  uint32_t generation() const { return renderGeneration; }
   bool isStale() const;
   static bool peek();
 };

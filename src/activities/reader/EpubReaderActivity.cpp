@@ -1494,7 +1494,11 @@ void EpubReaderActivity::render(RenderLock&& lock) {
     if (lock.isStale()) {
       return;
     }
-    prioritizeNextPageRender = false;
+    uint32_t expectedInteractiveGeneration = interactiveRenderGeneration.load(std::memory_order_acquire);
+    if (expectedInteractiveGeneration != 0 && expectedInteractiveGeneration <= lock.generation()) {
+      interactiveRenderGeneration.compare_exchange_strong(expectedInteractiveGeneration, 0, std::memory_order_release,
+                                                          std::memory_order_relaxed);
+    }
     LOG_DBG("ERS", "Rendered page in %dms", millis() - start);
   }
   // Only persist when the position actually changed. render() also runs on menu,
@@ -1565,7 +1569,14 @@ bool EpubReaderActivity::saveProgress(int spineIndex, int currentPage, int pageC
   return EpubReaderUtils::saveProgress(*epub, spineIndex, currentPage, pageCount);
 }
 
-void EpubReaderActivity::prioritizeNextReaderRender() { prioritizeNextPageRender = true; }
+void EpubReaderActivity::prioritizeNextReaderRender() {
+  // Bind the priority request to the next render generation. The renderer and
+  // input loop run on separate FreeRTOS tasks, so a plain boolean lets an old
+  // render finish after this call and erase the next page turn's fast-path
+  // request. The next successful reader paint consumes it only if no later
+  // input has replaced the generation token.
+  interactiveRenderGeneration.store(activityManager.nextRenderGeneration(), std::memory_order_release);
+}
 
 void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int orientedMarginTop,
                                         const int orientedMarginRight, const int orientedMarginBottom,
@@ -1608,7 +1619,12 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
   const bool pageHasImagesNeedingDecode = pageHasImages && page->hasImagesNeedingDecode();
   const bool manualRefreshPending = forcedRefreshPending;
   forcedRefreshPending = false;
-  const bool interactiveRender = prioritizeNextPageRender && !manualRefreshPending;
+  const uint32_t pendingInteractiveGeneration = interactiveRenderGeneration.load(std::memory_order_acquire);
+  const bool interactiveRender =
+      pendingInteractiveGeneration != 0 && pendingInteractiveGeneration <= lock.generation() && !manualRefreshPending;
+  if (interactiveRender) {
+    LOG_DBG("ERS", "Interactive page render (generation %lu)", static_cast<unsigned long>(lock.generation()));
+  }
   const bool usingSdCardFont = renderer.isSdCardFont(fontId);
   const bool lowMemory =
       ReaderRuntime::classifyReaderMemory(ESP.getFreeHeap()) != ReaderRuntime::MemoryDecision::Proceed;

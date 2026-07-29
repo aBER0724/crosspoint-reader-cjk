@@ -131,6 +131,10 @@ class ActivityManager {
     renderRequestSerial.fetch_add(1, std::memory_order_relaxed);
   }
 
+  // Reader interaction marks the generation requested immediately afterward,
+  // so optional quality work can stay out of the user-visible path.
+  uint32_t nextRenderGeneration() const { return renderGeneration.load(std::memory_order_relaxed) + 1; }
+
   // If immediate is true, the update will be triggered immediately.
   // Otherwise, it will be deferred until the end of the current loop iteration.
   void requestUpdate(bool immediate = false);
