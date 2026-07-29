@@ -92,6 +92,17 @@ void HomeActivity::loadRecentBooks(int maxBooks) {
 }
 
 void HomeActivity::loadNextRecentCover(int coverHeight) {
+  // The first frame intentionally uses an empty-cover placeholder. Once the
+  // user has been idle, repaint existing thumbnails before any potentially
+  // expensive cache generation below.
+  if (deferRecentCoverDraw) {
+    deferRecentCoverDraw = false;
+    coverRendered = false;
+    fullRedrawRequired = true;
+    requestUpdate();
+    return;
+  }
+
   // Generate at most one missing cover per call so home navigation stays responsive
   // even after thumb_v2 cache misses force mass regeneration.
   while (nextRecentCoverIndex < recentBooks.size()) {
@@ -153,6 +164,7 @@ void HomeActivity::onEnter() {
   firstRenderDone = false;
   coverRendered = false;
   coverBufferStored = false;
+  deferRecentCoverDraw = true;
 
   // Trigger first update
   requestUpdate();
@@ -437,8 +449,20 @@ void HomeActivity::render(RenderLock&&) {
     coverRectW = pageWidth;
     coverRectH = metrics.homeCoverTileHeight;
 
+    // Preserve the actual book title and selection layout, but suppress the
+    // first frame's synchronous bitmap read/crop. The idle cover job below
+    // invalidates this snapshot and draws the real thumbnail later.
+    std::vector<RecentBook> coverBooks;
+    const std::vector<RecentBook>* booksForCover = &recentBooks;
+    if (deferRecentCoverDraw) {
+      coverBooks = recentBooks;
+      for (RecentBook& book : coverBooks) {
+        book.coverBmpPath.clear();
+      }
+      booksForCover = &coverBooks;
+    }
     GUI.drawRecentBookCover(renderer, Rect{0, metrics.homeTopPadding, pageWidth, metrics.homeCoverTileHeight},
-                            recentBooks, selectorIndex, coverRendered, coverBufferStored, bufferRestored,
+                            *booksForCover, selectorIndex, coverRendered, coverBufferStored, bufferRestored,
                             std::bind(&HomeActivity::storeCoverBuffer, this));
 #if defined(SSD1677_PROBE_DEBUG) && SSD1677_PROBE_DEBUG
     afterCover = millis();

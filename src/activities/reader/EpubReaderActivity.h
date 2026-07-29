@@ -27,9 +27,9 @@ class EpubReaderActivity final : public Activity {
   int cachedSpineIndex = 0;
   int cachedChapterTotalPageCount = 0;
   unsigned long lastPageTurnTime = 0UL;
-  // A page turn prioritizes display latency over the optional grayscale pass.
-  // It is consumed only after that new page has rendered successfully.
-  bool skipGrayscaleForNextPageRender = false;
+  // User-driven navigation prioritizes latency over optional image quality work.
+  // It is consumed only after the target page has rendered successfully.
+  bool prioritizeNextPageRender = false;
   unsigned long pageTurnDuration = 0UL;
   // Signals that the next render should reposition within the newly loaded section
   // based on a cross-book percentage jump.
@@ -167,6 +167,9 @@ class EpubReaderActivity final : public Activity {
   // No-op while the section is still building or when the pagination is unchanged (plain resume).
   bool applyDeferredReposition();
   bool saveProgress(int spineIndex, int currentPage, int pageCount);
+  // Keep a user-visible return, jump, or page turn off the optional grayscale,
+  // image placeholder, and double-refresh paths.
+  void prioritizeNextReaderRender();
   // Jump to a percentage of the book (0-100), mapping it to spine and page.
   void jumpToPercent(int percent);
   void onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction action);

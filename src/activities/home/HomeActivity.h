@@ -20,6 +20,9 @@ class HomeActivity final : public Activity {
   bool coverRendered = false;        // Track if cover has been rendered once
   bool coverBufferStored = false;    // Track if cover buffer is stored
   bool coverBufferDarkMode = false;  // Reject cover snapshots created for the opposite display mode
+  // First paint stays SD-I/O free so leaving a book reaches an interactive
+  // home screen before cover decode/cropping begins.
+  bool deferRecentCoverDraw = true;
   // When true, render() must repaint header/cover instead of the menu-only path.
   // Set on enter, cover regeneration, and any selection change that touches cover chrome.
   bool fullRedrawRequired = true;
