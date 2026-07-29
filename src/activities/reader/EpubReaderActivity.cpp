@@ -142,6 +142,8 @@ void moveFinishedBookToReadFolder(const std::string& srcPath, const std::string&
   if (!oldCachePath.empty() && Storage.exists(oldCachePath.c_str())) {
     if (!Storage.rename(oldCachePath.c_str(), newCachePath.c_str())) {
       LOG_ERR("ERS", "Failed to rename cache dir %s -> %s (non-fatal)", oldCachePath.c_str(), newCachePath.c_str());
+    } else {
+      EpubReaderUtils::repointQueuedProgressSave(oldCachePath, newCachePath);
     }
   }
 
@@ -150,7 +152,7 @@ void moveFinishedBookToReadFolder(const std::string& srcPath, const std::string&
   RECENT_BOOKS.updatePath(srcPath, dstPath, oldCachePath, newCachePath);
   if (APP_STATE.openEpubPath == srcPath) {
     APP_STATE.openEpubPath = dstPath;
-    APP_STATE.saveToFile();
+    activityManager.queueAppStateSave();
   }
 }
 
@@ -230,13 +232,19 @@ void EpubReaderActivity::onExit() {
   renderer.setOrientation(GfxRenderer::Orientation::Portrait);
 
   APP_STATE.readerActivityLoadCount = 0;
-  APP_STATE.saveToFile();
+  activityManager.queueAppStateSave();
 
   // Leaving mid-footnote loses the in-RAM return stack on deep sleep; persist the
   // pre-footnote position so the book reopens at the link origin, not the footnote.
+  // The snapshot outlives this activity and is written only after the UI is idle.
   if (footnoteDepth > 0 && epub) {
     const SavedPosition& origin = savedPositions[0];
-    saveProgress(origin.spineIndex, origin.pageNumber, 0);
+    EpubReaderUtils::queueProgressSave(epub->getCachePath(), origin.spineIndex, origin.pageNumber, 0);
+  } else {
+    // Do not lose a page turn whose render was superseded by an immediate Back
+    // or Home action. This remains an in-memory snapshot while onExit holds
+    // RenderLock, so the activity transition stays responsive.
+    queueProgressSave();
   }
 
   if (section) section->discardBuild();
@@ -882,6 +890,7 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
           section.reset();
           epub->clearCache();
           epub->setupCacheDir();
+          EpubReaderUtils::discardQueuedProgressSave(epub->getCachePath());
           if (!saveProgress(backupSpine, backupPage, backupPageCount)) {
             LOG_ERR("ERS", "Failed to save progress before cache clear");
           }
@@ -944,6 +953,7 @@ bool EpubReaderActivity::launchKOReaderSync() {
     requestUpdate();
     return true;  // acted: surfaced a save error to the user
   }
+  EpubReaderUtils::discardQueuedProgressSave(epub->getCachePath());
 
   // Release Epub and Section to free ~65KB RAM for the TLS handshake.
   LOG_DBG("KOSync", "Releasing epub for sync (heap before: %u)", (unsigned)ESP.getFreeHeap());
@@ -1501,20 +1511,13 @@ void EpubReaderActivity::render(RenderLock&& lock) {
     }
     LOG_DBG("ERS", "Rendered page in %dms", millis() - start);
   }
-  // Only persist when the position actually changed. render() also runs on menu,
-  // bookmark and screenshot re-renders, and writeAtomic is several FAT ops for 6 bytes.
-  // Every real page turn changes currentPage, so progress durability is unaffected.
+  // Snapshot changed reader positions for the idle work loop. Atomic persistence
+  // performs several FAT operations, so it cannot remain in this RenderLock-held
+  // input path.
   if (lock.isStale()) {
     return;
   }
-  if (currentSpineIndex != lastSavedSpineIndex || section->currentPage != lastSavedPage ||
-      section->pageCount != lastSavedPageCount) {
-    if (saveProgress(currentSpineIndex, section->currentPage, section->estimatedTotalPages())) {
-      lastSavedSpineIndex = currentSpineIndex;
-      lastSavedPage = section->currentPage;
-      lastSavedPageCount = section->estimatedTotalPages();
-    }
-  }
+  queueProgressSave();
 
   if (lock.isStale()) {
     return;
@@ -1567,6 +1570,13 @@ bool EpubReaderActivity::applyDeferredReposition() {
 
 bool EpubReaderActivity::saveProgress(int spineIndex, int currentPage, int pageCount) {
   return EpubReaderUtils::saveProgress(*epub, spineIndex, currentPage, pageCount);
+}
+
+void EpubReaderActivity::queueProgressSave() {
+  if (!epub || !section) return;
+
+  EpubReaderUtils::queueProgressSave(epub->getCachePath(), currentSpineIndex, section->currentPage,
+                                     section->estimatedTotalPages());
 }
 
 void EpubReaderActivity::prioritizeNextReaderRender() {

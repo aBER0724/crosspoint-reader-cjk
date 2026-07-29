@@ -272,6 +272,10 @@ void enterDeepSleep(bool fromTimeout = false) {
   // a WiFi activity would otherwise silentRestart() here and reboot instead.
   deepSleepInProgress = true;
   activityManager.goToSleep(fromTimeout);
+  // goToSleep() exits the active reader. Its ordinary exit path defers SD
+  // writes to keep Back/Home responsive, but deep sleep is a persistence
+  // boundary and must retain the final page and clear the recovery marker.
+  activityManager.flushDeferredPersistenceBeforeSleep();
 
   if (isQuickResumeSleep) {
     saveSleepFrameBuffer();

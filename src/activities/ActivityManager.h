@@ -48,6 +48,14 @@ class ActivityManager {
   enum class PendingAction { None, Push, Pop, Replace };
   PendingAction pendingAction = PendingAction::None;
 
+  bool appStateSavePending = false;
+  unsigned long lastUserInputMs = 0UL;
+  unsigned long lastDeferredPersistenceAttemptMs = 0UL;
+  static constexpr unsigned long DEFERRED_PERSIST_IDLE_MS = 3000UL;
+  static constexpr unsigned long DEFERRED_PERSIST_RETRY_MS = 1000UL;
+
+  void flushDeferredPersistence();
+
   // Task to render and display the activity
   TaskHandle_t renderTaskHandle = nullptr;
   static void renderTaskTrampoline(void* param);
@@ -109,6 +117,15 @@ class ActivityManager {
   void goToFullScreenMessage(std::string message, EpdFontFamily::Style style = EpdFontFamily::REGULAR);
   void goToCrashReport();
   void goHome(HomeMenuItem initialMenuItem = HomeMenuItem::NONE);
+
+  // Reader teardown updates crash-recovery state while ActivityManager holds
+  // RenderLock. Delay its SD write until the UI has been idle instead.
+  void queueAppStateSave() { appStateSavePending = true; }
+
+  // Sleep is an explicit persistence boundary. Normal interaction stays
+  // asynchronous, but after the outgoing activity has exited this commits its
+  // queued progress and crash-recovery state before deep sleep starts.
+  void flushDeferredPersistenceBeforeSleep();
 
   // This will move current activity to stack instead of deleting it
   void pushActivity(std::unique_ptr<Activity>&& activity);

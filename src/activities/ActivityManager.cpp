@@ -1,8 +1,10 @@
 #include "ActivityManager.h"
 
 #include <FontCacheManager.h>
+#include <HalGPIO.h>
 #include <HalPowerManager.h>
 
+#include "CrossPointState.h"
 #include "OpdsServerStore.h"
 #include "OrientationHelper.h"
 #include "boot_sleep/BootActivity.h"
@@ -13,12 +15,35 @@
 #include "home/HomeActivity.h"
 #include "home/RecentBooksActivity.h"
 #include "network/CrossPointWebServerActivity.h"
+#include "reader/EpubReaderUtils.h"
 #include "reader/ReaderActivity.h"
 #include "settings/OpdsServerListActivity.h"
 #include "settings/SettingsActivity.h"
 #include "util/FullScreenMessageActivity.h"
 
 static portMUX_TYPE activityManagerSpinlock = portMUX_INITIALIZER_UNLOCKED;
+
+namespace {
+bool hasHeldInput(const MappedInputManager& input) {
+  constexpr MappedInputManager::Button buttons[] = {
+      MappedInputManager::Button::Back,        MappedInputManager::Button::Confirm,
+      MappedInputManager::Button::Left,        MappedInputManager::Button::Right,
+      MappedInputManager::Button::Up,          MappedInputManager::Button::Down,
+      MappedInputManager::Button::Power,       MappedInputManager::Button::PageBack,
+      MappedInputManager::Button::PageForward, MappedInputManager::Button::NavNext,
+      MappedInputManager::Button::NavPrevious,
+  };
+  for (const auto button : buttons) {
+    if (input.isPressed(button)) {
+      return true;
+    }
+  }
+
+  float touchX;
+  float touchY;
+  return gpio.isTouchHeldAt(touchX, touchY);
+}
+}  // namespace
 
 void ActivityManager::begin() {
 #if defined(configNUM_CORES) && configNUM_CORES > 1
@@ -96,6 +121,12 @@ void ActivityManager::renderTaskLoop() {
 }
 
 void ActivityManager::loop() {
+  const unsigned long now = millis();
+  if (mappedInput.wasAnyPressed() || mappedInput.wasAnyReleased() || gpio.wasTouchActivity() ||
+      hasHeldInput(mappedInput)) {
+    lastUserInputMs = now;
+  }
+
   if (currentActivity) {
     if (!currentActivity->isHomeActivity() && mappedInput.wasHomeGesture()) {
       // Home is handled before Activity::loop(), so reader-local input
@@ -218,6 +249,49 @@ void ActivityManager::loop() {
     if (lock.locked() && !renderer.refreshBusy()) {
       renderer.flushDeferredRefresh();
     }
+  }
+
+  flushDeferredPersistence();
+}
+
+void ActivityManager::flushDeferredPersistence() {
+  if (!appStateSavePending && !EpubReaderUtils::hasQueuedProgressSave()) {
+    return;
+  }
+
+  const unsigned long now = millis();
+  if (now - lastUserInputMs < DEFERRED_PERSIST_IDLE_MS ||
+      now - lastDeferredPersistenceAttemptMs < DEFERRED_PERSIST_RETRY_MS || pendingAction != PendingAction::None ||
+      pendingActivity || requestedUpdate.load(std::memory_order_relaxed) || RenderLock::peek() ||
+      renderer.refreshBusy()) {
+    return;
+  }
+
+  const uint32_t latestRenderSerial = renderRequestSerial.load(std::memory_order_acquire);
+  const uint32_t completedRenderSerial = this->completedRenderSerial.load(std::memory_order_acquire);
+  if (completedRenderSerial != latestRenderSerial) {
+    return;
+  }
+
+  // Write at most one file per idle window. A slow or fragmented SD card then
+  // cannot turn a single deferred maintenance pass into several seconds of I/O.
+  lastDeferredPersistenceAttemptMs = now;
+  if (EpubReaderUtils::hasQueuedProgressSave()) {
+    EpubReaderUtils::flushQueuedProgressSave();
+    return;
+  }
+
+  if (APP_STATE.saveToFile()) {
+    appStateSavePending = false;
+  }
+}
+
+void ActivityManager::flushDeferredPersistenceBeforeSleep() {
+  if (EpubReaderUtils::hasQueuedProgressSave()) {
+    EpubReaderUtils::flushQueuedProgressSave();
+  }
+  if (appStateSavePending && APP_STATE.saveToFile()) {
+    appStateSavePending = false;
   }
 }
 
