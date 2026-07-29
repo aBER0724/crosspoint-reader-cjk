@@ -1,5 +1,6 @@
 #include "ActivityManager.h"
 
+#include <Epub/Section.h>
 #include <FontCacheManager.h>
 #include <HalGPIO.h>
 #include <HalPowerManager.h>
@@ -255,7 +256,7 @@ void ActivityManager::loop() {
 }
 
 void ActivityManager::flushDeferredPersistence() {
-  if (!appStateSavePending && !EpubReaderUtils::hasQueuedProgressSave()) {
+  if (!appStateSavePending && !EpubReaderUtils::hasQueuedProgressSave() && !Section::hasDeferredCleanup()) {
     return;
   }
 
@@ -278,6 +279,14 @@ void ActivityManager::flushDeferredPersistence() {
   lastDeferredPersistenceAttemptMs = now;
   if (EpubReaderUtils::hasQueuedProgressSave()) {
     EpubReaderUtils::flushQueuedProgressSave();
+    return;
+  }
+
+  if (Section::hasDeferredCleanup()) {
+    RenderLock lock(false);
+    if (lock.locked()) {
+      Section::flushDeferredCleanup();
+    }
     return;
   }
 

@@ -1059,11 +1059,12 @@ void GfxRenderer::drawCenteredText(const int fontId, const int y, const char* te
   drawText(fontId, x, y, text, black, style, baseDir);
 }
 
-void GfxRenderer::drawText(const int fontId, const int x, const int y, const char* text, const bool black,
-                           const EpdFontFamily::Style style, const BidiUtils::BidiBaseDir baseDir) const {
+bool GfxRenderer::drawText(const int fontId, const int x, const int y, const char* text, const bool black,
+                           const EpdFontFamily::Style style, const BidiUtils::BidiBaseDir baseDir,
+                           bool (*isCancelled)(const void*), const void* cancellationContext) const {
   // cannot draw a NULL / empty string
   if (text == nullptr || *text == '\0') {
-    return;
+    return true;
   }
 
   // Route CJK-bearing strings to the fallback font when the requested font
@@ -1082,13 +1083,13 @@ void GfxRenderer::drawText(const int fontId, const int x, const int y, const cha
 
   if (fontCacheManager_ && fontCacheManager_->isScanning()) {
     fontCacheManager_->recordText(renderedText, resolvedFontId, style);
-    return;
+    return !isCancelled || !isCancelled(cancellationContext);
   }
 
   const auto fontIt = fontMap.find(resolvedFontId);
   if (fontIt == fontMap.end()) {
     LOG_ERR("GFX", "Font %d not found", resolvedFontId);
-    return;
+    return true;
   }
   const auto& font = fontIt->second;
 
@@ -1096,8 +1097,16 @@ void GfxRenderer::drawText(const int fontId, const int x, const int y, const cha
   uint32_t cp;
   uint32_t prevCp = 0;
   bool prevWasEpd = false;
+  size_t codepointIndex = 0;
   const bool isSupSub = isHalfScaleStyle(style);
   while ((cp = utf8NextCodepoint(reinterpret_cast<const uint8_t**>(&textCursor)))) {
+    // A CJK paragraph can be one layout "word". Check inside the glyph loop
+    // so a new page turn, Back, Home, or menu request can release the render
+    // lock between SD-backed glyph loads instead of waiting for the paragraph.
+    if ((codepointIndex++ & 0x03u) == 0 && isCancelled && isCancelled(cancellationContext)) {
+      return false;
+    }
+
     // RTL vowel marks (Hebrew niqqud, Arabic harakat) ride the combining-mark
     // path: zero-advance overlays on the preceding base glyph (applyBidiVisual
     // emits base-then-marks per UAX#9 L3). anchorFor pins position-sensitive
@@ -1167,6 +1176,7 @@ void GfxRenderer::drawText(const int fontId, const int x, const int y, const cha
     prevWasEpd = glyph != nullptr;
     prevCp = cp;
   }
+  return true;
 }
 
 namespace {
