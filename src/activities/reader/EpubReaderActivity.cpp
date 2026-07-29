@@ -1538,16 +1538,27 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
   const PageRenderCancellation cancellation{renderWasSuperseded, &lock};
 
   // The image pixel-cache RAM slot lives for exactly one page render (it feeds
-  // the BW double-refresh and every grayscale band pass); release it on every
+  // the BW render and any manual grayscale band pass); release it on every
   // exit so nothing stays resident across page turns.
   struct PxcSlotGuard {
     ~PxcSlotGuard() { ImageBlock::releaseRenderCache(); }
   } pxcSlotGuard;
 
+  const bool manualRefreshPending = forcedRefreshPending;
+  const uint32_t pendingInteractiveGeneration = interactiveRenderGeneration.load(std::memory_order_acquire);
+  const bool interactiveRender =
+      pendingInteractiveGeneration != 0 && pendingInteractiveGeneration <= lock.generation() && !manualRefreshPending;
+  if (interactiveRender) {
+    LOG_DBG("ERS", "Interactive page render (generation %lu)", static_cast<unsigned long>(lock.generation()));
+  }
+
   // SD-card glyphs benefit from a sequential prewarm pass. Built-in fonts already
   // reside in flash and must stay on the single-render path used by earlier releases.
+  // A user-driven page turn must remain a single render, however: scanning the
+  // complete page before drawing it doubles the work and delays Back, Home, and
+  // the reader menu. Lazy glyph loads are preferable while input is pending.
   std::optional<FontCacheManager::PrewarmScope> prewarmScope;
-  if (renderer.isSdCardFont(fontId)) {
+  if (renderer.isSdCardFont(fontId) && !interactiveRender) {
     if (auto* fcm = renderer.getFontCacheManager()) {
       prewarmScope.emplace(fcm->createPrewarmScope());
       if (!page->render(renderer, fontId, orientedMarginLeft, orientedMarginTop, &cancellation)) {
@@ -1568,67 +1579,28 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
 
   const bool darkMode = renderer.isDarkMode();
   const bool pageHasImages = page->hasImages();
-  const bool pageHasImagesNeedingDecode = pageHasImages && page->hasImagesNeedingDecode();
-  const bool manualRefreshPending = forcedRefreshPending;
   forcedRefreshPending = false;
-  const uint32_t pendingInteractiveGeneration = interactiveRenderGeneration.load(std::memory_order_acquire);
-  const bool interactiveRender =
-      pendingInteractiveGeneration != 0 && pendingInteractiveGeneration <= lock.generation() && !manualRefreshPending;
-  if (interactiveRender) {
-    LOG_DBG("ERS", "Interactive page render (generation %lu)", static_cast<unsigned long>(lock.generation()));
-  }
   const bool usingSdCardFont = renderer.isSdCardFont(fontId);
   const bool lowMemory =
       ReaderRuntime::classifyReaderMemory(ESP.getFreeHeap()) != ReaderRuntime::MemoryDecision::Proceed;
   // The grayscale LUT uses FAST/HALF waveforms. In dark mode retain the BW page
-  // and always re-drive it instead of issuing a visible FAST/HALF refresh.
-  // Grayscale is optional image quality work, not a page-turn requirement. It
-  // re-renders the whole page several times and holds RenderLock long enough to
-  // delay the reader menu, Back, and Home. Keep it off the interactive fast
-  // path for every page turn, SD fonts, and constrained heap.
+  // and always re-drive it instead of issuing a visible FAST/HALF refresh. It
+  // is optional image quality work, so only run it after an explicit manual
+  // refresh; page turns must release RenderLock after their single BW render.
   const bool grayscaleAllowed =
-      !darkMode && SETTINGS.textAntiAliasing && !usingSdCardFont && !lowMemory && !interactiveRender;
+      manualRefreshPending && !darkMode && SETTINGS.textAntiAliasing && !usingSdCardFont && !lowMemory;
   const bool needsTextGrayscale = grayscaleAllowed && pageHasImages;
   const bool needsAnyGrayscale = grayscaleAllowed && pageHasImages;
   const bool tiledGrayscale = needsAnyGrayscale && renderer.supportsStripGrayscale();
-  // Plain light-mode text pages can release RenderLock as soon as the waveform
-  // starts. The display's shadow buffer keeps the current differential update
-  // stable while the next input, menu, or activity transition redraws.
-  const bool asyncTextRefresh = !darkMode && !pageHasImages && renderer.supportsAsyncRefresh();
-  // Whole-plane buffering only pays when the BW refresh genuinely runs async
-  // underneath it; on blocking panels (X3) it would just spend ~50 KB for the
-  // identical serial timing. Image pages take the blocking double-FAST path
-  // below (no async refresh is ever started), so they'd spend the buffers with
-  // nothing in flight to overlap.
-  const bool overlapRefresh = tiledGrayscale && renderer.supportsAsyncRefresh() && !pageHasImages;
+  // Grayscale follows a synchronous manual refresh, so there is no panel work
+  // to overlap with its plane generation.
+  const bool overlapRefresh = false;
   auto renderGrayscalePass = [&]() {
     if (needsTextGrayscale) {
       return page->render(renderer, fontId, orientedMarginLeft, orientedMarginTop, &cancellation);
     }
     return page->renderImages(renderer, fontId, orientedMarginLeft, orientedMarginTop, &cancellation);
   };
-
-  if (pageHasImagesNeedingDecode && !interactiveRender) {
-    if (!page->renderWithImagePlaceholders(renderer, fontId, orientedMarginLeft, orientedMarginTop, &cancellation)) {
-      return;
-    }
-    if (lock.isStale()) {
-      return;
-    }
-    renderStatusBar();
-    if (lock.isStale()) {
-      return;
-    }
-    if (darkMode) {
-      renderer.displayBufferDarkRedrive();
-    } else {
-      renderer.displayBuffer(HalDisplay::FAST_REFRESH);
-    }
-    if (lock.isStale()) {
-      return;
-    }
-    renderer.clearScreen();
-  }
 
   if (!page->render(renderer, fontId, orientedMarginLeft, orientedMarginTop, &cancellation)) {
     return;
@@ -1648,33 +1620,14 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
   if (darkMode) {
     renderer.displayBufferDarkRedrive();
     pagesUntilFullRefresh = SETTINGS.getRefreshFrequency();
-  } else if (interactiveRender) {
-    // The normal image path has a placeholder plus two panel refreshes. During
-    // an actual key/touch interaction, show the fully rendered page once and
-    // defer visual cleanup to the next non-interactive or forced refresh. On
-    // X4, release RenderLock as soon as the waveform starts so the next key,
-    // menu, directory, or Home transition is not held behind the page refresh.
-    renderer.displayBufferAsync(HalDisplay::FAST_REFRESH);
-    pagesUntilFullRefresh = SETTINGS.getRefreshFrequency();
-  } else if (pageHasImages) {
-    // Double FAST_REFRESH with selective image blanking (pablohc's technique):
-    // HALF_REFRESH sets particles too firmly for the grayscale LUT to adjust.
-    // Instead, blank only the image area and do two fast refreshes.
-    // Step 1: Display page with image area blanked (text appears, image area white)
-    // Step 2: Re-render with images and display again (images appear clean)
+  } else if (manualRefreshPending) {
+    // The explicit manual refresh keeps the old clean image setup. This is the
+    // only path allowed to block on multiple panel waveforms or run grayscale.
     int16_t imgX, imgY, imgW, imgH;
-    if (page->getImageBoundingBox(imgX, imgY, imgW, imgH)) {
-      // Image pages intentionally bypass the regular refresh cadence. Preserve
-      // the manual clean pass before their double-FAST grayscale pipeline.
-      if (manualRefreshPending) {
-        if (darkMode) {
-          renderer.displayBufferDarkRedrive();
-        } else {
-          renderer.displayBuffer(HalDisplay::HALF_REFRESH);
-        }
-        if (lock.isStale()) {
-          return;
-        }
+    if (pageHasImages && page->getImageBoundingBox(imgX, imgY, imgW, imgH)) {
+      renderer.displayBuffer(HalDisplay::HALF_REFRESH);
+      if (lock.isStale()) {
+        return;
       }
       renderer.fillRect(imgX + orientedMarginLeft, imgY + orientedMarginTop, imgW, imgH, false);
       if (lock.isStale()) {
@@ -1682,8 +1635,7 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
       }
       renderer.displayBuffer(HalDisplay::FAST_REFRESH);
 
-      // Re-render page content to restore images into the blanked area
-      // Status bar is not re-rendered here to avoid reading stale dynamic values (e.g. battery %)
+      // Status bar remains valid; redraw only the page to restore image pixels.
       if (!page->render(renderer, fontId, orientedMarginLeft, orientedMarginTop, &cancellation)) {
         return;
       }
@@ -1694,15 +1646,14 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
     } else {
       renderer.displayBuffer(HalDisplay::HALF_REFRESH);
     }
-    // The image's own page is handled above and doesn't count toward the full
-    // refresh cadence. But the grayscale pass below leaves gray charge in the
-    // image region that a plain fast diff on the *next* page can't clear, so
-    // text there ghosts gray (#2190). Force the next ordinary page onto the
-    // HALF ghost-cleanup path, which drives every pixel to its target
-    // regardless of residue.
-    pagesUntilFullRefresh = 1;
+    pagesUntilFullRefresh = SETTINGS.getRefreshFrequency();
   } else {
-    ReaderUtils::displayWithRefreshCycle(renderer, pagesUntilFullRefresh, asyncTextRefresh);
+    // On X4 the display owns a shadow baseline for this update, so the
+    // framebuffer is immediately available to the next input, reader menu,
+    // directory, or Home render. Coalescing in ActivityManager keeps only the
+    // newest frame while a waveform is running.
+    renderer.displayBufferAsync(HalDisplay::FAST_REFRESH);
+    pagesUntilFullRefresh = SETTINGS.getRefreshFrequency();
   }
   const auto tDisplay = millis();
 
@@ -1716,9 +1667,8 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
   // re-rendered ceil(H/STRIP_ROWS) times per plane, but renderCharImpl culls
   // out-of-band glyphs before decode so the cost stays close to one render.
   // Both text (drawPixel) and images (DirectPixelWriter) honor the active
-  // strip target. When the BW refresh above went out async, the plane
-  // rendering below overlaps the panel's refresh time; only the controller
-  // RAM writes wait for BUSY.
+  // strip target. This runs only after a manual refresh, so it never extends
+  // the normal page-turn, menu, Back, or Home latency path.
   if (tiledGrayscale) {
     constexpr int STRIP_ROWS = 80;
     const int gh = renderer.getDisplayHeight();

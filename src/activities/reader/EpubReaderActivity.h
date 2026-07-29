@@ -23,8 +23,8 @@ class EpubReaderActivity final : public Activity {
   // Cleared on the next render after the new section loads and resolves it to a page.
   std::string pendingAnchor;
   int pagesUntilFullRefresh = 0;
-  // Image pages use a dedicated double-FAST refresh path, so retain a manual
-  // refresh request until renderContents can issue its clean base pass.
+  // Retain a manual refresh request until renderContents can issue its clean
+  // base pass and optional image grayscale enhancement.
   bool forcedRefreshPending = false;
   int cachedSpineIndex = 0;
   int cachedChapterTotalPageCount = 0;
@@ -164,8 +164,8 @@ class EpubReaderActivity final : public Activity {
   bool applyDeferredReposition();
   bool saveProgress(int spineIndex, int currentPage, int pageCount);
   void queueProgressSave();
-  // Keep a user-visible return, jump, or page turn off the optional grayscale,
-  // image placeholder, and double-refresh paths.
+  // Keep a user-visible return, jump, or page turn off optional SD-font
+  // prewarming and image grayscale work.
   void prioritizeNextReaderRender();
   // Jump to a percentage of the book (0-100), mapping it to spine and page.
   void jumpToPercent(int percent);
