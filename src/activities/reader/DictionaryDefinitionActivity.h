@@ -42,5 +42,6 @@ class DictionaryDefinitionActivity final : public Activity {
   int currentPage = 0;
   int totalPages = 1;
   int linesPerPage = 1;
+  bool readerInputActive = false;
   ButtonNavigator buttonNavigator;
 };

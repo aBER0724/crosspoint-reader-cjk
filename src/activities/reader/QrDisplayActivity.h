@@ -18,4 +18,5 @@ class QrDisplayActivity final : public Activity {
 
  private:
   std::string textPayload;
+  bool readerInputActive = false;
 };

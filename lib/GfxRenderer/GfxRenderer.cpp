@@ -2107,6 +2107,20 @@ void GfxRenderer::displayBuffer(const HalDisplay::RefreshMode refreshMode) const
   auto elapsed = millis() - start_ms;
   LOG_DBG("GFX", "Time = %lu ms from clearScreen to displayBuffer", elapsed);
 
+  if (deferRefreshWhileBusy_ && display.refreshBusy()) {
+    // A partial update cannot be queued safely: its target must be relative to
+    // the exact controller baseline at submission time. The framebuffer still
+    // contains the complete latest UI, so coalesce it into a full-frame update.
+    partialX_ = partialY_ = partialW_ = partialH_ = 0;
+    deferredRefreshMode_ = refreshMode;
+    deferredRefreshPending_ = true;
+    return;
+  }
+
+  // This call is about to submit the current framebuffer, superseding any
+  // older frame that had been deferred while the panel was busy.
+  deferredRefreshPending_ = false;
+
   const bool hasPartialUpdate = partialW_ > 0 && partialH_ > 0;
   if (hasPartialUpdate) {
     PhysicalRect physicalWindow;
@@ -2145,6 +2159,16 @@ void GfxRenderer::displayBufferAsync(const HalDisplay::RefreshMode refreshMode) 
   // so they become a DARK_REDRIVE rather than whitening the background.
   const bool darkModeNeedsRedrive =
       darkMode && (refreshMode == HalDisplay::FAST_REFRESH || refreshMode == HalDisplay::HALF_REFRESH);
+  if (deferRefreshWhileBusy_ && display.refreshBusy()) {
+    partialX_ = partialY_ = partialW_ = partialH_ = 0;
+    deferredRefreshMode_ = refreshMode;
+    deferredRefreshPending_ = true;
+    return;
+  }
+  // displayBufferAsync() always submits a complete frame. Do not let a stale
+  // one-shot window from a partial redraw leak into a later blocking present.
+  partialX_ = partialY_ = partialW_ = partialH_ = 0;
+  deferredRefreshPending_ = false;
   if (fadingFix || darkModeNeedsRedrive) {
     displayBuffer(refreshMode);
     return;
@@ -2152,7 +2176,23 @@ void GfxRenderer::displayBufferAsync(const HalDisplay::RefreshMode refreshMode) 
   display.displayBufferAsync(refreshMode);
 }
 
+bool GfxRenderer::refreshBusy() const { return display.refreshBusy(); }
+
 void GfxRenderer::waitRefreshComplete() const { display.waitRefreshComplete(); }
+
+bool GfxRenderer::flushDeferredRefresh() {
+  if (!deferredRefreshPending_ || display.refreshBusy()) {
+    return false;
+  }
+
+  const auto refreshMode = deferredRefreshMode_;
+  deferredRefreshPending_ = false;
+  const bool deferRefreshWhileBusy = deferRefreshWhileBusy_;
+  deferRefreshWhileBusy_ = false;
+  displayBufferAsync(refreshMode);
+  deferRefreshWhileBusy_ = deferRefreshWhileBusy;
+  return true;
+}
 
 bool GfxRenderer::supportsAsyncRefresh() const { return !fadingFix && display.supportsAsyncRefresh(); }
 

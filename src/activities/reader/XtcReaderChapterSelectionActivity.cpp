@@ -1,6 +1,7 @@
 #include "XtcReaderChapterSelectionActivity.h"
 
 #include <GfxRenderer.h>
+#include <HalGPIO.h>
 #include <I18n.h>
 
 #include <algorithm>
@@ -53,6 +54,25 @@ void XtcReaderChapterSelectionActivity::onEnter() {
 void XtcReaderChapterSelectionActivity::onExit() { Activity::onExit(); }
 
 void XtcReaderChapterSelectionActivity::loop() {
+  const bool inputActive = mappedInput.wasAnyPressed() || mappedInput.wasAnyReleased() ||
+                           mappedInput.isPressed(MappedInputManager::Button::Back) ||
+                           mappedInput.isPressed(MappedInputManager::Button::Confirm) ||
+                           mappedInput.isPressed(MappedInputManager::Button::Left) ||
+                           mappedInput.isPressed(MappedInputManager::Button::Right) ||
+                           mappedInput.isPressed(MappedInputManager::Button::Up) ||
+                           mappedInput.isPressed(MappedInputManager::Button::Down) ||
+                           mappedInput.isPressed(MappedInputManager::Button::NavNext) ||
+                           mappedInput.isPressed(MappedInputManager::Button::NavPrevious) ||
+                           mappedInput.isPressed(MappedInputManager::Button::Power) || gpio.wasTouchActivity();
+  if (inputActive) {
+    if (!readerInputActive) {
+      activityManager.cancelCurrentRender();
+      readerInputActive = true;
+    }
+  } else {
+    readerInputActive = false;
+  }
+
   const int pageItems = getPageItems();
   const int totalItems = static_cast<int>(xtc->getChapters().size());
 
@@ -163,7 +183,11 @@ void XtcReaderChapterSelectionActivity::render(RenderLock&&) {
     // Center the empty state within the gutter-safe content region.
     const int emptyX = contentX + (contentWidth - renderer.getTextWidth(UI_10_FONT_ID, tr(STR_NO_CHAPTERS))) / 2;
     renderer.drawText(UI_10_FONT_ID, emptyX, 120 + contentY, tr(STR_NO_CHAPTERS));
-    renderer.displayBuffer();
+    if (renderer.isDarkMode()) {
+      renderer.displayBufferDarkRedrive();
+    } else {
+      renderer.displayBufferAsync();
+    }
     return;
   }
 
@@ -182,5 +206,9 @@ void XtcReaderChapterSelectionActivity::render(RenderLock&&) {
     GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
   }
 
-  renderer.displayBuffer();
+  if (renderer.isDarkMode()) {
+    renderer.displayBufferDarkRedrive();
+  } else {
+    renderer.displayBufferAsync();
+  }
 }

@@ -1,6 +1,7 @@
 #include "EpubReaderMenuActivity.h"
 
 #include <GfxRenderer.h>
+#include <HalGPIO.h>
 #include <I18n.h>
 
 #include <algorithm>
@@ -68,6 +69,25 @@ bool EpubReaderMenuActivity::handleHomeGesture() {
 }
 
 void EpubReaderMenuActivity::loop() {
+  const bool inputActive = mappedInput.wasAnyPressed() || mappedInput.wasAnyReleased() ||
+                           mappedInput.isPressed(MappedInputManager::Button::Back) ||
+                           mappedInput.isPressed(MappedInputManager::Button::Confirm) ||
+                           mappedInput.isPressed(MappedInputManager::Button::Left) ||
+                           mappedInput.isPressed(MappedInputManager::Button::Right) ||
+                           mappedInput.isPressed(MappedInputManager::Button::Up) ||
+                           mappedInput.isPressed(MappedInputManager::Button::Down) ||
+                           mappedInput.isPressed(MappedInputManager::Button::NavNext) ||
+                           mappedInput.isPressed(MappedInputManager::Button::NavPrevious) ||
+                           mappedInput.isPressed(MappedInputManager::Button::Power) || gpio.wasTouchActivity();
+  if (inputActive) {
+    if (!readerInputActive) {
+      activityManager.cancelCurrentRender();
+      readerInputActive = true;
+    }
+  } else {
+    readerInputActive = false;
+  }
+
   if (optionPopup.handleInput(mappedInput, [this] { requestUpdate(); })) {
     // The popup acts on button press; if that input closed it, the trailing
     // release must be swallowed below (Back would close the menu, Confirm
@@ -232,11 +252,14 @@ void EpubReaderMenuActivity::render(RenderLock&&) {
   }
 
   if (partialUpdate) {
-    renderer.displayBuffer();
+    // Window refreshes are synchronous in the panel SDK. Submit the completed
+    // framebuffer asynchronously instead so a following key, Back, or Home
+    // transition can run while the waveform is active.
+    renderer.displayBufferAsync();
   } else if (renderer.isDarkMode()) {
     renderer.displayBufferDarkRedrive();
   } else {
-    renderer.displayBuffer();
+    renderer.displayBufferAsync();
   }
   lastRenderedSelectedIndex = selectedIndex;
   fullRedrawRequired = false;

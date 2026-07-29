@@ -208,6 +208,10 @@ bool parseSerialTestButton(String name, MappedInputManager::Button& button) {
     button = MappedInputManager::Button::Up;
   } else if (name == "DOWN") {
     button = MappedInputManager::Button::Down;
+  } else if (name == "NAVNEXT") {
+    button = MappedInputManager::Button::NavNext;
+  } else if (name == "NAVPREVIOUS") {
+    button = MappedInputManager::Button::NavPrevious;
   } else {
     return false;
   }

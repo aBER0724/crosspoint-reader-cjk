@@ -15,6 +15,7 @@ class EpubReaderBookmarksActivity final : public Activity {
   int selectorIndex = 0;
   std::vector<BookmarkEntry> bookmarks;
   bool confirmingDelete = false;
+  bool readerInputActive = false;
   OptionPopup confirmPopup;
 
  public:

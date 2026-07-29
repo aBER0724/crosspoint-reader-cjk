@@ -85,6 +85,8 @@ void HalDisplay::displayBufferAsync(HalDisplay::RefreshMode mode) {
 
 void HalDisplay::waitRefreshComplete() { einkDisplay.waitRefreshComplete(); }
 
+bool HalDisplay::refreshBusy() { return einkDisplay.refreshBusy(); }
+
 bool HalDisplay::supportsAsyncRefresh() const { return !gpio.deviceIsX3() && einkDisplay.supportsAsyncRefresh(); }
 
 void HalDisplay::refreshDisplay(HalDisplay::RefreshMode mode, bool turnOffScreen) {

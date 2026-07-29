@@ -22,6 +22,7 @@ class EpubReaderPercentSelectionActivity final : public Activity {
   int percent = 0;
   int lastRenderedPercent = -1;
   bool fullRedrawRequired = true;
+  bool readerInputActive = false;
 
   // True while a touch that landed on the slider bar is being dragged.
   bool draggingBar = false;

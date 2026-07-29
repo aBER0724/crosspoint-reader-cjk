@@ -44,22 +44,54 @@ void ActivityManager::renderTaskTrampoline(void* param) {
 void ActivityManager::renderTaskLoop() {
   while (true) {
     ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
-    // Acquire the lock before reading currentActivity to avoid a TOCTOU race
-    // where the main task deletes the activity between the null-check and render().
-    RenderLock renderLock(true, true);
-    if (currentActivity) {
-      HalPowerManager::Lock powerLock;  // Ensure we don't go into low-power mode while rendering
-      currentActivity->render(std::move(renderLock));
-    }
-    // Notify any task blocked in requestUpdateAndWait() that the render is done.
+    const uint32_t renderSerial = renderRequestSerial.load(std::memory_order_relaxed);
     TaskHandle_t waiter = nullptr;
+    uint32_t waiterSerial = 0;
     taskENTER_CRITICAL(&activityManagerSpinlock);
     waiter = waitingTaskHandle;
-    waitingTaskHandle = nullptr;
+    waiterSerial = waitingRenderSerial;
     taskEXIT_CRITICAL(&activityManagerSpinlock);
-    if (waiter) {
-      xTaskNotify(waiter, 1, eIncrement);
+
+    const bool mustWaitForDisplay = waiter != nullptr && renderSerial >= waiterSerial;
+    if (mustWaitForDisplay) {
+      // requestUpdateAndWait() promises a completed paint. Drain an older
+      // waveform before rendering, and the new one after rendering, without
+      // holding RenderLock during either hardware wait.
+      renderer.waitRefreshComplete();
     }
+
+    {
+      // Acquire the lock before reading currentActivity to avoid a TOCTOU race
+      // where the main task deletes the activity between the null-check and render().
+      RenderLock renderLock(true, true);
+      renderer.setDeferRefreshWhileBusy(!mustWaitForDisplay);
+      if (currentActivity) {
+        HalPowerManager::Lock powerLock;  // Ensure we don't go into low-power mode while rendering
+        currentActivity->render(std::move(renderLock));
+      }
+      renderer.setDeferRefreshWhileBusy(false);
+    }
+
+    if (mustWaitForDisplay) {
+      renderer.waitRefreshComplete();
+    }
+
+    // Notify a waiter only after the particular render it requested has
+    // completed. A render already in progress when the wait began must not
+    // satisfy the request prematurely.
+    TaskHandle_t waiterToNotify = nullptr;
+    taskENTER_CRITICAL(&activityManagerSpinlock);
+    if (waitingTaskHandle != nullptr && renderSerial >= waitingRenderSerial) {
+      waiterToNotify = waitingTaskHandle;
+      waitingTaskHandle = nullptr;
+      waitingRenderSerial = 0;
+    }
+    taskEXIT_CRITICAL(&activityManagerSpinlock);
+    if (waiterToNotify) {
+      xTaskNotify(waiterToNotify, 1, eIncrement);
+    }
+
+    completedRenderSerial.store(renderSerial, std::memory_order_release);
   }
 }
 
@@ -172,12 +204,29 @@ void ActivityManager::loop() {
   }
 
   if (requestedUpdate.exchange(false)) {
-    // Using direct notification to signal the render task to update
-    // Increment counter so multiple rapid calls won't be lost
-    if (renderTaskHandle) {
-      xTaskNotify(renderTaskHandle, 1, eIncrement);
+    notifyRenderTask();
+  }
+
+  // A render completed while an older async waveform was active leaves its
+  // newest framebuffer staged in GfxRenderer. Submit it only once no newer
+  // render is queued or running, otherwise a just-superseded screen could win
+  // the race to the panel.
+  const uint32_t latestRenderSerial = renderRequestSerial.load(std::memory_order_acquire);
+  const uint32_t completedRenderSerial = this->completedRenderSerial.load(std::memory_order_acquire);
+  if (!requestedUpdate.load(std::memory_order_relaxed) && completedRenderSerial == latestRenderSerial) {
+    RenderLock lock(false);
+    if (lock.locked() && !renderer.refreshBusy()) {
+      renderer.flushDeferredRefresh();
     }
   }
+}
+
+void ActivityManager::notifyRenderTask() {
+  if (!renderTaskHandle) {
+    return;
+  }
+  // Increment counter so multiple rapid calls won't be lost.
+  xTaskNotify(renderTaskHandle, 1, eIncrement);
 }
 
 void ActivityManager::exitActivity(const RenderLock& lock) {
@@ -295,10 +344,9 @@ bool ActivityManager::skipLoopDelay() const { return currentActivity && currentA
 
 void ActivityManager::requestUpdate(bool immediate) {
   invalidateRender();
+  renderRequestSerial.fetch_add(1, std::memory_order_relaxed);
   if (immediate) {
-    if (renderTaskHandle) {
-      xTaskNotify(renderTaskHandle, 1, eIncrement);
-    }
+    notifyRenderTask();
   } else {
     // Deferring the update until current loop is finished
     // This is to avoid multiple updates being requested in the same loop
@@ -307,6 +355,7 @@ void ActivityManager::requestUpdate(bool immediate) {
 }
 void ActivityManager::requestUpdateAndWait() {
   invalidateRender();
+  const uint32_t waitRenderSerial = renderRequestSerial.fetch_add(1, std::memory_order_relaxed) + 1;
   if (!renderTaskHandle) {
     return;
   }
@@ -320,6 +369,7 @@ void ActivityManager::requestUpdateAndWait() {
   bool holdingRenderLock = (mutexHolder == currTaskHandler);
   if (!alreadyWaiting && !isRenderTask && !holdingRenderLock) {
     waitingTaskHandle = currTaskHandler;
+    waitingRenderSerial = waitRenderSerial;
   }
   taskEXIT_CRITICAL(&activityManagerSpinlock);
 
@@ -332,7 +382,7 @@ void ActivityManager::requestUpdateAndWait() {
   // Cannot call while holding RenderLock or it will cause a deadlock
   assert(!holdingRenderLock && "Cannot call requestUpdateAndWait() while holding RenderLock");
 
-  xTaskNotify(renderTaskHandle, 1, eIncrement);
+  notifyRenderTask();
   ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
 }
 

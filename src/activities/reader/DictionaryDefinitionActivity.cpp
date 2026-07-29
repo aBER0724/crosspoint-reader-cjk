@@ -2,6 +2,7 @@
 
 #include <FontCacheManager.h>
 #include <GfxRenderer.h>
+#include <HalGPIO.h>
 #include <I18n.h>
 
 #include <algorithm>
@@ -159,6 +160,25 @@ void DictionaryDefinitionActivity::wrapText() {
 }
 
 void DictionaryDefinitionActivity::loop() {
+  const bool inputActive = mappedInput.wasAnyPressed() || mappedInput.wasAnyReleased() ||
+                           mappedInput.isPressed(MappedInputManager::Button::Back) ||
+                           mappedInput.isPressed(MappedInputManager::Button::Confirm) ||
+                           mappedInput.isPressed(MappedInputManager::Button::Left) ||
+                           mappedInput.isPressed(MappedInputManager::Button::Right) ||
+                           mappedInput.isPressed(MappedInputManager::Button::Up) ||
+                           mappedInput.isPressed(MappedInputManager::Button::Down) ||
+                           mappedInput.isPressed(MappedInputManager::Button::NavNext) ||
+                           mappedInput.isPressed(MappedInputManager::Button::NavPrevious) ||
+                           mappedInput.isPressed(MappedInputManager::Button::Power) || gpio.wasTouchActivity();
+  if (inputActive) {
+    if (!readerInputActive) {
+      activityManager.cancelCurrentRender();
+      readerInputActive = true;
+    }
+  } else {
+    readerInputActive = false;
+  }
+
   if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
     finish();
     return;
@@ -254,6 +274,6 @@ void DictionaryDefinitionActivity::render(RenderLock&&) {
   if (renderer.isDarkMode()) {
     renderer.displayBufferDarkRedrive();
   } else {
-    renderer.displayBuffer();
+    renderer.displayBufferAsync();
   }
 }

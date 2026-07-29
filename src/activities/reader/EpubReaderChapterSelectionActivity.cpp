@@ -1,6 +1,7 @@
 #include "EpubReaderChapterSelectionActivity.h"
 
 #include <GfxRenderer.h>
+#include <HalGPIO.h>
 #include <I18n.h>
 
 #include <algorithm>
@@ -32,6 +33,25 @@ void EpubReaderChapterSelectionActivity::onEnter() {
 void EpubReaderChapterSelectionActivity::onExit() { Activity::onExit(); }
 
 void EpubReaderChapterSelectionActivity::loop() {
+  const bool inputActive = mappedInput.wasAnyPressed() || mappedInput.wasAnyReleased() ||
+                           mappedInput.isPressed(MappedInputManager::Button::Back) ||
+                           mappedInput.isPressed(MappedInputManager::Button::Confirm) ||
+                           mappedInput.isPressed(MappedInputManager::Button::Left) ||
+                           mappedInput.isPressed(MappedInputManager::Button::Right) ||
+                           mappedInput.isPressed(MappedInputManager::Button::Up) ||
+                           mappedInput.isPressed(MappedInputManager::Button::Down) ||
+                           mappedInput.isPressed(MappedInputManager::Button::NavNext) ||
+                           mappedInput.isPressed(MappedInputManager::Button::NavPrevious) ||
+                           mappedInput.isPressed(MappedInputManager::Button::Power) || gpio.wasTouchActivity();
+  if (inputActive) {
+    if (!readerInputActive) {
+      activityManager.cancelCurrentRender();
+      readerInputActive = true;
+    }
+  } else {
+    readerInputActive = false;
+  }
+
   const int pageItems = UITheme::getInstance().getNumberOfItemsPerPage(renderer, true, false, true, false);
   const int totalItems = getTotalItems();
 
@@ -145,11 +165,13 @@ void EpubReaderChapterSelectionActivity::render(RenderLock&&) {
   }
 
   if (partialUpdate) {
-    renderer.displayBuffer();
+    // Keep selection movement responsive: the SDK's window path waits for the
+    // waveform, whereas the full framebuffer can be submitted asynchronously.
+    renderer.displayBufferAsync();
   } else if (renderer.isDarkMode()) {
     renderer.displayBufferDarkRedrive();
   } else {
-    renderer.displayBuffer();
+    renderer.displayBufferAsync();
   }
   lastRenderedSelectorIndex = selectorIndex;
   fullRedrawRequired = false;

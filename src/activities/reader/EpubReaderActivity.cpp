@@ -1683,8 +1683,10 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
   } else if (interactiveRender) {
     // The normal image path has a placeholder plus two panel refreshes. During
     // an actual key/touch interaction, show the fully rendered page once and
-    // defer visual cleanup to the next non-interactive or forced refresh.
-    renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+    // defer visual cleanup to the next non-interactive or forced refresh. On
+    // X4, release RenderLock as soon as the waveform starts so the next key,
+    // menu, directory, or Home transition is not held behind the page refresh.
+    renderer.displayBufferAsync(HalDisplay::FAST_REFRESH);
     pagesUntilFullRefresh = SETTINGS.getRefreshFrequency();
   } else if (pageHasImages) {
     // Double FAST_REFRESH with selective image blanking (pablohc's technique):
