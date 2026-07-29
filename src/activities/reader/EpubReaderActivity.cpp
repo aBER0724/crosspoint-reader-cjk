@@ -46,6 +46,11 @@ constexpr int PAGE_TURN_RATES[] = {1, 1, 3, 6, 12};
 constexpr size_t initialBookmarkCacheCapacity = 16;
 constexpr float bookmarkProgressEpsilon = 0.0001f;
 
+bool renderWasSuperseded(const void* context) {
+  yield();
+  return static_cast<const RenderLock*>(context)->isStale();
+}
+
 int clampPercent(int percent) {
   if (percent < 0) {
     return 0;
@@ -1054,6 +1059,9 @@ void EpubReaderActivity::render(RenderLock&& lock) {
     // Sole load site: runs on the render task (serialized by RenderLock); the main
     // task only reads the suggestions once the loaded flag is published
     endOfBookOptions.loadOnce(epub->getPath());
+    if (lock.isStale()) {
+      return;
+    }
     renderer.clearScreen();
     endOfBookOptions.render(renderer, mappedInput);
     if (renderer.isDarkMode()) {
@@ -1107,6 +1115,9 @@ void EpubReaderActivity::render(RenderLock&& lock) {
     // out the rest -- it re-parses from the top in the background (HTML already cached,
     // pages are deterministic) and finalizes, so the partial machinery retires itself.
     const bool cacheLoaded = section->loadSectionFile(renderSpec);
+    if (lock.isStale()) {
+      return;
+    }
     if (cacheLoaded) {
       // Matching render params means identical pagination, so the saved page number is valid
       // as-is: consume any pending settings-change reposition. Without this, a chapter total
@@ -1156,6 +1167,9 @@ void EpubReaderActivity::render(RenderLock&& lock) {
           return;
         }
         loan.end();
+        if (lock.isStale()) {
+          return;
+        }
       } else {
         // Lay out just enough to show the landing page; loop() builds the rest behind it. Show the
         // indexing popup up front only when the build will actually be slow: a large spine (its
@@ -1216,6 +1230,10 @@ void EpubReaderActivity::render(RenderLock&& lock) {
             GfxRenderer::FrameBufferLoan loan(renderer);
             started = section->startBuild(renderSpec, [this] { showBuildPopup(); });
           }
+          if (lock.isStale()) {
+            buildPopupPending = false;
+            return;
+          }
           if (!started) {
             LOG_ERR("ERS", "Failed to start section build");
             section.reset();
@@ -1232,7 +1250,12 @@ void EpubReaderActivity::render(RenderLock&& lock) {
               // The predictive gates guessed fast but the build blew the silent budget.
               showBuildPopup();
             }
-            if (!section->buildSomeMore(BUILD_PAGES_PER_CHUNK)) {
+            const bool built = section->buildSomeMore(BUILD_PAGES_PER_CHUNK);
+            if (lock.isStale()) {
+              buildPopupPending = false;
+              return;
+            }
+            if (!built) {
               LOG_ERR("ERS", "Failed during incremental section build");
               section.reset();
               buildPopupPending = false;
@@ -1241,6 +1264,9 @@ void EpubReaderActivity::render(RenderLock&& lock) {
             }
           }
           buildPopupPending = false;
+          if (lock.isStale()) {
+            return;
+          }
         }
       }
     } else {
@@ -1295,15 +1321,25 @@ void EpubReaderActivity::render(RenderLock&& lock) {
   }
   while (section->isPartial() && section->currentPage >= static_cast<int>(section->pageCount)) {
     // Start a build to extend a partial toward the requested page.
-    if (!section->isBuilding() && !section->startBuild(renderSpec)) {
-      LOG_ERR("ERS", "Failed to start partial extension build");
-      section.reset();
-      showBuildError();
-      return;
+    if (!section->isBuilding()) {
+      const bool started = section->startBuild(renderSpec);
+      if (lock.isStale()) {
+        return;
+      }
+      if (!started) {
+        LOG_ERR("ERS", "Failed to start partial extension build");
+        section.reset();
+        showBuildError();
+        return;
+      }
     }
     // Extend until either the target page exists or the build completes.
     while (!section->isBuildComplete() && section->currentPage >= static_cast<int>(section->pageCount)) {
-      if (!section->buildSomeMore(BUILD_PAGES_PER_CHUNK)) {
+      const bool built = section->buildSomeMore(BUILD_PAGES_PER_CHUNK);
+      if (lock.isStale()) {
+        return;
+      }
+      if (!built) {
         LOG_ERR("ERS", "Failed during incremental section build");
         section.reset();
         showBuildError();
@@ -1314,7 +1350,11 @@ void EpubReaderActivity::render(RenderLock&& lock) {
   // For an in-progress incremental build, make sure the page we're about to show has been laid out.
   if (section->isBuilding()) {
     while (!section->isBuildComplete() && section->currentPage >= static_cast<int>(section->pageCount)) {
-      if (!section->buildSomeMore(BUILD_PAGES_PER_CHUNK)) {
+      const bool built = section->buildSomeMore(BUILD_PAGES_PER_CHUNK);
+      if (lock.isStale()) {
+        return;
+      }
+      if (!built) {
         LOG_ERR("ERS", "Failed during incremental section build");
         section.reset();
         showBuildError();
@@ -1336,6 +1376,9 @@ void EpubReaderActivity::render(RenderLock&& lock) {
   // Apply a deferred settings-change reposition now that the real page count is known (a no-op for
   // a plain resume / unchanged pagination). If still building, this defers to loop() on completion.
   applyDeferredReposition();
+  if (lock.isStale()) {
+    return;
+  }
 
   renderer.clearScreen();
 
@@ -1373,6 +1416,9 @@ void EpubReaderActivity::render(RenderLock&& lock) {
     // Unified page read: the in-progress build's in-RAM table if it has reached the page,
     // otherwise the on-disk file (finalized section, or a partial from a previous session).
     auto p = section->loadPage(section->currentPage);
+    if (lock.isStale()) {
+      return;
+    }
     if (!p) {
       LOG_ERR("ERS", "Failed to load page from SD - clearing section cache");
       automaticPageTurnActive = false;
@@ -1417,6 +1463,9 @@ void EpubReaderActivity::render(RenderLock&& lock) {
   // Only persist when the position actually changed. render() also runs on menu,
   // bookmark and screenshot re-renders, and writeAtomic is several FAT ops for 6 bytes.
   // Every real page turn changes currentPage, so progress durability is unaffected.
+  if (lock.isStale()) {
+    return;
+  }
   if (currentSpineIndex != lastSavedSpineIndex || section->currentPage != lastSavedPage ||
       section->pageCount != lastSavedPageCount) {
     if (saveProgress(currentSpineIndex, section->currentPage, section->estimatedTotalPages())) {
@@ -1426,13 +1475,22 @@ void EpubReaderActivity::render(RenderLock&& lock) {
     }
   }
 
+  if (lock.isStale()) {
+    return;
+  }
   showPendingSyncSaveError();
 
   if (pendingScreenshot) {
+    if (lock.isStale()) {
+      return;
+    }
     pendingScreenshot = false;
     ScreenshotUtil::takeScreenshot(renderer);
   }
 
+  if (lock.isStale()) {
+    return;
+  }
   if (showBookmarkMessage) {
     GUI.drawPopup(renderer, bookmarkRemoved ? tr(STR_BOOKMARK_REMOVED) : tr(STR_BOOKMARK_ADDED));
   }
@@ -1474,6 +1532,7 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
                                         const int orientedMarginLeft, const RenderLock& lock) {
   const auto t0 = millis();
   const int fontId = SETTINGS.getReaderFontId();
+  const PageRenderCancellation cancellation{renderWasSuperseded, &lock};
 
   // The image pixel-cache RAM slot lives for exactly one page render (it feeds
   // the BW double-refresh and every grayscale band pass); release it on every
@@ -1482,13 +1541,25 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
     ~PxcSlotGuard() { ImageBlock::releaseRenderCache(); }
   } pxcSlotGuard;
 
-  // Font prewarm: scan pass accumulates text, then prewarm, then real render.
-  // Keep this optional so a missing FCM cannot blank the whole page render path.
+  // SD-card glyphs benefit from a sequential prewarm pass. Built-in fonts already
+  // reside in flash and must stay on the single-render path used by earlier releases.
   std::optional<FontCacheManager::PrewarmScope> prewarmScope;
-  if (auto* fcm = renderer.getFontCacheManager()) {
-    prewarmScope.emplace(fcm->createPrewarmScope());
-    page->render(renderer, fontId, orientedMarginLeft, orientedMarginTop);  // scan pass
-    prewarmScope->endScanAndPrewarm();
+  if (renderer.isSdCardFont(fontId)) {
+    if (auto* fcm = renderer.getFontCacheManager()) {
+      prewarmScope.emplace(fcm->createPrewarmScope());
+      if (!page->render(renderer, fontId, orientedMarginLeft, orientedMarginTop, &cancellation)) {
+        prewarmScope->cancel();
+        return;
+      }
+      if (lock.isStale()) {
+        prewarmScope->cancel();
+        return;
+      }
+      prewarmScope->endScanAndPrewarm();
+      if (lock.isStale()) {
+        return;
+      }
+    }
   }
   const auto tPrewarm = millis();
 
@@ -1514,27 +1585,48 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
   const bool overlapRefresh = tiledGrayscale && renderer.supportsAsyncRefresh() && !pageHasImages;
   auto renderGrayscalePass = [&]() {
     if (needsTextGrayscale) {
-      page->render(renderer, fontId, orientedMarginLeft, orientedMarginTop);
-    } else {
-      page->renderImages(renderer, fontId, orientedMarginLeft, orientedMarginTop);
+      return page->render(renderer, fontId, orientedMarginLeft, orientedMarginTop, &cancellation);
     }
+    return page->renderImages(renderer, fontId, orientedMarginLeft, orientedMarginTop, &cancellation);
   };
 
   if (pageHasImagesNeedingDecode) {
-    page->renderWithImagePlaceholders(renderer, fontId, orientedMarginLeft, orientedMarginTop);
+    if (!page->renderWithImagePlaceholders(renderer, fontId, orientedMarginLeft, orientedMarginTop, &cancellation)) {
+      return;
+    }
+    if (lock.isStale()) {
+      return;
+    }
     renderStatusBar();
+    if (lock.isStale()) {
+      return;
+    }
     if (darkMode) {
       renderer.displayBufferDarkRedrive();
     } else {
       renderer.displayBuffer(HalDisplay::FAST_REFRESH);
     }
+    if (lock.isStale()) {
+      return;
+    }
     renderer.clearScreen();
   }
 
-  page->render(renderer, fontId, orientedMarginLeft, orientedMarginTop);
+  if (!page->render(renderer, fontId, orientedMarginLeft, orientedMarginTop, &cancellation)) {
+    return;
+  }
+  if (lock.isStale()) {
+    return;
+  }
   renderStatusBar();
+  if (lock.isStale()) {
+    return;
+  }
   const auto tBwRender = millis();
 
+  if (lock.isStale()) {
+    return;
+  }
   if (pageHasImages && darkMode) {
     renderer.displayBufferDarkRedrive();
     pagesUntilFullRefresh = SETTINGS.getRefreshFrequency();
@@ -1554,13 +1646,24 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
         } else {
           renderer.displayBuffer(HalDisplay::HALF_REFRESH);
         }
+        if (lock.isStale()) {
+          return;
+        }
       }
       renderer.fillRect(imgX + orientedMarginLeft, imgY + orientedMarginTop, imgW, imgH, false);
+      if (lock.isStale()) {
+        return;
+      }
       renderer.displayBuffer(HalDisplay::FAST_REFRESH);
 
       // Re-render page content to restore images into the blanked area
       // Status bar is not re-rendered here to avoid reading stale dynamic values (e.g. battery %)
-      page->render(renderer, fontId, orientedMarginLeft, orientedMarginTop);
+      if (!page->render(renderer, fontId, orientedMarginLeft, orientedMarginTop, &cancellation)) {
+        return;
+      }
+      if (lock.isStale()) {
+        return;
+      }
       renderer.displayBuffer(HalDisplay::FAST_REFRESH);
     } else {
       renderer.displayBuffer(HalDisplay::HALF_REFRESH);
@@ -1578,6 +1681,10 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
     ReaderUtils::displayWithRefreshCycle(renderer, pagesUntilFullRefresh, overlapRefresh);
   }
   const auto tDisplay = millis();
+
+  if (lock.isStale()) {
+    return;
+  }
 
   // Tiled grayscale: render each plane band-by-band, leaving the BW
   // framebuffer intact so no full-frame storeBwBuffer is needed; controller
@@ -1602,9 +1709,9 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
         const int rows = (gh - y < STRIP_ROWS) ? (gh - y) : STRIP_ROWS;
         renderer.beginStripTarget(buf + static_cast<size_t>(y) * gwBytes, y, rows);
         renderer.clearScreen(0x00);
-        renderGrayscalePass();
+        const bool rendered = renderGrayscalePass();
         renderer.endStripTarget();
-        if (lock.isStale()) {
+        if (!rendered || lock.isStale()) {
           return false;
         }
       }
@@ -1733,9 +1840,9 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
           const int rows = (gh - y < STRIP_ROWS) ? (gh - y) : STRIP_ROWS;
           renderer.beginStripTarget(scratch.get(), y, rows);
           renderer.clearScreen(0x00);
-          renderGrayscalePass();
+          const bool rendered = renderGrayscalePass();
           renderer.endStripTarget();
-          if (lock.isStale()) {
+          if (!rendered || lock.isStale()) {
             cancelStaleGrayscale();
             return;
           }
@@ -1754,9 +1861,9 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
           const int rows = (gh - y < STRIP_ROWS) ? (gh - y) : STRIP_ROWS;
           renderer.beginStripTarget(scratch.get(), y, rows);
           renderer.clearScreen(0x00);
-          renderGrayscalePass();
+          const bool rendered = renderGrayscalePass();
           renderer.endStripTarget();
-          if (lock.isStale()) {
+          if (!rendered || lock.isStale()) {
             cancelStaleGrayscale();
             return;
           }
@@ -1818,7 +1925,14 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
 
       renderer.clearScreen(0x00);
       renderer.setRenderMode(GfxRenderer::GRAYSCALE_LSB);
-      renderGrayscalePass();
+      if (!renderGrayscalePass()) {
+        cancelStaleFallbackGrayscale();
+        return;
+      }
+      if (lock.isStale()) {
+        cancelStaleFallbackGrayscale();
+        return;
+      }
       renderer.copyGrayscaleLsbBuffers();
       const auto tGrayLsb = millis();
 
@@ -1830,7 +1944,14 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
       // Render and copy to MSB buffer
       renderer.clearScreen(0x00);
       renderer.setRenderMode(GfxRenderer::GRAYSCALE_MSB);
-      renderGrayscalePass();
+      if (!renderGrayscalePass()) {
+        cancelStaleFallbackGrayscale();
+        return;
+      }
+      if (lock.isStale()) {
+        cancelStaleFallbackGrayscale();
+        return;
+      }
       renderer.copyGrayscaleMsbBuffers();
       const auto tGrayMsb = millis();
 

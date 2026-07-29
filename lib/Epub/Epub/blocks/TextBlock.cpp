@@ -108,10 +108,11 @@ TextBlock::TextBlock(const std::vector<std::string>& words, const std::vector<in
   }
 }
 
-void TextBlock::render(const GfxRenderer& renderer, const int fontId, const int x, const int y) const {
+bool TextBlock::render(const GfxRenderer& renderer, const int fontId, const int x, const int y,
+                       const PageRenderCancellation* const cancellation) const {
   if (!isValid) {
     LOG_ERR("TXB", "Render skipped: invalid block");
-    return;
+    return true;
   }
 
   const bool scanning = renderer.isFontCacheScanning();
@@ -150,6 +151,13 @@ void TextBlock::render(const GfxRenderer& renderer, const int fontId, const int 
   };
 
   for (uint16_t i = 0; i < numWords; i++) {
+    // Let the input task run frequently enough to supersede a long text page.
+    // The callback is deliberately avoided on every word to keep the normal
+    // render hot path compact.
+    if ((i & 0x07u) == 0 && cancellation && cancellation->requested()) {
+      return false;
+    }
+
     const char* word = wordText(i);
     const int wordX = xposArr[i] + x;
     const EpdFontFamily::Style currentStyle = wordStyle(i);
@@ -233,6 +241,7 @@ void TextBlock::render(const GfxRenderer& renderer, const int fontId, const int 
     }
   }
   flushDecorations();
+  return true;
 }
 
 bool TextBlock::serialize(HalFile& file) const {

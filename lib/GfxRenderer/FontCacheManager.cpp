@@ -87,6 +87,7 @@ FontCacheManager::PrewarmScope::PrewarmScope(FontCacheManager& manager) : manage
 }
 
 void FontCacheManager::PrewarmScope::endScanAndPrewarm() {
+  if (!active_) return;
   manager_->scanMode_ = ScanMode::None;
   if (manager_->scanText_.empty()) return;
 
@@ -102,6 +103,16 @@ void FontCacheManager::PrewarmScope::endScanAndPrewarm() {
   // Free scan string memory
   manager_->scanText_.clear();
   manager_->scanText_.shrink_to_fit();
+}
+
+void FontCacheManager::PrewarmScope::cancel() {
+  if (!active_) return;
+  manager_->scanMode_ = ScanMode::None;
+  manager_->scanText_.clear();
+  manager_->scanText_.shrink_to_fit();
+  memset(manager_->scanStyleCounts_, 0, sizeof(manager_->scanStyleCounts_));
+  manager_->scanFontId_ = -1;
+  active_ = false;
 }
 
 FontCacheManager::PrewarmScope::~PrewarmScope() {
