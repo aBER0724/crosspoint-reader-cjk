@@ -921,15 +921,22 @@ bool ExternalFont::measureLegacyGlyphForLayout(uint32_t codepoint, ExternalGlyph
   return false;
 }
 
-void ExternalFont::preloadGlyphs(const uint32_t* codepoints, size_t count) {
+bool ExternalFont::preloadGlyphs(const uint32_t* codepoints, const size_t count, bool (*isCancelled)(const void*),
+                                 const void* cancellationContext) {
+  const auto cancelled = [isCancelled, cancellationContext] {
+    return isCancelled != nullptr && isCancelled(cancellationContext);
+  };
+  if (cancelled()) {
+    return false;
+  }
   if (!_isLoaded || !codepoints || count == 0) {
-    return;
+    return true;
   }
   if (FontManager::getInstance().areGlyphCachesSuspended()) {
-    return;
+    return true;
   }
   if (!ensureGlyphCache()) {
-    return;
+    return true;
   }
 
   const size_t maxLoad = std::min(count, static_cast<size_t>(PRELOAD_LIMIT));
@@ -939,6 +946,9 @@ void ExternalFont::preloadGlyphs(const uint32_t* codepoints, size_t count) {
   std::vector<uint32_t> sorted(codepoints, codepoints + maxLoad);
   std::sort(sorted.begin(), sorted.end());
   sorted.erase(std::unique(sorted.begin(), sorted.end()), sorted.end());
+  if (cancelled()) {
+    return false;
+  }
 
   LOG_DBG("EFT", "Preloading %zu unique glyphs", sorted.size());
   const unsigned long startTime = millis();
@@ -958,6 +968,9 @@ void ExternalFont::preloadGlyphs(const uint32_t* codepoints, size_t count) {
     pending.reserve(sorted.size());
 
     for (uint32_t cp : sorted) {
+      if (cancelled()) {
+        return false;
+      }
       if (findInCache(cp) >= 0) {
         getGlyph(cp);
         skipped++;
@@ -987,6 +1000,9 @@ void ExternalFont::preloadGlyphs(const uint32_t* codepoints, size_t count) {
               [](const PendingEpdGlyph& a, const PendingEpdGlyph& b) { return a.dataOffset < b.dataOffset; });
 
     for (const PendingEpdGlyph& glyph : pending) {
+      if (cancelled()) {
+        return false;
+      }
       if (getGlyphFallbacks(glyph.codepoint).count > 0) {
         getGlyph(glyph.codepoint);
         loaded++;
@@ -1038,10 +1054,13 @@ void ExternalFont::preloadGlyphs(const uint32_t* codepoints, size_t count) {
     }
 
     LOG_DBG("EFT", "Preload done: %zu loaded, %zu already cached, took %lums", loaded, skipped, millis() - startTime);
-    return;
+    return true;
   }
 
   for (uint32_t cp : sorted) {
+    if (cancelled()) {
+      return false;
+    }
     if (findInCache(cp) >= 0) {
       // Refresh LRU state for prefetched glyphs. Without this, cached glyphs
       // needed by the next page can be evicted by the uncached glyphs loaded in
@@ -1055,4 +1074,5 @@ void ExternalFont::preloadGlyphs(const uint32_t* codepoints, size_t count) {
   }
 
   LOG_DBG("EFT", "Preload done: %zu loaded, %zu already cached, took %lums", loaded, skipped, millis() - startTime);
+  return true;
 }

@@ -6,9 +6,9 @@
 #include <string>
 #include <vector>
 
+#include "../PageRenderCancellation.h"
 #include "Block.h"
 #include "BlockStyle.h"
-#include "../PageRenderCancellation.h"
 
 // Represents a line of text on a page.
 //
@@ -89,6 +89,8 @@ class TextBlock final : public Block {
 
   bool render(const GfxRenderer& renderer, int fontId, int x, int y,
               const PageRenderCancellation* cancellation = nullptr) const;
+  bool collectCodepoints(std::vector<uint32_t>& out, size_t max,
+                         const PageRenderCancellation* cancellation = nullptr) const;
   BlockType getType() override { return TEXT_BLOCK; }
   bool serialize(HalFile& file) const;
   static std::unique_ptr<TextBlock> deserialize(HalFile& file);

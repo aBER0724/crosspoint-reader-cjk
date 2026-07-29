@@ -80,11 +80,18 @@ class ExternalFont {
 
   /**
    * Preload multiple glyphs at once (optimized for batch SD reads)
-   * Call this before rendering a chapter to warm up the cache
+   * Call this before rendering a chapter to
+   * warm up the cache
    * @param codepoints Array of unicode codepoints to preload
-   * @param count Number of codepoints in the array
+   * @param count Number of
+   * codepoints in the array
+   * @param isCancelled Optional callback checked between glyph loads
+   * @param
+   * cancellationContext Context supplied to isCancelled
+   * @return false when cancelled, true otherwise
    */
-  void preloadGlyphs(const uint32_t* codepoints, size_t count);
+  bool preloadGlyphs(const uint32_t* codepoints, size_t count, bool (*isCancelled)(const void*) = nullptr,
+                     const void* cancellationContext = nullptr);
 
   // Font properties
   uint8_t getCharWidth() const { return _charWidth; }

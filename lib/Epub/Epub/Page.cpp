@@ -30,6 +30,11 @@ bool PageLine::render(GfxRenderer& renderer, const int fontId, const int xOffset
   return block->render(renderer, fontId, xPos + xOffset, yPos + yOffset, cancellation);
 }
 
+bool PageLine::collectCodepoints(std::vector<uint32_t>& out, const size_t max,
+                                 const PageRenderCancellation* const cancellation) const {
+  return !block || block->collectCodepoints(out, max, cancellation);
+}
+
 bool PageLine::serialize(HalFile& file) {
   serialization::writePod(file, xPos);
   serialization::writePod(file, yPos);
@@ -147,8 +152,8 @@ bool Page::renderImages(GfxRenderer& renderer, const int fontId, const int xOffs
                                     [](const PageElement& element) { return element.getTag() == TAG_PageImage; });
 }
 
-bool Page::renderWithImagePlaceholders(GfxRenderer& renderer, const int fontId, const int xOffset,
-                                       const int yOffset, const PageRenderCancellation* const cancellation) const {
+bool Page::renderWithImagePlaceholders(GfxRenderer& renderer, const int fontId, const int xOffset, const int yOffset,
+                                       const PageRenderCancellation* const cancellation) const {
   for (const auto& element : elements) {
     if (cancellation && cancellation->requested()) {
       return false;
@@ -157,6 +162,26 @@ bool Page::renderWithImagePlaceholders(GfxRenderer& renderer, const int fontId, 
       static_cast<const PageImage&>(*element).renderPlaceholder(renderer, xOffset, yOffset);
     } else if (!element->render(renderer, fontId, xOffset, yOffset, cancellation)) {
       return false;
+    }
+  }
+  return !cancellation || !cancellation->requested();
+}
+
+bool Page::collectCodepoints(std::vector<uint32_t>& out, const size_t max,
+                             const PageRenderCancellation* const cancellation) const {
+  if (max == 0 || out.size() >= max) {
+    return !cancellation || !cancellation->requested();
+  }
+
+  for (const auto& element : elements) {
+    if (cancellation && cancellation->requested()) {
+      return false;
+    }
+    if (!element->collectCodepoints(out, max, cancellation)) {
+      return false;
+    }
+    if (out.size() >= max) {
+      return !cancellation || !cancellation->requested();
     }
   }
   return !cancellation || !cancellation->requested();

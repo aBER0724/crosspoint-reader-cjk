@@ -5,6 +5,7 @@
 #include <Logging.h>
 #include <Memory.h>
 #include <Serialization.h>
+#include <Utf8.h>
 
 #include <cstring>
 
@@ -242,6 +243,39 @@ bool TextBlock::render(const GfxRenderer& renderer, const int fontId, const int 
   }
   flushDecorations();
   return true;
+}
+
+bool TextBlock::collectCodepoints(std::vector<uint32_t>& out, const size_t max,
+                                  const PageRenderCancellation* const cancellation) const {
+  if (max == 0 || out.size() >= max) {
+    return !cancellation || !cancellation->requested();
+  }
+
+  size_t scanned = 0;
+  for (uint16_t i = 0; i < numWords; ++i) {
+    const unsigned char* ptr = reinterpret_cast<const unsigned char*>(wordText(i));
+    while (*ptr != '\0') {
+      if ((scanned++ & 0x0Fu) == 0 && cancellation && cancellation->requested()) {
+        return false;
+      }
+
+      const uint32_t cp = utf8NextCodepoint(&ptr);
+      bool exists = false;
+      for (const uint32_t existing : out) {
+        if (existing == cp) {
+          exists = true;
+          break;
+        }
+      }
+      if (!exists) {
+        out.push_back(cp);
+        if (out.size() >= max) {
+          return !cancellation || !cancellation->requested();
+        }
+      }
+    }
+  }
+  return !cancellation || !cancellation->requested();
 }
 
 bool TextBlock::serialize(HalFile& file) const {

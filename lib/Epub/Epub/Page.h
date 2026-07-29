@@ -27,6 +27,12 @@ class PageElement {
   virtual bool render(GfxRenderer& renderer, int fontId, int xOffset, int yOffset,
                       const PageRenderCancellation* cancellation = nullptr) = 0;
   virtual bool serialize(HalFile& file) = 0;
+  virtual bool collectCodepoints(std::vector<uint32_t>& out, size_t max,
+                                 const PageRenderCancellation* cancellation = nullptr) const {
+    (void)out;
+    (void)max;
+    return !cancellation || !cancellation->requested();
+  }
   virtual PageElementTag getTag() const = 0;  // Add type identification
 };
 
@@ -41,6 +47,8 @@ class PageLine final : public PageElement {
   bool render(GfxRenderer& renderer, int fontId, int xOffset, int yOffset,
               const PageRenderCancellation* cancellation = nullptr) override;
   bool serialize(HalFile& file) override;
+  bool collectCodepoints(std::vector<uint32_t>& out, size_t max,
+                         const PageRenderCancellation* cancellation = nullptr) const override;
   PageElementTag getTag() const override { return TAG_PageLine; }
   static std::unique_ptr<PageLine> deserialize(HalFile& file);
 };
@@ -99,6 +107,8 @@ class Page {
                     const PageRenderCancellation* cancellation = nullptr) const;
   bool renderWithImagePlaceholders(GfxRenderer& renderer, int fontId, int xOffset, int yOffset,
                                    const PageRenderCancellation* cancellation = nullptr) const;
+  bool collectCodepoints(std::vector<uint32_t>& out, size_t max,
+                         const PageRenderCancellation* cancellation = nullptr) const;
   bool serialize(HalFile& file) const;
   static std::unique_ptr<Page> deserialize(HalFile& file);
 
