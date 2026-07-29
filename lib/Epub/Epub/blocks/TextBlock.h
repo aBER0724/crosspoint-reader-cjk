@@ -8,6 +8,7 @@
 
 #include "Block.h"
 #include "BlockStyle.h"
+#include "../PageRenderCancellation.h"
 
 // Represents a line of text on a page.
 //
@@ -86,7 +87,8 @@ class TextBlock final : public Block {
   uint8_t focusBoundary(const uint16_t i) const { return focusPresent ? focusBoundaryArr[i] : 0; }
   uint16_t focusSuffixX(const uint16_t i) const { return focusPresent ? focusSuffixXArr[i] : 0; }
 
-  void render(const GfxRenderer& renderer, int fontId, int x, int y) const;
+  bool render(const GfxRenderer& renderer, int fontId, int x, int y,
+              const PageRenderCancellation* cancellation = nullptr) const;
   BlockType getType() override { return TEXT_BLOCK; }
   bool serialize(HalFile& file) const;
   static std::unique_ptr<TextBlock> deserialize(HalFile& file);

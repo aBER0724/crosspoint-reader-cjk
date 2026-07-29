@@ -33,6 +33,7 @@ class FontCacheManager {
     explicit PrewarmScope(FontCacheManager& manager);
     ~PrewarmScope();
     void endScanAndPrewarm();
+    void cancel();
     PrewarmScope(PrewarmScope&& other) noexcept;
     PrewarmScope& operator=(PrewarmScope&&) = delete;
     PrewarmScope(const PrewarmScope&) = delete;
