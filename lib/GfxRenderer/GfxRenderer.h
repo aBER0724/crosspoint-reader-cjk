@@ -256,11 +256,11 @@ class GfxRenderer {
   // Set a one-shot partial refresh region in logical coordinates. The next FAST_REFRESH
   // displayBuffer() call refreshes only this region and then clears the region.
   void setPartialUpdateRect(int x, int y, int width, int height) const;
-  // Non-blocking refresh: starts the waveform and returns so CPU work (e.g.
-  // grayscale strip rendering) can overlap the panel's refresh time. The
-  // framebuffer must stay untouched until waitRefreshComplete(). Falls back to
-  // a blocking refresh when fadingFix is enabled or the panel lacks deferral
-  // support. See HalDisplay::displayBufferAsync for the baseline contract.
+  // Non-blocking refresh: starts the waveform and returns so CPU work can
+  // overlap the panel's refresh time. The SDK retains the prior frame as a
+  // differential baseline, so callers may immediately redraw the framebuffer.
+  // Falls back to a blocking refresh when fadingFix is enabled or the panel
+  // lacks deferral support. See HalDisplay::displayBufferAsync for details.
   void displayBufferAsync(HalDisplay::RefreshMode refreshMode = HalDisplay::FAST_REFRESH) const;
   void waitRefreshComplete() const;
   // True when displayBufferAsync() genuinely overlaps: panel defers and

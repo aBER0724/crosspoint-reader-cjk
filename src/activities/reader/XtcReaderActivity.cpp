@@ -7,8 +7,10 @@
 
 #include "XtcReaderActivity.h"
 
+#include <Arduino.h>
 #include <FsHelpers.h>
 #include <GfxRenderer.h>
+#include <HalGPIO.h>
 #include <HalStorage.h>
 #include <I18n.h>
 
@@ -70,6 +72,21 @@ void XtcReaderActivity::loop() {
   }
 
   const auto touch = ReaderUtils::detectTouchPageTurn(renderer, mappedInput);
+  const bool inputActive = mappedInput.wasAnyPressed() || mappedInput.wasAnyReleased() ||
+                           mappedInput.isPressed(MappedInputManager::Button::Back) ||
+                           mappedInput.isPressed(MappedInputManager::Button::Confirm) ||
+                           mappedInput.isPressed(MappedInputManager::Button::PageBack) ||
+                           mappedInput.isPressed(MappedInputManager::Button::PageForward) ||
+                           mappedInput.isPressed(MappedInputManager::Button::Power) || gpio.wasTouchActivity() ||
+                           touch.prev || touch.next;
+  if (inputActive) {
+    if (!readerInputActive) {
+      activityManager.cancelCurrentRender();
+      readerInputActive = true;
+    }
+  } else {
+    readerInputActive = false;
+  }
 
   const bool atEndOfBook = currentPage >= xtc->getPageCount();
 
@@ -153,7 +170,7 @@ void XtcReaderActivity::loop() {
   }
 }
 
-void XtcReaderActivity::render(RenderLock&&) {
+void XtcReaderActivity::render(RenderLock&& lock) {
   if (!xtc) {
     return;
   }
@@ -173,7 +190,10 @@ void XtcReaderActivity::render(RenderLock&&) {
     return;
   }
 
-  renderPage();
+  renderPage(lock);
+  if (lock.isStale()) {
+    return;
+  }
   saveProgress();
 }
 
@@ -248,7 +268,7 @@ void XtcReaderActivity::renderStatusBarOverlay(const StatusBarOverlayPosition po
   GUI.drawStatusBar(renderer, progress, pageInfo.currentPage, pageInfo.pageCount, pageInfo.title, paddingBottom);
 }
 
-void XtcReaderActivity::renderPage() {
+void XtcReaderActivity::renderPage(RenderLock& lock) {
   const uint16_t pageWidth = xtc->getPageWidth();
   const uint16_t pageHeight = xtc->getPageHeight();
   const uint8_t bitDepth = xtc->getBitDepth();
@@ -330,6 +350,13 @@ void XtcReaderActivity::renderPage() {
     // Count pixel distribution for debugging
     uint32_t pixelCounts[4] = {0, 0, 0, 0};
     for (uint16_t y = 0; y < pageHeight; y++) {
+      if ((y & 0x0F) == 0) {
+        yield();
+      }
+      if (lock.isStale()) {
+        free(pageBuffer);
+        return;
+      }
       for (uint16_t x = 0; x < pageWidth; x++) {
         pixelCounts[getPixelValue(x, y)]++;
       }
@@ -339,6 +366,13 @@ void XtcReaderActivity::renderPage() {
 
     // Pass 1: BW buffer - draw all non-white pixels as black
     for (uint16_t y = 0; y < pageHeight; y++) {
+      if ((y & 0x0F) == 0) {
+        yield();
+      }
+      if (lock.isStale()) {
+        free(pageBuffer);
+        return;
+      }
       for (uint16_t x = 0; x < pageWidth; x++) {
         if (getPixelValue(x, y) >= 1) {
           renderer.drawPixel(x, y, true);
@@ -374,6 +408,13 @@ void XtcReaderActivity::renderPage() {
     // In LUT: 0 bit = apply gray effect, 1 bit = untouched
     renderer.clearScreen(0x00);
     for (uint16_t y = 0; y < pageHeight; y++) {
+      if ((y & 0x0F) == 0) {
+        yield();
+      }
+      if (lock.isStale()) {
+        free(pageBuffer);
+        return;
+      }
       for (uint16_t x = 0; x < pageWidth; x++) {
         if (getPixelValue(x, y) == 1) {  // Dark grey only
           renderer.drawPixel(x, y, false);
@@ -386,6 +427,13 @@ void XtcReaderActivity::renderPage() {
     // In LUT: 0 bit = apply gray effect, 1 bit = untouched
     renderer.clearScreen(0x00);
     for (uint16_t y = 0; y < pageHeight; y++) {
+      if ((y & 0x0F) == 0) {
+        yield();
+      }
+      if (lock.isStale()) {
+        free(pageBuffer);
+        return;
+      }
       for (uint16_t x = 0; x < pageWidth; x++) {
         const uint8_t pv = getPixelValue(x, y);
         if (pv == 1 || pv == 2) {  // Dark grey or Light grey
@@ -396,6 +444,10 @@ void XtcReaderActivity::renderPage() {
     renderer.copyGrayscaleMsbBuffers();
 
     // Display grayscale overlay
+    if (lock.isStale()) {
+      free(pageBuffer);
+      return;
+    }
     renderer.displayGrayBuffer();
 
     // Pass 4: Re-render BW to framebuffer (restore for next frame, instead of restoreBwBuffer)
@@ -420,6 +472,13 @@ void XtcReaderActivity::renderPage() {
     const size_t srcRowBytes = (pageWidth + 7) / 8;  // 60 bytes for 480 width
 
     for (uint16_t srcY = 0; srcY < maxSrcY; srcY++) {
+      if ((srcY & 0x0F) == 0) {
+        yield();
+      }
+      if (lock.isStale()) {
+        free(pageBuffer);
+        return;
+      }
       const size_t srcRowStart = srcY * srcRowBytes;
 
       for (uint16_t srcX = 0; srcX < pageWidth; srcX++) {
@@ -444,7 +503,11 @@ void XtcReaderActivity::renderPage() {
     renderStatusBarOverlay(StatusBarOverlayPosition::Bottom);
   }
 
-  ReaderUtils::displayWithRefreshCycle(renderer, pagesUntilFullRefresh);
+  if (lock.isStale()) {
+    return;
+  }
+  const bool asyncTextRefresh = bitDepth == 1 && !renderer.isDarkMode() && renderer.supportsAsyncRefresh();
+  ReaderUtils::displayWithRefreshCycle(renderer, pagesUntilFullRefresh, asyncTextRefresh);
 
   LOG_DBG("XTR", "Rendered page %lu/%lu (%u-bit)", currentPage + 1, xtc->getPageCount(), bitDepth);
 }

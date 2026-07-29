@@ -20,6 +20,7 @@ class XtcReaderActivity final : public Activity {
 
   uint32_t currentPage = 0;
   int pagesUntilFullRefresh = 0;
+  bool readerInputActive = false;
   // Next-book suggestion menu for the End-of-Book screen
   EndOfBookOptions endOfBookOptions;
 
@@ -30,7 +31,7 @@ class XtcReaderActivity final : public Activity {
     std::string title;
   };
 
-  void renderPage();
+  void renderPage(RenderLock& lock);
   // Opens chapter selection when the book has chapters (short-press Confirm); no-op otherwise
   void openChapterSelection();
   void renderStatusBarOverlay(StatusBarOverlayPosition position) const;

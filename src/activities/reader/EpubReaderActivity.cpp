@@ -1623,6 +1623,10 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
   const bool needsTextGrayscale = grayscaleAllowed && pageHasImages;
   const bool needsAnyGrayscale = grayscaleAllowed && pageHasImages;
   const bool tiledGrayscale = needsAnyGrayscale && renderer.supportsStripGrayscale();
+  // Plain light-mode text pages can release RenderLock as soon as the waveform
+  // starts. The display's shadow buffer keeps the current differential update
+  // stable while the next input, menu, or activity transition redraws.
+  const bool asyncTextRefresh = !darkMode && !pageHasImages && renderer.supportsAsyncRefresh();
   // Whole-plane buffering only pays when the BW refresh genuinely runs async
   // underneath it; on blocking panels (X3) it would just spend ~50 KB for the
   // identical serial timing. Image pages take the blocking double-FAST path
@@ -1728,9 +1732,7 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
     // regardless of residue.
     pagesUntilFullRefresh = 1;
   } else {
-    // Async form: start the waveform and return so the grayscale plane rendering
-    // below overlaps the panel's refresh time instead of following it.
-    ReaderUtils::displayWithRefreshCycle(renderer, pagesUntilFullRefresh, overlapRefresh);
+    ReaderUtils::displayWithRefreshCycle(renderer, pagesUntilFullRefresh, asyncTextRefresh);
   }
   const auto tDisplay = millis();
 

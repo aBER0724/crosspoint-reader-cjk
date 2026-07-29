@@ -44,11 +44,11 @@ class HalDisplay {
   void displayBuffer(RefreshMode mode = RefreshMode::FAST_REFRESH, bool turnOffScreen = false);
   void displayWindow(uint16_t x, uint16_t y, uint16_t w, uint16_t h, bool turnOffScreen = false);
   void displayWindowDarkRedrive(uint16_t x, uint16_t y, uint16_t w, uint16_t h, bool turnOffScreen = false);
-  // Non-blocking refresh (shadow-free): starts the panel waveform and returns
-  // while the panel refreshes on its own. The framebuffer must stay untouched
-  // until waitRefreshComplete(), and the caller must rebuild the differential
-  // baseline before the next differential update (the tiled grayscale cleanup
-  // does). Panels without deferral fall back to a blocking refresh.
+  // Non-blocking refresh: starts the panel waveform and returns while the panel
+  // refreshes on its own. In single-buffer mode the SDK retains a shadow of the
+  // displayed frame, so the caller can immediately redraw the framebuffer. The
+  // shadow is allocated lazily; allocation failure and panels without deferral
+  // fall back to a blocking refresh.
   void displayBufferAsync(RefreshMode mode = RefreshMode::FAST_REFRESH);
   // Block until a pending deferred refresh completes (no-op when none is).
   void waitRefreshComplete();

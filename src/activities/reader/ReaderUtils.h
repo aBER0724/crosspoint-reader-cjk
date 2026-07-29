@@ -113,9 +113,8 @@ inline bool isTouchMenuGesture(const MappedInputManager& input) {
 
 // One helper, blocking or deferred: the async form starts the refresh and
 // returns so the caller can overlap CPU work with the panel's refresh time.
-// Async callers must not touch the framebuffer until
-// renderer.waitRefreshComplete() and must rebuild the differential baseline
-// before the next page turn (the tiled grayscale cleanup does).
+// The display retains a shadow baseline, so callers may redraw immediately;
+// panels without safe deferred refresh fall back to the blocking path.
 
 // Apply a ReaderRuntime refresh decision while preserving fork dark-mode policy:
 // dark updates always re-drive pixels and never fall back to HALF/FAST.
@@ -161,31 +160,40 @@ inline void displayWithRefreshCycle(const GfxRenderer& renderer, int& pagesUntil
 // and other overlays should be drawn before calling this.
 // Kept as a template to avoid std::function overhead; instantiated once per reader type.
 template <typename RenderFn>
-void renderAntiAliased(GfxRenderer& renderer, RenderFn&& renderFn) {
+bool renderAntiAliased(GfxRenderer& renderer, RenderFn&& renderFn) {
   if (renderer.isDarkMode()) {
     LOG_ERR("READER", "Skipping grayscale anti-aliasing in dark mode");
-    return;
+    return false;
   }
 
   if (!renderer.storeBwBuffer()) {
     LOG_ERR("READER", "Failed to store BW buffer for anti-aliasing");
-    return;
+    return false;
   }
 
   renderer.clearScreen(0x00);
   renderer.setRenderMode(GfxRenderer::GRAYSCALE_LSB);
-  renderFn();
+  if (!renderFn()) {
+    renderer.setRenderMode(GfxRenderer::BW);
+    renderer.restoreBwBuffer();
+    return false;
+  }
   renderer.copyGrayscaleLsbBuffers();
 
   renderer.clearScreen(0x00);
   renderer.setRenderMode(GfxRenderer::GRAYSCALE_MSB);
-  renderFn();
+  if (!renderFn()) {
+    renderer.setRenderMode(GfxRenderer::BW);
+    renderer.restoreBwBuffer();
+    return false;
+  }
   renderer.copyGrayscaleMsbBuffers();
 
   renderer.displayGrayBuffer();
   renderer.setRenderMode(GfxRenderer::BW);
 
   renderer.restoreBwBuffer();
+  return true;
 }
 
 struct BackNavCallback {
