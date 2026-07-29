@@ -2,6 +2,7 @@
 
 #include <Txt.h>
 
+#include <atomic>
 #include <vector>
 
 #include "CrossPointSettings.h"
@@ -21,6 +22,7 @@ class TxtReaderActivity final : public Activity {
   int viewportWidth = 0;
   bool initialized = false;
   bool readerInputActive = false;
+  std::atomic<uint32_t> interactiveRenderGeneration{0};
 
   // Cached settings for cache validation (different fonts/margins require re-indexing)
   int cachedFontId = 0;
@@ -31,8 +33,10 @@ class TxtReaderActivity final : public Activity {
   int cachedOrientedMarginBottom = 0;
   int cachedOrientedMarginLeft = 0;
 
-  void renderPage(RenderLock& lock);
+  void renderPage(RenderLock& lock, bool interactiveRender);
   void renderStatusBar() const;
+  void prioritizeNextReaderRender();
+  void consumeInteractiveRender(const RenderLock& lock);
 
   bool initializeReader(RenderLock& lock);
   bool loadPageAtOffset(size_t offset, std::vector<std::string>& outLines, size_t& nextOffset,

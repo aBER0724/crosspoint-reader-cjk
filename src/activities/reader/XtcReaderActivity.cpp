@@ -18,8 +18,8 @@
 
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
+#include "EpubReaderUtils.h"
 #include "MappedInputManager.h"
-#include "ProgressFile.h"
 #include "ReaderUtils.h"
 #include "RecentBooksStore.h"
 #include "XtcReaderChapterSelectionActivity.h"
@@ -40,7 +40,7 @@ void XtcReaderActivity::onEnter() {
 
   // Save current XTC as last opened book and add to recent books
   APP_STATE.openEpubPath = xtc->getPath();
-  APP_STATE.saveToFile();
+  activityManager.queueAppStateSave();
   RECENT_BOOKS.addBook(xtc->getPath(), xtc->getTitle(), xtc->getAuthor(), xtc->getThumbBmpPath());
 
   // Trigger first update
@@ -50,20 +50,25 @@ void XtcReaderActivity::onEnter() {
 void XtcReaderActivity::onExit() {
   Activity::onExit();
 
+  saveProgress();
   APP_STATE.readerActivityLoadCount = 0;
-  APP_STATE.saveToFile();
+  activityManager.queueAppStateSave();
   xtc.reset();
 }
 
-void XtcReaderActivity::openChapterSelection() {
+bool XtcReaderActivity::openChapterSelection() {
   if (xtc && xtc->hasChapters() && !xtc->getChapters().empty()) {
     startActivityForResult(std::make_unique<XtcReaderChapterSelectionActivity>(renderer, mappedInput, xtc, currentPage),
                            [this](const ActivityResult& result) {
                              if (!result.isCancelled) {
                                currentPage = std::get<PageResult>(result.data).page;
+                               prioritizeNextReaderRender();
+                               requestUpdate();
                              }
                            });
+    return true;
   }
+  return false;
 }
 
 void XtcReaderActivity::loop() {
@@ -105,6 +110,7 @@ void XtcReaderActivity::loop() {
         return;
       case EndOfBookOptions::Action::LastPage:
         currentPage = xtc->getPageCount() > 0 ? xtc->getPageCount() - 1 : 0;
+        prioritizeNextReaderRender();
         requestUpdate();
         return;
       case EndOfBookOptions::Action::Redraw:
@@ -117,7 +123,9 @@ void XtcReaderActivity::loop() {
 
   // Enter chapter selection activity
   if (mappedInput.wasReleased(MappedInputManager::Button::Confirm) || ReaderUtils::isTouchMenuGesture(mappedInput)) {
-    openChapterSelection();
+    if (openChapterSelection()) {
+      return;
+    }
   }
 
   if (ReaderUtils::handleBackNavigation(mappedInput, activityManager, xtc ? xtc->getPath().c_str() : "",
@@ -144,6 +152,7 @@ void XtcReaderActivity::loop() {
       onGoHome();
     } else {
       currentPage = xtc->getPageCount() - 1;
+      prioritizeNextReaderRender();
       requestUpdate();
     }
     return;
@@ -160,12 +169,14 @@ void XtcReaderActivity::loop() {
     } else {
       currentPage = 0;
     }
+    prioritizeNextReaderRender();
     requestUpdate();
   } else if (nextTriggered) {
     currentPage += skipAmount;
     if (currentPage >= xtc->getPageCount()) {
       currentPage = xtc->getPageCount();  // Allow showing "End of book"
     }
+    prioritizeNextReaderRender();
     requestUpdate();
   }
 }
@@ -190,10 +201,13 @@ void XtcReaderActivity::render(RenderLock&& lock) {
     return;
   }
 
-  renderPage(lock);
+  const uint32_t pendingInteractiveGeneration = interactiveRenderGeneration.load(std::memory_order_acquire);
+  const bool interactiveRender = pendingInteractiveGeneration != 0 && pendingInteractiveGeneration <= lock.generation();
+  renderPage(lock, interactiveRender);
   if (lock.isStale()) {
     return;
   }
+  consumeInteractiveRender(lock);
   saveProgress();
 }
 
@@ -268,7 +282,7 @@ void XtcReaderActivity::renderStatusBarOverlay(const StatusBarOverlayPosition po
   GUI.drawStatusBar(renderer, progress, pageInfo.currentPage, pageInfo.pageCount, pageInfo.title, paddingBottom);
 }
 
-void XtcReaderActivity::renderPage(RenderLock& lock) {
+void XtcReaderActivity::renderPage(RenderLock& lock, const bool interactiveRender) {
   const uint16_t pageWidth = xtc->getPageWidth();
   const uint16_t pageHeight = xtc->getPageHeight();
   const uint8_t bitDepth = xtc->getBitDepth();
@@ -344,26 +358,6 @@ void XtcReaderActivity::renderPage(RenderLock& lock) {
       return (bit1 << 1) | bit2;
     };
 
-    // Optimized grayscale rendering without storeBwBuffer (saves 48KB peak memory)
-    // Flow: BW display → LSB/MSB passes → grayscale display → re-render BW for next frame
-
-    // Count pixel distribution for debugging
-    uint32_t pixelCounts[4] = {0, 0, 0, 0};
-    for (uint16_t y = 0; y < pageHeight; y++) {
-      if ((y & 0x0F) == 0) {
-        yield();
-      }
-      if (lock.isStale()) {
-        free(pageBuffer);
-        return;
-      }
-      for (uint16_t x = 0; x < pageWidth; x++) {
-        pixelCounts[getPixelValue(x, y)]++;
-      }
-    }
-    LOG_DBG("XTR", "Pixel distribution: White=%lu, DarkGrey=%lu, LightGrey=%lu, Black=%lu", pixelCounts[0],
-            pixelCounts[1], pixelCounts[2], pixelCounts[3]);
-
     // Pass 1: BW buffer - draw all non-white pixels as black
     for (uint16_t y = 0; y < pageHeight; y++) {
       if ((y & 0x0F) == 0) {
@@ -387,6 +381,16 @@ void XtcReaderActivity::renderPage(RenderLock& lock) {
       pagesUntilFullRefresh = SETTINGS.getRefreshFrequency();
       free(pageBuffer);
       LOG_DBG("XTR", "Rendered page %lu/%lu (2-bit dark BW fallback)", currentPage + 1, xtc->getPageCount());
+      return;
+    }
+
+    if (interactiveRender) {
+      // XTH grayscale needs three additional whole-screen passes. Present its
+      // BW base immediately while the user is paging; a later explicit refresh
+      // still produces the complete grayscale image.
+      ReaderUtils::displayWithRefreshCycle(renderer, pagesUntilFullRefresh, renderer.supportsAsyncRefresh());
+      free(pageBuffer);
+      LOG_DBG("XTR", "Rendered page %lu/%lu (2-bit interactive BW)", currentPage + 1, xtc->getPageCount());
       return;
     }
 
@@ -518,8 +522,18 @@ void XtcReaderActivity::saveProgress() const {
   data[1] = (currentPage >> 8) & 0xFF;
   data[2] = (currentPage >> 16) & 0xFF;
   data[3] = (currentPage >> 24) & 0xFF;
-  if (!ProgressFile::writeAtomic(xtc->getCachePath(), data, sizeof(data))) {
-    LOG_ERR("XTR", "Failed to save progress: page %lu", currentPage);
+  if (xtc) EpubReaderUtils::queueProgressSave(xtc->getCachePath(), data, sizeof(data));
+}
+
+void XtcReaderActivity::prioritizeNextReaderRender() {
+  interactiveRenderGeneration.store(activityManager.nextRenderGeneration(), std::memory_order_release);
+}
+
+void XtcReaderActivity::consumeInteractiveRender(const RenderLock& lock) {
+  uint32_t expectedGeneration = interactiveRenderGeneration.load(std::memory_order_acquire);
+  if (expectedGeneration != 0 && expectedGeneration <= lock.generation()) {
+    interactiveRenderGeneration.compare_exchange_strong(expectedGeneration, 0, std::memory_order_release,
+                                                        std::memory_order_relaxed);
   }
 }
 
