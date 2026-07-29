@@ -5,6 +5,11 @@
 #include <Memory.h>
 #include <Serialization.h>
 
+#include <algorithm>
+#include <mutex>
+#include <utility>
+#include <vector>
+
 #include "Epub/css/CssParser.h"
 #include "Page.h"
 #include "hyphenation/Hyphenator.h"
@@ -42,6 +47,24 @@ constexpr uint32_t HEADER_SIZE = sizeof(uint8_t) + sizeof(int) + sizeof(float) +
                                  sizeof(uint16_t) + sizeof(uint16_t) + sizeof(uint16_t) + sizeof(bool) + sizeof(bool) +
                                  sizeof(uint8_t) + sizeof(bool) + sizeof(uint32_t) + sizeof(uint32_t) +
                                  sizeof(uint32_t) + sizeof(uint32_t);
+
+std::mutex deferredCleanupMutex;
+std::vector<std::string> deferredCleanupPaths;
+
+void queueDeferredCleanup(const std::string& path) {
+  if (path.empty()) return;
+
+  std::lock_guard<std::mutex> lock(deferredCleanupMutex);
+  if (std::find(deferredCleanupPaths.begin(), deferredCleanupPaths.end(), path) == deferredCleanupPaths.end()) {
+    deferredCleanupPaths.push_back(path);
+  }
+}
+
+void cancelDeferredCleanup(const std::string& path) {
+  std::lock_guard<std::mutex> lock(deferredCleanupMutex);
+  deferredCleanupPaths.erase(std::remove(deferredCleanupPaths.begin(), deferredCleanupPaths.end(), path),
+                             deferredCleanupPaths.end());
+}
 }  // namespace
 
 // Out-of-line so the unique_ptr<ChapterHtmlSlimParser> in BuildContext can be
@@ -237,6 +260,7 @@ bool Section::startBuild(const ReaderRenderSpec& spec, const std::function<void(
   // Remove a stale tmp .bin from a crash-interrupted build; this build recreates it.
   {
     const std::string staleTmp = binTmpPath();
+    cancelDeferredCleanup(staleTmp);
     if (Storage.exists(staleTmp.c_str())) {
       Storage.remove(staleTmp.c_str());
     }
@@ -246,6 +270,7 @@ bool Section::startBuild(const ReaderRenderSpec& spec, const std::function<void(
   const auto htmlDir = epub->getCachePath() + "/html";
   const auto htmlPath = htmlDir + "/" + std::to_string(spineIndex) + ".html";
   const auto tmpHtmlPath = htmlDir + "/.tmp_" + std::to_string(spineIndex) + ".html";
+  cancelDeferredCleanup(tmpHtmlPath);
 
   // Create cache directory if it doesn't exist
   {
@@ -656,17 +681,34 @@ void Section::discardBuild() {
   if (build_->parser) build_->parser->abortParse();
   if (build_->cssParser) build_->cssParser->clear();
   if (file) {
-    // Explicit close() required before remove (member variable, O_RDWR handle).
+    // Close before the idle maintenance path deletes the temporary file.
     file.close();
   }
-  Storage.remove(binTmpPath().c_str());
-  if (!build_->reusedHtml && Storage.exists(build_->tmpHtmlPath.c_str())) {
-    Storage.remove(build_->tmpHtmlPath.c_str());
-  }
+  queueDeferredCleanup(binTmpPath());
+  if (!build_->reusedHtml) queueDeferredCleanup(build_->tmpHtmlPath);
   build_.reset();
   buildComplete_ = false;
   pageCount = partial_ ? partialPageCount_ : 0;
   builtPageCount_ = 0;
+}
+
+bool Section::hasDeferredCleanup() {
+  std::lock_guard<std::mutex> lock(deferredCleanupMutex);
+  return !deferredCleanupPaths.empty();
+}
+
+void Section::flushDeferredCleanup() {
+  std::string path;
+  {
+    std::lock_guard<std::mutex> lock(deferredCleanupMutex);
+    if (deferredCleanupPaths.empty()) return;
+    path = std::move(deferredCleanupPaths.front());
+    deferredCleanupPaths.erase(deferredCleanupPaths.begin());
+  }
+
+  if (Storage.exists(path.c_str()) && !Storage.remove(path.c_str())) {
+    LOG_DBG("SCT", "Deferred cleanup failed: %s", path.c_str());
+  }
 }
 
 void Section::abandonBuild() {

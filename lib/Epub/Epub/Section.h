@@ -108,6 +108,10 @@ class Section {
   // previously committed partial/finalized cache stays intact, so navigation
   // and teardown never perform a multi-operation SD write on the input path.
   void discardBuild();
+  // Incomplete build artifacts are removed one file at a time by the idle
+  // maintenance path after a reader activity releases its section.
+  static bool hasDeferredCleanup();
+  static void flushDeferredCleanup();
   // Persist an in-progress build as a partial section file (version sentinel + LUTs +
   // watermark trailer) instead of discarding it, so the next open of this spine can show
   // its pages instantly and only rebuild in the background. This is deliberately explicit:

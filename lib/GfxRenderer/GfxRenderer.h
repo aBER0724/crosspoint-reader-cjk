@@ -356,9 +356,13 @@ class GfxRenderer {
   void drawCenteredText(int fontId, int y, const char* text, bool black = true,
                         EpdFontFamily::Style style = EpdFontFamily::REGULAR,
                         BidiUtils::BidiBaseDir baseDir = BidiUtils::BidiBaseDir::AUTO) const;
-  void drawText(int fontId, int x, int y, const char* text, bool black = true,
+  // Returns false when a caller-supplied cancellation callback supersedes a
+  // long text draw. The callback is optional so ordinary UI drawing stays on
+  // the existing hot path.
+  bool drawText(int fontId, int x, int y, const char* text, bool black = true,
                 EpdFontFamily::Style style = EpdFontFamily::REGULAR,
-                BidiUtils::BidiBaseDir baseDir = BidiUtils::BidiBaseDir::AUTO) const;
+                BidiUtils::BidiBaseDir baseDir = BidiUtils::BidiBaseDir::AUTO,
+                bool (*isCancelled)(const void*) = nullptr, const void* cancellationContext = nullptr) const;
   int getSpaceWidth(int fontId, EpdFontFamily::Style style = EpdFontFamily::REGULAR) const;
   /// Returns the total inter-word advance. Space advance and both flanking kern values are combined before
   /// snapping; SUP/SUB scales that fixed-point total by 50% before the single snap.

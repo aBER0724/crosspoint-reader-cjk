@@ -152,10 +152,9 @@ bool TextBlock::render(const GfxRenderer& renderer, const int fontId, const int 
   };
 
   for (uint16_t i = 0; i < numWords; i++) {
-    // Let the input task run frequently enough to supersede a long text page.
-    // The callback is deliberately avoided on every word to keep the normal
-    // render hot path compact.
-    if ((i & 0x07u) == 0 && cancellation && cancellation->requested()) {
+    // A layout word can contain an entire CJK paragraph. drawText() also
+    // checks within the word before it loads more SD-backed glyphs.
+    if (cancellation && cancellation->requested()) {
       return false;
     }
 
@@ -191,11 +190,23 @@ bool TextBlock::render(const GfxRenderer& renderer, const int fontId, const int 
           std::min<size_t>({static_cast<size_t>(boundary), static_cast<size_t>(wordTextLen(i)), sizeof(boldBuf) - 1});
       memcpy(boldBuf, word, boldLen);
       boldBuf[boldLen] = '\0';
-      renderer.drawText(fontId, wordX, wordY, boldBuf, true, boldStyle, baseDir);
+      if (!renderer.drawText(fontId, wordX, wordY, boldBuf, true, boldStyle, baseDir,
+                             cancellation ? cancellation->isCancelled : nullptr,
+                             cancellation ? cancellation->context : nullptr)) {
+        return false;
+      }
       const int suffixX = wordX + focusSuffixXArr[i];
-      renderer.drawText(fontId, suffixX, wordY, word + boldLen, true, currentStyle, baseDir);
+      if (!renderer.drawText(fontId, suffixX, wordY, word + boldLen, true, currentStyle, baseDir,
+                             cancellation ? cancellation->isCancelled : nullptr,
+                             cancellation ? cancellation->context : nullptr)) {
+        return false;
+      }
     } else {
-      renderer.drawText(fontId, wordX, wordY, word, true, currentStyle, baseDir);
+      if (!renderer.drawText(fontId, wordX, wordY, word, true, currentStyle, baseDir,
+                             cancellation ? cancellation->isCancelled : nullptr,
+                             cancellation ? cancellation->context : nullptr)) {
+        return false;
+      }
     }
 
     if (scanning) {
