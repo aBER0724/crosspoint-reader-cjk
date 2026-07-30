@@ -298,15 +298,6 @@ void enterDeepSleep(bool fromTimeout = false) {
 void setupDisplayAndFonts(bool seamless = false) {
   display.begin(seamless);
   renderer.begin();
-
-  // X4 async refresh needs another full framebuffer as its differential
-  // baseline. Reserve it before the render task, font caches, or first screen
-  // can fragment the heap; otherwise interactive reader updates fall back to
-  // a blocking panel refresh.
-  if (renderer.supportsAsyncRefresh() && !renderer.reserveAsyncRefreshMemory()) {
-    LOG_ERR("MAIN", "Async refresh memory unavailable; interactive refreshes may block");
-  }
-
   activityManager.begin();
   LOG_DBG("MAIN", "Display initialized");
 
