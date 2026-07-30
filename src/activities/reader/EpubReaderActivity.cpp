@@ -1568,13 +1568,12 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
     LOG_DBG("ERS", "Interactive page render (generation %lu)", static_cast<unsigned long>(lock.generation()));
   }
 
-  // External fonts keep glyphs on the SD card. Preloading the page's distinct
-  // codepoints in file order keeps the actual draw pass out of the random-read
-  // path, which is especially important for CJK page turns. Both the scan and
-  // preload are cancellable, so an input edge can still release RenderLock
-  // without waiting for the whole page.
+  // External fonts keep glyphs on the SD card. Warming the page's distinct
+  // codepoints in file order avoids random reads during an idle redraw.
+  // User-driven renders must draw immediately: a whole-page scan and batch SD
+  // reads delay page turns, Back, Home, the reader menu, and chapter selection.
   FontManager& fontManager = FontManager::getInstance();
-  if (fontManager.isExternalFontEnabled()) {
+  if (!interactiveRender && fontManager.isExternalFontEnabled()) {
     if (ExternalFont* externalFont = fontManager.getActiveFont()) {
       std::vector<uint32_t> codepoints;
       codepoints.reserve(externalFont->getPreloadLimit());
