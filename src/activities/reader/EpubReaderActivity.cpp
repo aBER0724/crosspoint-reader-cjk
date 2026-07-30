@@ -355,7 +355,7 @@ void EpubReaderActivity::runDeferredReaderWork() {
     if (!lock.locked()) return;
     // Reuse the last render's viewport so the extension paginates identically to the partial.
     const ReaderRenderSpec buildSpec = SETTINGS.readerRenderSpec(buildViewportWidth, buildViewportHeight);
-    if (!section->startBuild(buildSpec)) {
+    if (section->startBuild(buildSpec) != Section::StartBuildResult::Started) {
       // Not fatal: the partial keeps serving its pages; crossing the watermark falls back to
       // the blocking extension in render(). Don't retry every tick.
       partialRebuildStartFailed = true;
@@ -1242,15 +1242,19 @@ void EpubReaderActivity::render(RenderLock&& lock) {
         // Lend the framebuffer's 48 KB to the blocking full build; restored
         // (white) at scope exit, and the page render below redraws everything.
         GfxRenderer::FrameBufferLoan loan(renderer);
-        if (!section->createSectionFile(renderSpec, popupFn)) {
-          LOG_ERR("ERS", "Failed to persist page data to SD");
+        const bool built = section->createSectionFile(renderSpec, popupFn, [&lock] { return lock.isStale(); });
+        loan.end();  // Restore before handling cancellation or showing an error.
+        if (lock.isStale()) {
+          // A cancelled first build has no active context to resume. Recreate the
+          // section when the reader comes back into focus instead of showing an
+          // empty chapter after a menu or Back/Home interruption.
           resetSection();
-          loan.end();  // restore before anything draws
-          showBuildError();
           return;
         }
-        loan.end();
-        if (lock.isStale()) {
+        if (!built) {
+          LOG_ERR("ERS", "Failed to persist page data to SD");
+          resetSection();
+          showBuildError();
           return;
         }
       } else {
@@ -1275,7 +1279,12 @@ void EpubReaderActivity::render(RenderLock&& lock) {
             // inflation peak). Incremental layout never borrows it, so an
             // already-displayed page remains available while parsing continues.
             GfxRenderer::FrameBufferLoan loan(renderer);
-            started = section->startBuild(renderSpec);
+            const auto startResult = section->startBuild(renderSpec, {}, [&lock] { return lock.isStale(); });
+            if (startResult == Section::StartBuildResult::Cancelled) {
+              resetSection();
+              return;
+            }
+            started = startResult == Section::StartBuildResult::Started;
           }
           if (lock.isStale()) {
             return;
@@ -1319,7 +1328,12 @@ void EpubReaderActivity::render(RenderLock&& lock) {
   // produced by runDeferredReaderWork() in short slices, leaving RenderLock free
   // between them for page turns, reader-menu pushes, TOC, Back, and Home.
   if (section->isPartial() && section->currentPage >= static_cast<int>(section->pageCount) && !section->isBuilding()) {
-    const bool started = section->startBuild(renderSpec);
+    const auto startResult = section->startBuild(renderSpec, {}, [&lock] { return lock.isStale(); });
+    if (startResult == Section::StartBuildResult::Cancelled) {
+      resetSection();
+      return;
+    }
+    const bool started = startResult == Section::StartBuildResult::Started;
     if (lock.isStale()) {
       return;
     }

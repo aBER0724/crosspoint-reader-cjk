@@ -235,21 +235,23 @@ bool Section::clearCache() const {
   return true;
 }
 
-bool Section::createSectionFile(const ReaderRenderSpec& spec, const std::function<void()>& popupFn) {
+bool Section::createSectionFile(const ReaderRenderSpec& spec, const std::function<void()>& popupFn,
+                                const std::function<bool()>& cancelFn) {
   // One-shot build: start, then lay out the whole section in a single pass.
-  if (!startBuild(spec, popupFn)) {
+  if (startBuild(spec, popupFn, cancelFn) != StartBuildResult::Started) {
     return false;
   }
-  if (!buildSomeMore(0)) {  // 0 = build to completion
+  if (!buildSomeMore(0, 0, 0, cancelFn)) {  // 0 = build to completion
     return false;
   }
   return buildComplete_;
 }
 
-bool Section::startBuild(const ReaderRenderSpec& spec, const std::function<void()>& popupFn) {
+Section::StartBuildResult Section::startBuild(const ReaderRenderSpec& spec, const std::function<void()>& popupFn,
+                                              const std::function<bool()>& cancelFn) {
   if (build_) {
     LOG_ERR("SCT", "startBuild called while a build is already active");
-    return false;
+    return StartBuildResult::Failed;
   }
   buildComplete_ = false;
   builtPageCount_ = 0;
@@ -293,8 +295,9 @@ bool Section::startBuild(const ReaderRenderSpec& spec, const std::function<void(
 
     // Retry logic for SD card timing issues
     bool streamed = false;
+    bool cancelled = false;
     uint32_t fileSize = 0;
-    for (int attempt = 0; attempt < 3 && !streamed; attempt++) {
+    for (int attempt = 0; attempt < 3 && !streamed && !cancelled; attempt++) {
       if (attempt > 0) {
         LOG_DBG("SCT", "Retrying stream (attempt %d)...", attempt + 1);
         delay(50);  // Brief delay before retry
@@ -312,21 +315,34 @@ bool Section::startBuild(const ReaderRenderSpec& spec, const std::function<void(
       // Larger chunks mean far fewer SD writes inflating the HTML; a 1KB chunk turned a 584KB
       // single-spine novel into ~570 tiny writes (multi-second). 8KB keeps the transient buffers
       // small while cutting the write count 8x.
-      streamed = epub->readItemContentsToStream(localPath, tmpHtml, 8192);
+      streamed = epub->readItemContentsToStream(localPath, tmpHtml, 8192, false, cancelFn);
+      cancelled = cancelFn && cancelFn();
       fileSize = tmpHtml.size();
       // Explicitly close() file before calling Storage.remove()
       tmpHtml.close();
 
-      // If streaming failed, remove the incomplete file immediately
+      // A real stream failure retries with a clean file. Cancellation leaves cleanup to idle
+      // maintenance so an input action does not wait for an SD-card directory update.
       if (!streamed && Storage.exists(tmpHtmlPath.c_str())) {
-        Storage.remove(tmpHtmlPath.c_str());
-        LOG_DBG("SCT", "Removed incomplete temp file after failed attempt");
+        if (cancelled) {
+          queueDeferredCleanup(tmpHtmlPath);
+          LOG_DBG("SCT", "Queued incomplete temp file cleanup after cancellation");
+        } else {
+          Storage.remove(tmpHtmlPath.c_str());
+          LOG_DBG("SCT", "Removed incomplete temp file after failed attempt");
+        }
       }
+    }
+
+    if (cancelled) {
+      pageCount = partial_ ? partialPageCount_ : 0;
+      builtPageCount_ = 0;
+      return StartBuildResult::Cancelled;
     }
 
     if (!streamed) {
       LOG_ERR("SCT", "Failed to stream item contents to temp file after retries");
-      return false;
+      return StartBuildResult::Failed;
     }
 
     LOG_DBG("SCT", "Streamed temp HTML to %s (%d bytes)", tmpHtmlPath.c_str(), fileSize);
@@ -343,7 +359,7 @@ bool Section::startBuild(const ReaderRenderSpec& spec, const std::function<void(
 
   if (!Storage.openFileForWrite("SCT", binTmpPath(), file)) {
     if (!reusedHtml) Storage.remove(tmpHtmlPath.c_str());
-    return false;
+    return StartBuildResult::Failed;
   }
   // Header is written with the incomplete-version sentinel; finalizeBuild() commits it.
   writeSectionFileHeader(spec);
@@ -354,7 +370,7 @@ bool Section::startBuild(const ReaderRenderSpec& spec, const std::function<void(
     file.close();
     Storage.remove(binTmpPath().c_str());
     if (!reusedHtml) Storage.remove(tmpHtmlPath.c_str());
-    return false;
+    return StartBuildResult::Failed;
   }
   // htmlCached == "htmlPath is the live cache" (reused, or just promoted). finalizeBuild/abandonBuild
   // then leave the cached HTML alone; only an un-promoted temp (rename failed) is theirs to clean up.
@@ -408,7 +424,7 @@ bool Section::startBuild(const ReaderRenderSpec& spec, const std::function<void(
     file.close();
     Storage.remove(binTmpPath().c_str());
     if (!reusedHtml) Storage.remove(tmpHtmlPath.c_str());
-    return false;
+    return StartBuildResult::Failed;
   }
 
   Hyphenator::setPreferredLanguage(epub->getLanguage());
@@ -417,13 +433,14 @@ bool Section::startBuild(const ReaderRenderSpec& spec, const std::function<void(
   if (!build_->parser->beginParse()) {
     LOG_ERR("SCT", "Failed to begin parse");
     abandonBuild();
-    return false;
+    return StartBuildResult::Failed;
   }
   build_->totalBytes = build_->parser->parseTotalBytes();
-  return true;
+  return StartBuildResult::Started;
 }
 
-bool Section::buildSomeMore(const int maxPages, const int maxParseSteps, const size_t maxParseBytes) {
+bool Section::buildSomeMore(const int maxPages, const int maxParseSteps, const size_t maxParseBytes,
+                            const std::function<bool()>& cancelFn) {
   if (!build_ || !build_->parser) {
     LOG_ERR("SCT", "buildSomeMore with no active build");
     return false;
@@ -434,11 +451,19 @@ bool Section::buildSomeMore(const int maxPages, const int maxParseSteps, const s
   const int startCount = builtPageCount_;
   int parseSteps = 0;
   for (;;) {
+    if (cancelFn && cancelFn()) {
+      discardBuild();
+      return false;
+    }
     const auto status = build_->parser->parseStep(maxParseBytes);
     ++parseSteps;
     if (status == ChapterHtmlSlimParser::ParseStatus::Error) {
       LOG_ERR("SCT", "Parse error during incremental build");
       abandonBuild();
+      return false;
+    }
+    if (cancelFn && cancelFn()) {
+      discardBuild();
       return false;
     }
     if (status == ChapterHtmlSlimParser::ParseStatus::Done) {
