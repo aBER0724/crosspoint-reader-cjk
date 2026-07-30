@@ -58,11 +58,6 @@ class HalDisplay {
   // True when displayBufferAsync() genuinely overlaps (panel driver defers);
   // false where it falls back to a blocking refresh.
   bool supportsAsyncRefresh() const;
-  // Claim/release the optional single-buffer X4 baseline used by async full
-  // refreshes. Long-lived interactive sessions reserve it before their own
-  // caches fragment the heap; temporary build phases release it first.
-  bool reserveAsyncRefreshMemory();
-  void releaseAsyncRefreshMemory();
   void refreshDisplay(RefreshMode mode = RefreshMode::FAST_REFRESH, bool turnOffScreen = false);
 
   // Power management
