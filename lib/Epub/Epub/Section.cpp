@@ -241,7 +241,12 @@ bool Section::createSectionFile(const ReaderRenderSpec& spec, const std::functio
   if (startBuild(spec, popupFn, cancelFn) != StartBuildResult::Started) {
     return false;
   }
-  if (!buildSomeMore(0, 0, 0, cancelFn)) {  // 0 = build to completion
+  const BuildResult result = buildSomeMore(0, 0, 0, cancelFn);  // 0 = build to completion
+  if (result != BuildResult::Completed) {
+    if (result == BuildResult::Cancelled) {
+      // The one-shot API has no caller-managed resume path.
+      discardBuild();
+    }
     return false;
   }
   return buildComplete_;
@@ -439,11 +444,11 @@ Section::StartBuildResult Section::startBuild(const ReaderRenderSpec& spec, cons
   return StartBuildResult::Started;
 }
 
-bool Section::buildSomeMore(const int maxPages, const int maxParseSteps, const size_t maxParseBytes,
-                            const std::function<bool()>& cancelFn) {
+Section::BuildResult Section::buildSomeMore(const int maxPages, const int maxParseSteps, const size_t maxParseBytes,
+                                            const std::function<bool()>& cancelFn) {
   if (!build_ || !build_->parser) {
     LOG_ERR("SCT", "buildSomeMore with no active build");
-    return false;
+    return BuildResult::Failed;
   }
   // Pace on pages laid out by THIS build, not pageCount: during a rebuild over a partial,
   // pageCount stays pinned at the partial's watermark until the build passes it, which
@@ -452,33 +457,38 @@ bool Section::buildSomeMore(const int maxPages, const int maxParseSteps, const s
   int parseSteps = 0;
   for (;;) {
     if (cancelFn && cancelFn()) {
-      discardBuild();
-      return false;
+      return BuildResult::Cancelled;
+    }
+    if (build_->parseComplete) {
+      return finalizeBuild() ? BuildResult::Completed : BuildResult::Failed;
     }
     const auto status = build_->parser->parseStep(maxParseBytes);
     ++parseSteps;
     if (status == ChapterHtmlSlimParser::ParseStatus::Error) {
       LOG_ERR("SCT", "Parse error during incremental build");
       abandonBuild();
-      return false;
-    }
-    if (cancelFn && cancelFn()) {
-      discardBuild();
-      return false;
+      return BuildResult::Failed;
     }
     if (status == ChapterHtmlSlimParser::ParseStatus::Done) {
-      return finalizeBuild();
+      build_->parseComplete = true;
+      if (cancelFn && cancelFn()) {
+        return BuildResult::Cancelled;
+      }
+      return finalizeBuild() ? BuildResult::Completed : BuildResult::Failed;
+    }
+    if (cancelFn && cancelFn()) {
+      return BuildResult::Cancelled;
     }
     // ParseStatus::More: yield once we've laid out the requested number of pages.
     if (maxPages > 0 && (builtPageCount_ - startCount) >= maxPages) {
       build_->bytesConsumed = build_->parser->parseBytesConsumed();
-      return true;
+      return BuildResult::Progressed;
     }
     // Background callers use a one-buffer budget so a sparse/oversized page cannot make the
     // cooperative build pump consume arbitrary parser and SD time before input is checked again.
     if (maxParseSteps > 0 && parseSteps >= maxParseSteps) {
       build_->bytesConsumed = build_->parser->parseBytesConsumed();
-      return true;
+      return BuildResult::Progressed;
     }
   }
 }

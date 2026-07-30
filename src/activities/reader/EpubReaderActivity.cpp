@@ -351,11 +351,15 @@ void EpubReaderActivity::runDeferredReaderWork() {
   if (!waiting && section && !section->isBuilding() && section->isPartial() && section->hasHtmlCache() &&
       !RenderLock::peek() && buildViewportWidth > 0 && !partialRebuildStartFailed &&
       section->currentPage + PARTIAL_REBUILD_START_MARGIN >= static_cast<int>(section->pageCount)) {
-    RenderLock lock(false);
+    RenderLock lock(false, true);
     if (!lock.locked()) return;
     // Reuse the last render's viewport so the extension paginates identically to the partial.
     const ReaderRenderSpec buildSpec = SETTINGS.readerRenderSpec(buildViewportWidth, buildViewportHeight);
-    if (section->startBuild(buildSpec) != Section::StartBuildResult::Started) {
+    const auto startResult = section->startBuild(buildSpec, {}, [&lock] { return lock.isStale(); });
+    if (startResult == Section::StartBuildResult::Cancelled || lock.isStale()) {
+      return;
+    }
+    if (startResult != Section::StartBuildResult::Started) {
       // Not fatal: the partial keeps serving its pages; crossing the watermark falls back to
       // the blocking extension in render(). Don't retry every tick.
       partialRebuildStartFailed = true;
@@ -379,7 +383,7 @@ void EpubReaderActivity::runDeferredReaderWork() {
        static_cast<int>(section->pageCount) < section->currentPage + BUILD_WINDOW_AHEAD) &&
       now - lastBackgroundBuildMs >= (waiting ? FOREGROUND_BUILD_INTERVAL_MS : BACKGROUND_BUILD_INTERVAL_MS) &&
       (waiting || buildTickHeapGate())) {
-    RenderLock lock(false);
+    RenderLock lock(false, true);
     if (!lock.locked()) return;
     // Re-check under the lock: render() (which also holds the RenderLock) may have finalized the
     // build between the outer isBuilding() check and acquiring the lock here, in which case
@@ -390,12 +394,15 @@ void EpubReaderActivity::runDeferredReaderWork() {
     // cppcheck-suppress knownConditionTrueFalse
     if (section->isBuilding() && (waiting || buildTickHeapGate())) {
       lastBackgroundBuildMs = now;
-      const bool built =
+      const Section::BuildResult buildResult =
           waiting ? section->buildSomeMore(BUILD_PAGES_PER_CHUNK, FOREGROUND_BUILD_PARSE_STEPS_PER_TICK,
-                                           FOREGROUND_BUILD_PARSE_BYTES_PER_TICK)
+                                           FOREGROUND_BUILD_PARSE_BYTES_PER_TICK, [&lock] { return lock.isStale(); })
                   : section->buildSomeMore(BACKGROUND_BUILD_PAGES_PER_TICK, BACKGROUND_BUILD_PARSE_STEPS_PER_TICK,
-                                           BACKGROUND_BUILD_PARSE_BYTES_PER_TICK);
-      if (!built) {
+                                           BACKGROUND_BUILD_PARSE_BYTES_PER_TICK, [&lock] { return lock.isStale(); });
+      if (buildResult == Section::BuildResult::Cancelled || lock.isStale()) {
+        return;
+      }
+      if (buildResult == Section::BuildResult::Failed) {
         LOG_ERR("ERS", "Background section build failed");
         resetSection();
         requestUpdate();
@@ -1345,12 +1352,13 @@ void EpubReaderActivity::render(RenderLock&& lock) {
     }
   }
   if (section->isBuilding() && section->currentPage >= static_cast<int>(section->pageCount)) {
-    const bool built = section->buildSomeMore(BUILD_PAGES_PER_CHUNK, FOREGROUND_BUILD_PARSE_STEPS_PER_TICK,
-                                              FOREGROUND_BUILD_PARSE_BYTES_PER_TICK);
-    if (lock.isStale()) {
+    const Section::BuildResult buildResult =
+        section->buildSomeMore(BUILD_PAGES_PER_CHUNK, FOREGROUND_BUILD_PARSE_STEPS_PER_TICK,
+                               FOREGROUND_BUILD_PARSE_BYTES_PER_TICK, [&lock] { return lock.isStale(); });
+    if (buildResult == Section::BuildResult::Cancelled || lock.isStale()) {
       return;
     }
-    if (!built) {
+    if (buildResult == Section::BuildResult::Failed) {
       LOG_ERR("ERS", "Failed during incremental section build");
       resetSection();
       showBuildError();
@@ -1587,13 +1595,11 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
     }
   }
 
-  // SD-card glyphs benefit from a sequential prewarm pass. Built-in fonts already
-  // reside in flash and must stay on the single-render path used by earlier releases.
-  // A user-driven page turn must remain a single render, however: scanning the
-  // complete page before drawing it doubles the work and delays Back, Home, and
-  // the reader menu. Lazy glyph loads are preferable while input is pending.
+  // SD-card glyphs benefit from a sequential prewarm pass. Its scan and SD reads
+  // are cancellation-aware, so user-driven turns retain the CJK fast path without
+  // holding the render lock after a new Back, Home, or menu action arrives.
   std::optional<FontCacheManager::PrewarmScope> prewarmScope;
-  if (renderer.isSdCardFont(fontId) && !interactiveRender) {
+  if (renderer.isSdCardFont(fontId)) {
     if (auto* fcm = renderer.getFontCacheManager()) {
       prewarmScope.emplace(fcm->createPrewarmScope());
       if (!page->render(renderer, fontId, orientedMarginLeft, orientedMarginTop, &cancellation)) {
@@ -1604,8 +1610,8 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
         prewarmScope->cancel();
         return;
       }
-      prewarmScope->endScanAndPrewarm();
-      if (lock.isStale()) {
+      if (!prewarmScope->endScanAndPrewarm(cancellation.isCancelled, cancellation.context) || lock.isStale()) {
+        prewarmScope->cancel();
         return;
       }
     }

@@ -16,6 +16,7 @@ class CssParser;
 class Section {
  public:
   enum class StartBuildResult { Started, Cancelled, Failed };
+  enum class BuildResult { Progressed, Completed, Cancelled, Failed };
 
  private:
   std::shared_ptr<Epub> epub;
@@ -50,6 +51,7 @@ class Section {
     // HTML byte progress, for estimating the section's total page count while it's still building.
     uint32_t bytesConsumed = 0;
     uint32_t totalBytes = 0;
+    bool parseComplete = false;
     // Exponentially-smoothed page-count estimate (0 = not yet seeded) and the bytesConsumed at its
     // last update. The raw byte-ratio estimate jitters as the build crosses dense/sparse regions;
     // the EMA is stepped once per build advance (not per redraw) to damp that wobble.
@@ -100,10 +102,11 @@ class Section {
   //   each tick: buildSomeMore(N); render up to pageCount; when isBuildComplete() stop.
   StartBuildResult startBuild(const ReaderRenderSpec& spec, const std::function<void()>& popupFn = nullptr,
                               const std::function<bool()>& cancelFn = nullptr);
-  // Lay out up to maxPages more pages (maxPages <= 0 = build to completion). Returns
-  // false on error or cancellation (the build is abandoned/discarded). Sets isBuildComplete() when finished.
-  bool buildSomeMore(int maxPages, int maxParseSteps = 0, size_t maxParseBytes = 0,
-                     const std::function<bool()>& cancelFn = nullptr);
+  // Lay out up to maxPages more pages (maxPages <= 0 = build to completion). Cancellation
+  // leaves the parser and already-built pages intact so a later idle tick can resume it.
+  // Sets isBuildComplete() when it returns Completed.
+  BuildResult buildSomeMore(int maxPages, int maxParseSteps = 0, size_t maxParseBytes = 0,
+                            const std::function<bool()>& cancelFn = nullptr);
   bool isBuilding() const { return static_cast<bool>(build_); }
   bool isBuildComplete() const { return buildComplete_; }
   // Best-known total page count: the exact pageCount once finalized, or a smoothed byte-based

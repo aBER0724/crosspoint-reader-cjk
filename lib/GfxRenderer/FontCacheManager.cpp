@@ -19,21 +19,25 @@ void FontCacheManager::clearCache() {
   }
 }
 
-void FontCacheManager::prewarmCache(int fontId, const char* utf8Text, uint8_t styleMask) {
+bool FontCacheManager::prewarmCache(int fontId, const char* utf8Text, uint8_t styleMask,
+                                    bool (*isCancelled)(const void*), const void* cancellationContext) {
+  if (isCancelled && isCancelled(cancellationContext)) return false;
   // SD card font prewarm path: prewarm all requested styles in one call
   auto it = sdCardFonts_.find(fontId);
   if (it != sdCardFonts_.end()) {
-    int missed = it->second->prewarm(utf8Text, styleMask);
+    int missed = it->second->prewarm(utf8Text, styleMask, false, isCancelled, cancellationContext);
+    if (missed == SdCardFont::PREWARM_CANCELLED) return false;
     if (missed > 0) {
       LOG_DBG("FCM", "prewarmCache(SD): %d glyph(s) not found (styleMask=0x%02X)", missed, styleMask);
     }
-    return;
+    return true;
   }
 
   // Standard compressed font prewarm path: loop over all requested styles
-  if (!fontDecompressor_ || fontMap_.count(fontId) == 0) return;
+  if (!fontDecompressor_ || fontMap_.count(fontId) == 0) return true;
 
   for (uint8_t i = 0; i < 4; i++) {
+    if (isCancelled && isCancelled(cancellationContext)) return false;
     if (!(styleMask & (1 << i))) continue;
     auto style = static_cast<EpdFontFamily::Style>(i);
     const EpdFontData* data = fontMap_.at(fontId).getData(style);
@@ -43,6 +47,7 @@ void FontCacheManager::prewarmCache(int fontId, const char* utf8Text, uint8_t st
       LOG_DBG("FCM", "prewarmCache: %d glyph(s) not cached for style %d", missed, i);
     }
   }
+  return true;
 }
 
 void FontCacheManager::logStats(const char* label) {
@@ -86,10 +91,11 @@ FontCacheManager::PrewarmScope::PrewarmScope(FontCacheManager& manager) : manage
   manager_->scanFontId_ = -1;
 }
 
-void FontCacheManager::PrewarmScope::endScanAndPrewarm() {
-  if (!active_) return;
+bool FontCacheManager::PrewarmScope::endScanAndPrewarm(bool (*isCancelled)(const void*),
+                                                       const void* cancellationContext) {
+  if (!active_) return false;
   manager_->scanMode_ = ScanMode::None;
-  if (manager_->scanText_.empty()) return;
+  if (manager_->scanText_.empty()) return true;
 
   // Build style bitmask from all styles that appeared during the scan
   uint8_t styleMask = 0;
@@ -98,16 +104,19 @@ void FontCacheManager::PrewarmScope::endScanAndPrewarm() {
   }
   if (styleMask == 0) styleMask = 1;  // default to regular
 
-  manager_->prewarmCache(manager_->scanFontId_, manager_->scanText_.c_str(), styleMask);
+  const bool completed = manager_->prewarmCache(manager_->scanFontId_, manager_->scanText_.c_str(), styleMask,
+                                                isCancelled, cancellationContext);
 
   // Free scan string memory
   manager_->scanText_.clear();
   manager_->scanText_.shrink_to_fit();
+  return completed;
 }
 
 void FontCacheManager::PrewarmScope::cancel() {
   if (!active_) return;
   manager_->scanMode_ = ScanMode::None;
+  manager_->clearCache();
   manager_->scanText_.clear();
   manager_->scanText_.shrink_to_fit();
   memset(manager_->scanStyleCounts_, 0, sizeof(manager_->scanStyleCounts_));

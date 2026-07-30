@@ -16,7 +16,8 @@ class FontCacheManager {
   void setFontDecompressor(FontDecompressor* d);
 
   void clearCache();
-  void prewarmCache(int fontId, const char* utf8Text, uint8_t styleMask = 0x0F);
+  bool prewarmCache(int fontId, const char* utf8Text, uint8_t styleMask = 0x0F,
+                    bool (*isCancelled)(const void*) = nullptr, const void* cancellationContext = nullptr);
   void logStats(const char* label = "render");
   void resetStats();
 
@@ -32,7 +33,7 @@ class FontCacheManager {
    public:
     explicit PrewarmScope(FontCacheManager& manager);
     ~PrewarmScope();
-    void endScanAndPrewarm();
+    bool endScanAndPrewarm(bool (*isCancelled)(const void*) = nullptr, const void* cancellationContext = nullptr);
     void cancel();
     PrewarmScope(PrewarmScope&& other) noexcept;
     PrewarmScope& operator=(PrewarmScope&&) = delete;

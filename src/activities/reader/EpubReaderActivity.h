@@ -103,7 +103,7 @@ class EpubReaderActivity final : public Activity {
   // RenderLock while the parser searches for its next page boundary.
   static constexpr int BUILD_PAGES_PER_CHUNK = 1;
   static constexpr int FOREGROUND_BUILD_PARSE_STEPS_PER_TICK = 1;
-  static constexpr size_t FOREGROUND_BUILD_PARSE_BYTES_PER_TICK = 1024;
+  static constexpr size_t FOREGROUND_BUILD_PARSE_BYTES_PER_TICK = 256;
   static constexpr unsigned long FOREGROUND_BUILD_INTERVAL_MS = 10;
   static constexpr int BACKGROUND_BUILD_PAGES_PER_TICK = 1;
   static constexpr int BACKGROUND_BUILD_PARSE_STEPS_PER_TICK = 1;
