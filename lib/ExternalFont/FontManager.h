@@ -109,6 +109,14 @@ class FontManager {
   bool areGlyphCachesSuspended() const { return _glyphCachesSuspended; }
   bool isGlyphCacheSuspendedFor(const ExternalFont* font) const;
 
+  // EPUB reading needs one framebuffer-sized async-display baseline. When UI
+  // and reader fonts are distinct, temporarily release only the UI glyph cache
+  // and make reader submenus use the built-in UI fallback. The reader cache
+  // stays available for page composition.
+  bool suspendUiGlyphCache();
+  void resumeUiGlyphCache();
+  bool isUiGlyphCacheSuspended() const { return _uiGlyphCacheSuspended; }
+
   class ScopedGlyphCacheSuspension {
    public:
     explicit ScopedGlyphCacheSuspension(FontManager& manager);
@@ -130,7 +138,7 @@ class FontManager {
    * Check if external UI font is enabled
    */
   bool isUiFontEnabled() const {
-    if (_selectedUiIndex < 0) {
+    if (_uiGlyphCacheSuspended || _selectedUiIndex < 0) {
       return false;
     }
     if (isUiSharingReaderFont()) {
@@ -174,6 +182,7 @@ class FontManager {
   ExternalFont _activeFont;    // Reader font
   ExternalFont _activeUiFont;  // UI font
   bool _glyphCachesSuspended = false;
+  bool _uiGlyphCacheSuspended = false;
 
   bool isUiSharingReaderFont() const { return _selectedUiIndex >= 0 && _selectedUiIndex == _selectedIndex; }
 

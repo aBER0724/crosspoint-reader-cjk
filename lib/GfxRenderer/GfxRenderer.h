@@ -285,6 +285,11 @@ class GfxRenderer {
   // True when displayBufferAsync() genuinely overlaps. Callers can skip
   // overlap scaffolding (e.g. whole-plane grayscale buffers) when false.
   bool supportsAsyncRefresh() const;
+  // Claim/release the single-buffer X4 baseline required for a full-frame
+  // async refresh. Reader sessions claim it before rendering can fragment the
+  // heap, then framebuffer loans release it for their memory peak.
+  bool reserveAsyncRefreshMemory() const;
+  void releaseAsyncRefreshMemory() const;
   // EXPERIMENTAL: Windowed update - display only a rectangular region
   // void displayWindow(int x, int y, int width, int height) const;
   void invertScreen() const;

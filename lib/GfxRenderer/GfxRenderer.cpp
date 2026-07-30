@@ -260,6 +260,10 @@ void GfxRenderer::releaseFrameBufferForBuild() {
   // session). The bytes are deposited in the build-scratch registry so
   // memory-hungry build phases (e.g. InflateStream's tinfl state + window)
   // can claim them instead of allocating.
+  // The async differential baseline is a second framebuffer-sized allocation.
+  // Build phases need that contiguous heap room more than they need an async
+  // presentation, and lendFrameBufferStorage() drains any pending waveform.
+  display.releaseAsyncRefreshMemory();
   uint32_t size = 0;
   uint8_t* scratch = display.lendFrameBufferStorage(&size);
   frameBuffer = nullptr;
@@ -272,6 +276,10 @@ bool GfxRenderer::restoreFrameBufferAfterBuild() {
   buildscratch::reclaim();
   display.returnFrameBufferStorage();  // cannot fail: the allocation was never freed
   frameBuffer = display.getFrameBuffer();
+  // Reclaim this before the full redraw re-populates glyph/image caches. A
+  // failure is logged by the display facade and leaves the normal blocking
+  // fallback intact.
+  display.reserveAsyncRefreshMemory();
   return frameBuffer != nullptr;
 }
 
@@ -2204,6 +2212,10 @@ bool GfxRenderer::flushDeferredRefresh() {
 }
 
 bool GfxRenderer::supportsAsyncRefresh() const { return display.supportsAsyncRefresh(); }
+
+bool GfxRenderer::reserveAsyncRefreshMemory() const { return display.reserveAsyncRefreshMemory(); }
+
+void GfxRenderer::releaseAsyncRefreshMemory() const { display.releaseAsyncRefreshMemory(); }
 
 size_t GfxRenderer::readFramebufferRegion(int x, int y, int w, int h, uint8_t* dst, size_t dstCapacity) const {
   if (dst == nullptr || w <= 0 || h <= 0) return 0;
