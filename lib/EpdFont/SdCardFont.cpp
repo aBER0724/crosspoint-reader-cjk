@@ -206,6 +206,10 @@ void SdCardFont::clearOverflow() {
   overflowNext_ = 0;
 }
 
+bool SdCardFont::cancellationRequested(CancellationCallback isCancelled, const void* cancellationContext) {
+  return isCancelled != nullptr && isCancelled(cancellationContext);
+}
+
 // --- Per-style kern/ligature ---
 
 void SdCardFont::applyKernLigaturePointers(PerStyle& s, EpdFontData& data) const {
@@ -224,6 +228,12 @@ void SdCardFont::applyKernLigaturePointers(PerStyle& s, EpdFontData& data) const
 }
 
 bool SdCardFont::loadStyleKernLigatureData(PerStyle& s) {
+  const auto cancelled = [this] {
+    if (!cancellationRequested(prewarmCancellationCallback_, prewarmCancellationContext_)) return false;
+    prewarmCancelled_ = true;
+    return true;
+  };
+  if (cancelled()) return false;
   if (s.kernLigLoaded) return true;
   bool hasKern = s.header.kernLeftEntryCount > 0;
   bool hasLig = s.header.ligaturePairCount > 0;
@@ -265,6 +275,10 @@ bool SdCardFont::loadStyleKernLigatureData(PerStyle& s) {
       freeStyleKernLigatureData(s);
       return false;
     }
+    if (cancelled()) {
+      freeStyleKernLigatureData(s);
+      return false;
+    }
   }
 
   if (hasLig) {
@@ -282,6 +296,10 @@ bool SdCardFont::loadStyleKernLigatureData(PerStyle& s) {
     size_t sz = s.header.ligaturePairCount * sizeof(EpdLigaturePair);
     if (file.read(reinterpret_cast<uint8_t*>(s.ligaturePairs), sz) != static_cast<int>(sz)) {
       LOG_ERR("SDCF", "Failed to read ligature pairs");
+      freeStyleKernLigatureData(s);
+      return false;
+    }
+    if (cancelled()) {
       freeStyleKernLigatureData(s);
       return false;
     }
@@ -324,6 +342,12 @@ static uint8_t miniLookupKernClass(const EpdKernClassEntry* entries, uint16_t co
 // on this page simply returns class 0 (no kerning), which was the pre-existing
 // behavior for any codepoint outside the kern classes.
 bool SdCardFont::buildMiniKernMatrix(PerStyle& s, const uint32_t* codepoints, uint32_t cpCount) {
+  const auto cancelled = [this] {
+    if (!cancellationRequested(prewarmCancellationCallback_, prewarmCancellationContext_)) return false;
+    prewarmCancelled_ = true;
+    return true;
+  };
+  if (cancelled()) return false;
   // No freeStyleMiniKern here: it zeroed the capacities, which forced the
   // ensureArrayCapacity calls below to reallocate every page and defeated the
   // buffer reuse. prewarmStyle is the only caller and the success path
@@ -347,6 +371,7 @@ bool SdCardFont::buildMiniKernMatrix(PerStyle& s, const uint32_t* codepoints, ui
   bool usedLeft[256] = {};
   bool usedRight[256] = {};
   for (uint32_t i = 0; i < cpCount; i++) {
+    if ((i & 0x0Fu) == 0 && cancelled()) return false;
     uint8_t lc = miniLookupKernClass(s.kernLeftClasses, s.header.kernLeftEntryCount, codepoints[i]);
     if (lc) usedLeft[lc] = true;
     uint8_t rc = miniLookupKernClass(s.kernRightClasses, s.header.kernRightEntryCount, codepoints[i]);
@@ -382,6 +407,7 @@ bool SdCardFont::buildMiniKernMatrix(PerStyle& s, const uint32_t* codepoints, ui
   uint16_t miniLeftCount = 0;
   uint16_t miniRightCount = 0;
   for (uint32_t i = 0; i < cpCount; i++) {
+    if ((i & 0x0Fu) == 0 && cancelled()) return false;
     if (miniLookupKernClass(s.kernLeftClasses, s.header.kernLeftEntryCount, codepoints[i]) != 0) miniLeftCount++;
     if (miniLookupKernClass(s.kernRightClasses, s.header.kernRightEntryCount, codepoints[i]) != 0) miniRightCount++;
   }
@@ -404,6 +430,7 @@ bool SdCardFont::buildMiniKernMatrix(PerStyle& s, const uint32_t* codepoints, ui
   // search in lookupKernClass during render.
   uint16_t lIdx = 0, rIdx = 0;
   for (uint32_t i = 0; i < cpCount; i++) {
+    if ((i & 0x0Fu) == 0 && cancelled()) return false;
     uint32_t cp = codepoints[i];
     if (cp > 0xFFFF) continue;  // kern class entries are uint16_t
     uint8_t lc = miniLookupKernClass(s.kernLeftClasses, s.header.kernLeftEntryCount, cp);
@@ -438,6 +465,7 @@ bool SdCardFont::buildMiniKernMatrix(PerStyle& s, const uint32_t* codepoints, ui
   }
 
   for (uint8_t newL = 1; newL <= numLeft; newL++) {
+    if (cancelled()) return false;
     const uint8_t oldL = newToOldLeft[newL];
     const uint32_t rowFileOff = s.kernMatrixFileOffset + (oldL - 1u) * s.header.kernRightClassCount;
     if (!file.seekSet(rowFileOff)) {
@@ -740,12 +768,23 @@ int32_t SdCardFont::findGlobalGlyphIndex(const PerStyle& s, uint32_t codepoint) 
 
 // --- Prewarm ---
 
-int SdCardFont::prewarm(const char* utf8Text, uint8_t styleMask, bool metadataOnly) {
+int SdCardFont::prewarm(const char* utf8Text, uint8_t styleMask, bool metadataOnly, CancellationCallback isCancelled,
+                        const void* cancellationContext) {
   if (!loaded_) return -1;
+  if (cancellationRequested(isCancelled, cancellationContext)) return PREWARM_CANCELLED;
   styleMask = resolveStyleMask(styleMask);
   if (styleMask == 0) return 0;
 
   unsigned long startMs = millis();
+  prewarmCancelled_ = false;
+  prewarmCancellationCallback_ = isCancelled;
+  prewarmCancellationContext_ = cancellationContext;
+  const auto finish = [this](const int result) {
+    prewarmCancellationCallback_ = nullptr;
+    prewarmCancellationContext_ = nullptr;
+    prewarmCancelled_ = false;
+    return result;
+  };
 
   // Step 1: Extract unique codepoints from UTF-8 text (shared across all styles).
   // Dedup uses O(n^2) linear scan — worst case is MAX_PAGE_GLYPHS (512) unique codepoints
@@ -756,12 +795,15 @@ int SdCardFont::prewarm(const char* utf8Text, uint8_t styleMask, bool metadataOn
   std::unique_ptr<uint32_t[]> codepoints(new (std::nothrow) uint32_t[MAX_PAGE_GLYPHS]);
   if (!codepoints) {
     LOG_ERR("SDCF", "Failed to allocate codepoint buffer (%u bytes)", MAX_PAGE_GLYPHS * 4);
-    return -1;
+    return finish(-1);
   }
   uint32_t cpCount = 0;
 
   const unsigned char* p = reinterpret_cast<const unsigned char*>(utf8Text);
   while (*p && cpCount < MAX_PAGE_GLYPHS) {
+    if ((cpCount & 0x0Fu) == 0 && cancellationRequested(isCancelled, cancellationContext)) {
+      return finish(PREWARM_CANCELLED);
+    }
     uint32_t cp = utf8NextCodepoint(&p);
     if (cp == 0) break;
 
@@ -797,12 +839,17 @@ int SdCardFont::prewarm(const char* utf8Text, uint8_t styleMask, bool metadataOn
   // loaded per-style in prewarmStyle() during the full render prewarm instead.
   if (!metadataOnly) {
     for (uint8_t si = 0; si < MAX_STYLES; si++) {
+      if (cancellationRequested(isCancelled, cancellationContext)) return finish(PREWARM_CANCELLED);
       if (!(styleMask & (1 << si)) || !styles_[si].present) continue;
       auto& s = styles_[si];
 
       loadStyleKernLigatureData(s);
+      if (prewarmCancelled_) return finish(PREWARM_CANCELLED);
       if (s.ligaturePairs && s.header.ligaturePairCount > 0) {
         for (uint8_t li = 0; li < s.header.ligaturePairCount && cpCount < MAX_PAGE_GLYPHS; li++) {
+          if ((li & 0x0Fu) == 0 && cancellationRequested(isCancelled, cancellationContext)) {
+            return finish(PREWARM_CANCELLED);
+          }
           uint32_t leftCp = s.ligaturePairs[li].pair >> 16;
           uint32_t rightCp = s.ligaturePairs[li].pair & 0xFFFF;
           uint32_t outCp = s.ligaturePairs[li].ligatureCp;
@@ -836,16 +883,27 @@ int SdCardFont::prewarm(const char* utf8Text, uint8_t styleMask, bool metadataOn
   // Prewarm each requested style
   int totalMissed = 0;
   for (uint8_t si = 0; si < MAX_STYLES; si++) {
+    if (cancellationRequested(isCancelled, cancellationContext)) return finish(PREWARM_CANCELLED);
     if (!(styleMask & (1 << si)) || !styles_[si].present) continue;
     totalMissed += prewarmStyle(si, codepoints.get(), cpCount, metadataOnly);
+    if (prewarmCancelled_) return finish(PREWARM_CANCELLED);
   }
 
   stats_.prewarmTotalMs = millis() - startMs;
-  return totalMissed;
+  return finish(totalMissed);
 }
 
 int SdCardFont::prewarmStyle(uint8_t styleIdx, const uint32_t* codepoints, uint32_t cpCount, bool metadataOnly) {
   auto& s = styles_[styleIdx];
+  const auto cancel = [&s, this] {
+    freeStyleMiniData(s);
+    prewarmCancelled_ = true;
+    return 0;
+  };
+  const auto cancelled = [this] {
+    return cancellationRequested(prewarmCancellationCallback_, prewarmCancellationContext_);
+  };
+  if (cancelled()) return cancel();
 
   // Idle-prewarm hit: mini data persists across PrewarmScopes (resetStyleMiniData
   // keeps it), so when the previous scope -- typically the idle prewarm of this
@@ -856,6 +914,7 @@ int SdCardFont::prewarmStyle(uint8_t styleIdx, const uint32_t* codepoints, uint3
     bool covered = true;
     int missedInMini = 0;
     for (uint32_t i = 0; i < cpCount && covered; i++) {
+      if ((i & 0x0Fu) == 0 && cancelled()) return cancel();
       const uint32_t cp = codepoints[i];
       bool inMini = false;
       for (uint32_t iv = 0; iv < s.miniIntervalCount; iv++) {
@@ -890,6 +949,10 @@ int SdCardFont::prewarmStyle(uint8_t styleIdx, const uint32_t* codepoints, uint3
 
   uint32_t validCount = 0;
   for (uint32_t i = 0; i < cpCount; i++) {
+    if ((i & 0x0Fu) == 0 && cancelled()) {
+      delete[] mappings;
+      return cancel();
+    }
     int32_t idx = findGlobalGlyphIndex(s, codepoints[i]);
     if (idx >= 0) {
       mappings[validCount].codepoint = codepoints[i];
@@ -927,6 +990,10 @@ int SdCardFont::prewarmStyle(uint8_t styleIdx, const uint32_t* codepoints, uint3
   s.miniIntervalCount = 0;
   uint32_t rangeStart = 0;
   for (uint32_t i = 1; i <= validCount; i++) {
+    if ((i & 0x0Fu) == 0 && cancelled()) {
+      delete[] mappings;
+      return cancel();
+    }
     if (i == validCount || mappings[i].codepoint != mappings[i - 1].codepoint + 1) {
       s.miniIntervals[s.miniIntervalCount].first = mappings[rangeStart].codepoint;
       s.miniIntervals[s.miniIntervalCount].last = mappings[i - 1].codepoint;
@@ -977,6 +1044,11 @@ int SdCardFont::prewarmStyle(uint8_t styleIdx, const uint32_t* codepoints, uint3
   // containing that codepoint beyond page width).
   int32_t lastReadIndex = INT32_MIN;
   for (uint32_t i = 0; i < validCount; i++) {
+    if (cancelled()) {
+      delete[] readOrder;
+      delete[] mappings;
+      return cancel();
+    }
     uint32_t mapIdx = readOrder[i];
     int32_t gIdx = mappings[mapIdx].globalIndex;
 
@@ -1007,6 +1079,11 @@ int SdCardFont::prewarmStyle(uint8_t styleIdx, const uint32_t* codepoints, uint3
   if (!metadataOnly) {
     // Compute total bitmap size
     for (uint32_t i = 0; i < validCount; i++) {
+      if ((i & 0x0Fu) == 0 && cancelled()) {
+        delete[] readOrder;
+        delete[] mappings;
+        return cancel();
+      }
       totalBitmapSize += s.miniGlyphs[i].dataLength;
     }
 
@@ -1026,6 +1103,11 @@ int SdCardFont::prewarmStyle(uint8_t styleIdx, const uint32_t* codepoints, uint3
     uint32_t miniBitmapOffset = 0;
     uint32_t lastBitmapEnd = UINT32_MAX;
     for (uint32_t i = 0; i < validCount; i++) {
+      if (cancelled()) {
+        delete[] readOrder;
+        delete[] mappings;
+        return cancel();
+      }
       uint32_t mapIdx = readOrder[i];
       EpdGlyph& glyph = s.miniGlyphs[mapIdx];
 
@@ -1064,6 +1146,8 @@ int SdCardFont::prewarmStyle(uint8_t styleIdx, const uint32_t* codepoints, uint3
   delete[] readOrder;
   delete[] mappings;
 
+  if (cancelled()) return cancel();
+
   // Full render prewarm: load the persistent kern classes + ligatures (one-time
   // per style, small — the big matrix is NOT loaded here) and then build the
   // per-page mini kern matrix restricted to class pairs reachable from this
@@ -1074,6 +1158,7 @@ int SdCardFont::prewarmStyle(uint8_t styleIdx, const uint32_t* codepoints, uint3
     if (loadStyleKernLigatureData(s)) {
       kernLigOk = buildMiniKernMatrix(s, codepoints, cpCount);
     }
+    if (prewarmCancelled_ || cancelled()) return cancel();
   }
 
   // Populate miniData and swap

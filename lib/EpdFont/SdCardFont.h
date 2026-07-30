@@ -22,6 +22,8 @@ class SdCardFont {
  public:
   static constexpr uint16_t MAX_PAGE_GLYPHS = 512;
   static constexpr uint8_t MAX_STYLES = 4;
+  using CancellationCallback = bool (*)(const void*);
+  static constexpr int PREWARM_CANCELLED = -2;
 
   SdCardFont() = default;
   ~SdCardFont();
@@ -41,8 +43,10 @@ class SdCardFont {
   // styleMask: bitmask of styles to prewarm (bit 0=regular, 1=bold, 2=italic, 3=bolditalic).
   // Default 0x0F = all present styles.
   // When metadataOnly=true, only glyph metrics are loaded (no bitmap data).
-  // Returns number of glyphs that couldn't be loaded (0 on full success).
-  int prewarm(const char* utf8Text, uint8_t styleMask = 0x0F, bool metadataOnly = false);
+  // Returns number of glyphs that couldn't be loaded (0 on full success), or
+  // PREWARM_CANCELLED when the optional callback aborts the operation.
+  int prewarm(const char* utf8Text, uint8_t styleMask = 0x0F, bool metadataOnly = false,
+              CancellationCallback isCancelled = nullptr, const void* cancellationContext = nullptr);
 
   // Build a compact advance-only table for layout measurement.
   // Extracts ALL unique codepoints from words (no MAX_PAGE_GLYPHS cap),
@@ -276,6 +280,10 @@ class SdCardFont {
   uint32_t contentHash_ = 0;
   bool loaded_ = false;
 
+  bool prewarmCancelled_ = false;
+  CancellationCallback prewarmCancellationCallback_ = nullptr;
+  const void* prewarmCancellationContext_ = nullptr;
+
   // Per-style helpers
   void freeStyleMiniData(PerStyle& s);
   // Per-scope variant: drop the page's data, keep the allocations (see the
@@ -295,6 +303,7 @@ class SdCardFont {
   int buildAdvanceTableRange(Iter begin, Iter end, bool includeSpace, bool includeHyphen, uint8_t styleMask,
                              const char* extraText = nullptr);
   int prewarmStyle(uint8_t styleIdx, const uint32_t* codepoints, uint32_t cpCount, bool metadataOnly);
+  static bool cancellationRequested(CancellationCallback isCancelled, const void* cancellationContext);
 
   // Global helpers
   void freeAll();
