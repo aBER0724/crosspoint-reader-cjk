@@ -191,9 +191,7 @@ void EpubReaderPercentSelectionActivity::render(RenderLock&&) {
   }
 
   if (partialUpdate) {
-    // The partial window API blocks on the previous waveform. The framebuffer
-    // already has the full current UI, so use an async complete-frame submit.
-    renderer.displayBufferAsync();
+    renderer.displayBuffer();
   } else if (renderer.isDarkMode()) {
     renderer.displayBufferDarkRedrive();
   } else {

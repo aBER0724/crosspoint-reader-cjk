@@ -165,9 +165,7 @@ void EpubReaderChapterSelectionActivity::render(RenderLock&&) {
   }
 
   if (partialUpdate) {
-    // Keep selection movement responsive: the SDK's window path waits for the
-    // waveform, whereas the full framebuffer can be submitted asynchronously.
-    renderer.displayBufferAsync();
+    renderer.displayBuffer();
   } else if (renderer.isDarkMode()) {
     renderer.displayBufferDarkRedrive();
   } else {

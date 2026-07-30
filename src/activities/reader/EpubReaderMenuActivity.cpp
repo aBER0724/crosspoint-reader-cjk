@@ -252,10 +252,7 @@ void EpubReaderMenuActivity::render(RenderLock&&) {
   }
 
   if (partialUpdate) {
-    // Window refreshes are synchronous in the panel SDK. Submit the completed
-    // framebuffer asynchronously instead so a following key, Back, or Home
-    // transition can run while the waveform is active.
-    renderer.displayBufferAsync();
+    renderer.displayBuffer();
   } else if (renderer.isDarkMode()) {
     renderer.displayBufferDarkRedrive();
   } else {
