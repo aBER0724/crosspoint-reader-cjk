@@ -1576,12 +1576,12 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
     LOG_DBG("ERS", "Interactive page render (generation %lu)", static_cast<unsigned long>(lock.generation()));
   }
 
-  // External fonts keep glyphs on the SD card. Preload the page's distinct
-  // codepoints only for an idle redraw: scanning a whole CJK page and reading
-  // its glyphs from SD delays page turns, Back, Home, menus, and chapter
-  // selection before cancellation can take effect.
+  // External fonts keep glyphs on the SD card. Preloading the page's distinct
+  // codepoints keeps the draw pass out of the random-read path, which is
+  // especially important for CJK page turns. The scan and preload both honour
+  // cancellation, so new input can discard stale work promptly.
   FontManager& fontManager = FontManager::getInstance();
-  if (!interactiveRender && fontManager.isExternalFontEnabled()) {
+  if (fontManager.isExternalFontEnabled()) {
     if (ExternalFont* externalFont = fontManager.getActiveFont()) {
       std::vector<uint32_t> codepoints;
       codepoints.reserve(externalFont->getPreloadLimit());
@@ -1595,12 +1595,11 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
     }
   }
 
-  // SD-card glyphs benefit from a sequential prewarm pass during an idle redraw.
-  // A user-driven page turn must remain a single render: scanning the complete
-  // page and reading its glyphs before drawing delays Back, Home, and the reader
-  // menu even when the prewarm itself is cancellation-aware.
+  // SD-card glyphs benefit from a sequential prewarm pass. The prewarm runs on
+  // every render to prevent expensive random SD reads while drawing CJK text;
+  // its scan and SD reads are cancellation-aware.
   std::optional<FontCacheManager::PrewarmScope> prewarmScope;
-  if (renderer.isSdCardFont(fontId) && !interactiveRender) {
+  if (renderer.isSdCardFont(fontId)) {
     if (auto* fcm = renderer.getFontCacheManager()) {
       prewarmScope.emplace(fcm->createPrewarmScope());
       if (!page->render(renderer, fontId, orientedMarginLeft, orientedMarginTop, &cancellation)) {
