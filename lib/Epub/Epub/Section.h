@@ -14,6 +14,10 @@ class ChapterHtmlSlimParser;
 class CssParser;
 
 class Section {
+ public:
+  enum class StartBuildResult { Started, Cancelled, Failed };
+
+ private:
   std::shared_ptr<Epub> epub;
   const int spineIndex;
   GfxRenderer& renderer;
@@ -86,17 +90,20 @@ class Section {
   ~Section();
   bool loadSectionFile(const ReaderRenderSpec& spec);
   bool clearCache() const;
-  bool createSectionFile(const ReaderRenderSpec& spec, const std::function<void()>& popupFn = nullptr);
+  bool createSectionFile(const ReaderRenderSpec& spec, const std::function<void()>& popupFn = nullptr,
+                         const std::function<bool()>& cancelFn = nullptr);
 
   // Incremental build: lay out the section a few pages at a time so a large chapter
   // can show its first page immediately and keep the UI responsive while the rest
   // builds. createSectionFile() above is the one-shot wrapper over these.
-  //   if (!startBuild(...)) fail;
+  //   if (startBuild(...) != StartBuildResult::Started) fail;
   //   each tick: buildSomeMore(N); render up to pageCount; when isBuildComplete() stop.
-  bool startBuild(const ReaderRenderSpec& spec, const std::function<void()>& popupFn = nullptr);
+  StartBuildResult startBuild(const ReaderRenderSpec& spec, const std::function<void()>& popupFn = nullptr,
+                              const std::function<bool()>& cancelFn = nullptr);
   // Lay out up to maxPages more pages (maxPages <= 0 = build to completion). Returns
-  // false on error (the build is abandoned). Sets isBuildComplete() when finished.
-  bool buildSomeMore(int maxPages, int maxParseSteps = 0, size_t maxParseBytes = 0);
+  // false on error or cancellation (the build is abandoned/discarded). Sets isBuildComplete() when finished.
+  bool buildSomeMore(int maxPages, int maxParseSteps = 0, size_t maxParseBytes = 0,
+                     const std::function<bool()>& cancelFn = nullptr);
   bool isBuilding() const { return static_cast<bool>(build_); }
   bool isBuildComplete() const { return buildComplete_; }
   // Best-known total page count: the exact pageCount once finalized, or a smoothed byte-based

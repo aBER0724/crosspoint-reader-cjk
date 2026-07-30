@@ -437,7 +437,8 @@ uint8_t* ZipFile::readFileToMemory(const char* filename, size_t* size, const boo
   return data;
 }
 
-bool ZipFile::readFileToStream(const char* filename, Print& out, const size_t chunkSize, const bool allowEarlyStop) {
+bool ZipFile::readFileToStream(const char* filename, Print& out, const size_t chunkSize, const bool allowEarlyStop,
+                               const std::function<bool()>& cancelFn) {
   const ScopedOpenClose zip{*this};
   if (!zip) return false;
 
@@ -461,6 +462,10 @@ bool ZipFile::readFileToStream(const char* filename, Print& out, const size_t ch
 
     size_t remaining = inflatedDataSize;
     while (remaining > 0) {
+      if (cancelFn && cancelFn()) {
+        free(buffer);
+        return false;
+      }
       const size_t dataRead = file.read(buffer, remaining < chunkSize ? remaining : chunkSize);
       if (dataRead == 0) {
         LOG_ERR("ZIP", "Could not read more bytes");
@@ -514,6 +519,9 @@ bool ZipFile::readFileToStream(const char* filename, Print& out, const size_t ch
     size_t totalProduced = 0;
 
     while (true) {
+      if (cancelFn && cancelFn()) {
+        break;
+      }
       size_t produced;
       const InflateStream::Status status = inflate.readAtMost(outputBuffer, chunkSize, &produced);
 
