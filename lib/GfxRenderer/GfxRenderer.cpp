@@ -2164,9 +2164,8 @@ void GfxRenderer::displayBuffer(const HalDisplay::RefreshMode refreshMode) const
 }
 
 void GfxRenderer::displayBufferAsync(const HalDisplay::RefreshMode refreshMode) const {
-  // The async path has no turn-off-screen hook, which the sunlight fading fix
-  // relies on. Dark-mode FAST/HALF refreshes also have to pass through displayBuffer()
-  // so they become a DARK_REDRIVE rather than whitening the background.
+  // Dark-mode FAST/HALF refreshes have to pass through displayBuffer() so they
+  // become a DARK_REDRIVE rather than whitening the background.
   const bool darkModeNeedsRedrive =
       darkMode && (refreshMode == HalDisplay::FAST_REFRESH || refreshMode == HalDisplay::HALF_REFRESH);
   if (deferRefreshWhileBusy_ && display.refreshBusy()) {
@@ -2179,11 +2178,11 @@ void GfxRenderer::displayBufferAsync(const HalDisplay::RefreshMode refreshMode) 
   // one-shot window from a partial redraw leak into a later blocking present.
   partialX_ = partialY_ = partialW_ = partialH_ = 0;
   deferredRefreshPending_ = false;
-  if (fadingFix || darkModeNeedsRedrive) {
+  if (darkModeNeedsRedrive) {
     displayBuffer(refreshMode);
     return;
   }
-  display.displayBufferAsync(refreshMode);
+  display.displayBufferAsync(refreshMode, fadingFix);
 }
 
 bool GfxRenderer::refreshBusy() const { return display.refreshBusy(); }
@@ -2204,7 +2203,7 @@ bool GfxRenderer::flushDeferredRefresh() {
   return true;
 }
 
-bool GfxRenderer::supportsAsyncRefresh() const { return !fadingFix && display.supportsAsyncRefresh(); }
+bool GfxRenderer::supportsAsyncRefresh() const { return display.supportsAsyncRefresh(); }
 
 size_t GfxRenderer::readFramebufferRegion(int x, int y, int w, int h, uint8_t* dst, size_t dstCapacity) const {
   if (dst == nullptr || w <= 0 || h <= 0) return 0;
