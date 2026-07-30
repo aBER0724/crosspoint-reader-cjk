@@ -75,12 +75,12 @@ void HalDisplay::displayWindowDarkRedrive(uint16_t x, uint16_t y, uint16_t w, ui
   einkDisplay.displayWindowDarkRedrive(x, y, w, h, turnOffScreen);
 }
 
-void HalDisplay::displayBufferAsync(HalDisplay::RefreshMode mode) {
+void HalDisplay::displayBufferAsync(HalDisplay::RefreshMode mode, bool turnOffScreen) {
   if (gpio.deviceIsX3() && mode == RefreshMode::HALF_REFRESH) {
     einkDisplay.requestResync(1);
   }
 
-  einkDisplay.displayBufferAsync(convertRefreshMode(mode));
+  einkDisplay.displayBufferAsync(convertRefreshMode(mode), turnOffScreen);
 }
 
 void HalDisplay::waitRefreshComplete() { einkDisplay.waitRefreshComplete(); }

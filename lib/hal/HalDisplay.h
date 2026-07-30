@@ -49,7 +49,7 @@ class HalDisplay {
   // displayed frame, so the caller can immediately redraw the framebuffer. The
   // shadow is allocated lazily; allocation failure and panels without deferral
   // fall back to a blocking refresh.
-  void displayBufferAsync(RefreshMode mode = RefreshMode::FAST_REFRESH);
+  void displayBufferAsync(RefreshMode mode = RefreshMode::FAST_REFRESH, bool turnOffScreen = false);
   // Block until a pending deferred refresh completes (no-op when none is).
   void waitRefreshComplete();
   // True while a deferred refresh is still running on the panel. Unlike

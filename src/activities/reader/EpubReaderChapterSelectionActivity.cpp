@@ -164,9 +164,7 @@ void EpubReaderChapterSelectionActivity::render(RenderLock&&) {
     GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
   }
 
-  if (partialUpdate) {
-    renderer.displayBuffer();
-  } else if (renderer.isDarkMode()) {
+  if (renderer.isDarkMode()) {
     renderer.displayBufferDarkRedrive();
   } else {
     renderer.displayBufferAsync();

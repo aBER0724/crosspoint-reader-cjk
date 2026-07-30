@@ -266,8 +266,9 @@ class GfxRenderer {
   // Non-blocking refresh: starts the waveform and returns so CPU work can
   // overlap the panel's refresh time. The SDK retains the prior frame as a
   // differential baseline, so callers may immediately redraw the framebuffer.
-  // Falls back to a blocking refresh when fadingFix is enabled or the panel
-  // lacks deferral support. See HalDisplay::displayBufferAsync for details.
+  // Fading fix remains asynchronous; it only falls back to a blocking refresh
+  // when the panel lacks deferral support. See HalDisplay::displayBufferAsync
+  // for details.
   void displayBufferAsync(HalDisplay::RefreshMode refreshMode = HalDisplay::FAST_REFRESH) const;
   // Reports a deferred panel refresh without waiting for it. ActivityManager
   // uses this to coalesce interactive updates instead of holding RenderLock on
@@ -281,9 +282,8 @@ class GfxRenderer {
   // Must be called while holding ActivityManager's RenderLock. Starts the
   // most recently deferred full-frame update after the prior waveform ends.
   bool flushDeferredRefresh();
-  // True when displayBufferAsync() genuinely overlaps: panel defers and
-  // fadingFix isn't forcing the blocking path. Callers can skip overlap
-  // scaffolding (e.g. whole-plane grayscale buffers) when false.
+  // True when displayBufferAsync() genuinely overlaps. Callers can skip
+  // overlap scaffolding (e.g. whole-plane grayscale buffers) when false.
   bool supportsAsyncRefresh() const;
   // EXPERIMENTAL: Windowed update - display only a rectangular region
   // void displayWindow(int x, int y, int width, int height) const;
