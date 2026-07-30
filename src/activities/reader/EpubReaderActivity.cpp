@@ -166,20 +166,6 @@ void EpubReaderActivity::onEnter() {
     return;
   }
 
-  // A single-buffer X4 needs a second 48 KB frame as the async differential
-  // baseline. Release only the independent UI cache before claiming it; page
-  // text keeps its reader cache and reader submenus use the built-in UI font.
-  if (renderer.supportsAsyncRefresh()) {
-    FontManager& fontManager = FontManager::getInstance();
-    uiGlyphCacheSuspended = fontManager.suspendUiGlyphCache();
-    if (uiGlyphCacheSuspended) {
-      LOG_DBG("ERS", "Released UI glyph cache for async refresh memory");
-    }
-    if (!renderer.reserveAsyncRefreshMemory()) {
-      LOG_ERR("ERS", "Async refresh memory unavailable; interactive refreshes may block");
-    }
-  }
-
   ImageBlock::clearSessionRenderFailures();
   // Lazy image extraction: section builds only header-probe images, so the first
   // render of an image page pulls the file out of the EPUB through this hook.
@@ -272,11 +258,6 @@ void EpubReaderActivity::onExit() {
     moveFinishedBookToReadFolder(srcPath, dstPath, oldCachePath);
   } else {
     epub.reset();
-  }
-
-  if (uiGlyphCacheSuspended) {
-    FontManager::getInstance().resumeUiGlyphCache();
-    uiGlyphCacheSuspended = false;
   }
 }
 
