@@ -166,17 +166,20 @@ void EpubReaderActivity::onEnter() {
     return;
   }
 
-  // A single-buffer X4 needs a second 48 KB frame as the async differential
-  // baseline. Release only the independent UI cache before claiming it; page
-  // text keeps its reader cache and reader submenus use the built-in UI font.
+  // The async baseline is normally reserved during boot before font caches
+  // fragment the heap. If a memory-heavy operation could not reclaim it later,
+  // release only the independent UI cache and retry before accepting blocking
+  // interactive refreshes. Page text keeps its reader cache.
   if (renderer.supportsAsyncRefresh()) {
-    FontManager& fontManager = FontManager::getInstance();
-    uiGlyphCacheSuspended = fontManager.suspendUiGlyphCache();
-    if (uiGlyphCacheSuspended) {
-      LOG_DBG("ERS", "Released UI glyph cache for async refresh memory");
-    }
     if (!renderer.reserveAsyncRefreshMemory()) {
-      LOG_ERR("ERS", "Async refresh memory unavailable; interactive refreshes may block");
+      FontManager& fontManager = FontManager::getInstance();
+      uiGlyphCacheSuspended = fontManager.suspendUiGlyphCache();
+      if (uiGlyphCacheSuspended) {
+        LOG_DBG("ERS", "Released UI glyph cache for async refresh memory");
+      }
+      if (!renderer.reserveAsyncRefreshMemory()) {
+        LOG_ERR("ERS", "Async refresh memory unavailable; interactive refreshes may block");
+      }
     }
   }
 
