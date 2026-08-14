@@ -209,12 +209,13 @@ void CalibreConnectActivity::render(RenderLock&&) {
     const std::string token = webServer ? webServer->getAdminToken() : "";
     const std::string serverUrl = appendAdminToken("http://" + connectedIP + "/", token);
     const int lineWidth = pageWidth - metrics.contentSidePadding * 2;
-    const std::string urlLine = renderer.truncatedText(SMALL_FONT_ID, (std::string("URL: ") + serverUrl).c_str(),
-                                                       lineWidth, EpdFontFamily::REGULAR);
+    const std::string urlLine = renderer.truncatedText(
+        SMALL_FONT_ID, (std::string(tr(STR_URL_PREFIX)) + serverUrl).c_str(), lineWidth, EpdFontFamily::REGULAR);
     renderer.drawText(SMALL_FONT_ID, metrics.contentSidePadding, y, urlLine.c_str());
     y += height;
     if (!token.empty()) {
-      renderer.drawText(SMALL_FONT_ID, metrics.contentSidePadding, y, (std::string("Token: ") + token).c_str());
+      renderer.drawText(SMALL_FONT_ID, metrics.contentSidePadding, y,
+                        (std::string(tr(STR_TOKEN_PREFIX)) + token).c_str());
       y += height;
     }
 
