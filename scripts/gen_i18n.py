@@ -12,8 +12,8 @@ Each YAML file must contain:
   _language_code: "ENUM_NAME"       (e.g. "ES")
   STR_KEY: "translation text"
 
-The English file is the reference. Missing keys in other languages are
-automatically filled from English, with a warning.
+The English file is the reference. Shipping CJK languages must match it
+exactly; incomplete community languages retain the English fallback behavior.
 
 Usage:
     python gen_i18n.py <translations_dir> <output_dir>
@@ -27,6 +27,23 @@ import os
 import re
 from pathlib import Path
 from typing import List, Dict, Tuple
+
+
+STRICT_LANGUAGE_CODES = {
+    "CHINESE_SIMPLIFIED",
+    "CHINESE_TRADITIONAL",
+    "JAPANESE",
+}
+
+PRINTF_PLACEHOLDER_RE = re.compile(
+    r"%(?:\d+\$)?[-+#0 'I]*(?:\d+|\*)?(?:\.(?:\d+|\*))?"
+    r"(?:hh|h|ll|l|j|z|t|L)?[diuoxXfFeEgGaAcspn%]"
+)
+
+
+def extract_printf_placeholders(value: str) -> List[str]:
+    """Return printf placeholders in call-argument order, excluding literal %% tokens."""
+    return [match.group(0) for match in PRINTF_PLACEHOLDER_RE.finditer(value) if match.group(0) != "%%"]
 
 
 # ---------------------------------------------------------------------------
@@ -190,7 +207,47 @@ def load_translations(
         if not re.match(r"^[a-zA-Z_][a-zA-Z0-9_]*$", key):
             raise ValueError(f"Invalid C++ identifier in English file: '{key}'")
 
-    # Build translations dict, filling missing keys from English
+    # Shipping CJK translations are maintained as a complete product surface.
+    # Fail before writing generated files so a missing label cannot silently turn
+    # into English in a release build and stale keys cannot look translated while
+    # remaining absent from the firmware.
+    english_keys = set(string_keys)
+    validation_errors: List[str] = []
+    for fname in ordered_files:
+        if fname == english_file:
+            continue
+
+        data = parsed[fname]
+        lang_code = data.get("_language_code", fname)
+        translated_keys = {key for key in data if not key.startswith("_")}
+        missing = sorted(english_keys - translated_keys)
+        empty = sorted(key for key in english_keys & translated_keys if not data[key].strip())
+        extra = sorted(translated_keys - english_keys)
+
+        if lang_code.upper() in STRICT_LANGUAGE_CODES:
+            if missing:
+                validation_errors.append(f"{lang_code}: missing keys: {', '.join(missing)}")
+            if empty:
+                validation_errors.append(f"{lang_code}: empty translations: {', '.join(empty)}")
+            if extra:
+                validation_errors.append(f"{lang_code}: keys not in English: {', '.join(extra)}")
+
+            for key in sorted(english_keys & translated_keys):
+                if not data[key].strip():
+                    continue
+                expected = extract_printf_placeholders(english_data[key])
+                actual = extract_printf_placeholders(data[key])
+                if actual != expected:
+                    validation_errors.append(
+                        f"{lang_code}: placeholder mismatch for {key}: expected {expected}, got {actual}"
+                    )
+        elif extra:
+            print(f"  WARNING: {lang_code} has keys not in English: {', '.join(extra)}")
+
+    if validation_errors:
+        raise ValueError("Strict translation validation failed:\n  " + "\n  ".join(validation_errors))
+
+    # Build translations dict, filling missing community-language keys from English.
     translations: Dict[str, List[str]] = {}
     for key in string_keys:
         row: List[str] = []
@@ -203,16 +260,6 @@ def load_translations(
                 print(f"  INFO: '{key}' missing in {lang_code}, using English fallback")
             row.append(value)
         translations[key] = row
-
-    # Warn about extra keys in non-English files
-    for fname in ordered_files:
-        if fname == english_file:
-            continue
-        data = parsed[fname]
-        extra = [k for k in data if not k.startswith("_") and k not in english_data]
-        if extra:
-            lang_code = data.get("_language_code", fname)
-            print(f"  WARNING: {lang_code} has keys not in English: {', '.join(extra)}")
 
     print(f"Loaded {len(language_codes)} languages, {len(string_keys)} string keys")
     return language_codes, language_names, string_keys, translations
