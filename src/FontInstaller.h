@@ -26,10 +26,14 @@ class FontInstaller {
   static bool isValidFamilyName(const char* name);
 
   /// Validate a .cpfont filename: ends with ".cpfont", no path separators or
-  /// traversal sequences, basename uses only alphanumeric + hyphen + underscore
-  /// + dot (only as the extension separator). Rejects "../foo.cpfont" and
-  /// "evil/foo.cpfont".
+  /// traversal sequences, and the basename uses only alphanumeric + hyphen +
+  /// underscore. Rejects "../foo.cpfont" and "evil/foo.cpfont".
   static bool isValidCpfontFilename(const char* name);
+
+  /// Recover interrupted transactional replacements under both font roots.
+  /// Restores a .bak when the final file is absent, removes an obsolete .bak
+  /// after a successful commit, and removes stale .part files.
+  static bool recoverInterruptedInstalls();
 
   /// Ensure /<root>/<family>/ exists, where <root> is /.fonts (preferred) or /fonts.
   /// Re-uses the existing root if the family is already installed; otherwise

@@ -6,6 +6,7 @@
 #include <string>
 
 #include "CrossPointSettings.h"
+#include "FontInstaller.h"
 #include "fontIds.h"
 
 namespace {
@@ -42,6 +43,9 @@ bool hasCjkCoverage(const GfxRenderer& renderer, int fontId) {
 }  // namespace
 
 void SdCardFontSystem::begin(GfxRenderer& renderer) {
+  if (!FontInstaller::recoverInterruptedInstalls()) {
+    LOG_ERR("SDFS", "Some interrupted font transactions could not be recovered");
+  }
   registry_.discover();
 
   SETTINGS.sdFontIdResolver = [](void* ctx, const char* familyName, uint8_t fontSizeEnum) -> int {

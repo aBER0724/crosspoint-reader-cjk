@@ -5,10 +5,123 @@
 
 #include <cctype>
 #include <cstring>
+#include <string>
+#include <vector>
 
 #include "CrossPointSettings.h"
 
 FontInstaller::FontInstaller(SdCardFontRegistry& registry) : registry_(registry) {}
+
+namespace {
+
+constexpr char kBackupSuffix[] = ".bak";
+constexpr char kPartialSuffix[] = ".part";
+
+bool hasSuffix(const std::string& value, const char* suffix) {
+  const size_t suffixLength = strlen(suffix);
+  return value.size() > suffixLength && value.compare(value.size() - suffixLength, suffixLength, suffix) == 0;
+}
+
+bool findInterruptedFile(const char* familyPath, std::string& path, bool& isBackup) {
+  HalFile dir = Storage.open(familyPath);
+  if (!dir || !dir.isDirectory()) return false;
+
+  char nameBuffer[128];
+  while (true) {
+    HalFile entry = dir.openNextFile();
+    if (!entry) break;
+    if (entry.isDirectory()) {
+      entry.close();
+      continue;
+    }
+    const size_t nameLength = entry.getName(nameBuffer, sizeof(nameBuffer));
+    entry.close();
+    if (nameLength == 0 || nameLength >= sizeof(nameBuffer)) continue;
+
+    const std::string name(nameBuffer);
+    bool foundBackup = false;
+    size_t suffixLength = 0;
+    if (hasSuffix(name, kBackupSuffix)) {
+      foundBackup = true;
+      suffixLength = strlen(kBackupSuffix);
+    } else if (hasSuffix(name, kPartialSuffix)) {
+      suffixLength = strlen(kPartialSuffix);
+    } else {
+      continue;
+    }
+
+    const std::string finalName = name.substr(0, name.size() - suffixLength);
+    if (!FontInstaller::isValidCpfontFilename(finalName.c_str())) continue;
+
+    path = std::string(familyPath) + "/" + name;
+    isBackup = foundBackup;
+    dir.close();
+    return true;
+  }
+  dir.close();
+  return false;
+}
+
+bool processInterruptedFiles(const char* root, const char* familyName) {
+  char familyPath[160];
+  const int familyPathLength = snprintf(familyPath, sizeof(familyPath), "%s/%s", root, familyName);
+  if (familyPathLength < 0 || static_cast<size_t>(familyPathLength) >= sizeof(familyPath)) return false;
+
+  std::string path;
+  bool isBackup = false;
+  while (findInterruptedFile(familyPath, path, isBackup)) {
+    if (isBackup) {
+      const std::string finalPath = path.substr(0, path.size() - strlen(kBackupSuffix));
+      if (Storage.exists(finalPath.c_str())) {
+        if (!Storage.remove(path.c_str())) {
+          LOG_ERR("FONT", "Failed to remove committed font backup: %s", path.c_str());
+          return false;
+        }
+      } else if (!Storage.rename(path.c_str(), finalPath.c_str())) {
+        LOG_ERR("FONT", "Failed to restore interrupted font backup: %s", path.c_str());
+        return false;
+      } else {
+        LOG_INF("FONT", "Restored interrupted font replacement: %s", finalPath.c_str());
+      }
+    } else if (Storage.exists(path.c_str()) && !Storage.remove(path.c_str())) {
+      LOG_ERR("FONT", "Failed to remove interrupted font download: %s", path.c_str());
+      return false;
+    }
+  }
+  return true;
+}
+
+bool recoverRoot(const char* root) {
+  HalFile rootDir = Storage.open(root);
+  if (!rootDir) return true;
+  if (!rootDir.isDirectory()) return false;
+
+  std::vector<std::string> familyNames;
+  familyNames.reserve(SdCardFontRegistry::MAX_SD_FAMILIES);
+  char nameBuffer[128];
+  while (familyNames.size() < SdCardFontRegistry::MAX_SD_FAMILIES) {
+    HalFile entry = rootDir.openNextFile();
+    if (!entry) break;
+    if (entry.isDirectory()) {
+      const size_t nameLength = entry.getName(nameBuffer, sizeof(nameBuffer));
+      entry.close();
+      if (nameLength > 0 && nameLength < sizeof(nameBuffer) && FontInstaller::isValidFamilyName(nameBuffer)) {
+        familyNames.emplace_back(nameBuffer);
+      }
+    } else {
+      entry.close();
+    }
+  }
+  rootDir.close();
+
+  bool success = true;
+  for (const auto& familyName : familyNames) {
+    if (!processInterruptedFiles(root, familyName.c_str())) success = false;
+  }
+  return success;
+}
+
+}  // namespace
 
 bool FontInstaller::isValidFamilyName(const char* name) {
   if (name == nullptr || name[0] == '\0') return false;
@@ -58,6 +171,12 @@ bool FontInstaller::isValidCpfontFilename(const char* name) {
     }
   }
   return true;
+}
+
+bool FontInstaller::recoverInterruptedInstalls() {
+  bool success = recoverRoot(SdCardFontRegistry::FONTS_DIR_HIDDEN);
+  if (!recoverRoot(SdCardFontRegistry::FONTS_DIR_VISIBLE)) success = false;
+  return success;
 }
 
 bool FontInstaller::ensureFamilyDir(const char* familyName) {
