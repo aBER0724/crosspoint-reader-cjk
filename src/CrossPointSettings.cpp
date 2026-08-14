@@ -92,6 +92,9 @@ void CrossPointSettings::toJson(JsonDocument& doc) const {
   if (sdFontFamilyName[0] != '\0') {
     doc["sdFontFamilyName"] = sdFontFamilyName;
   }
+  // Always persist the UI slot, including an empty value, so old settings can
+  // be distinguished from an explicit choice to use the built-in UI fonts.
+  doc["sdUiFontFamilyName"] = sdUiFontFamilyName;
   // Dictionary folder name — uses dynamic getter/setter in SettingsList, save manually
   if (dictionaryName[0] != '\0') {
     doc["dictionaryName"] = dictionaryName;
@@ -207,6 +210,18 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
     needsResave = true;
   } else if (storedFontFamily >= BUILTIN_FONT_COUNT) {
     needsResave = true;
+  }
+
+  // Before the UI slot existed, one SD family implicitly supplied both reader
+  // and UI glyphs. Preserve that behavior during the one-time migration.
+  if (doc["sdUiFontFamilyName"].isNull()) {
+    strncpy(sdUiFontFamilyName, sdFontFamilyName, sizeof(sdUiFontFamilyName) - 1);
+    sdUiFontFamilyName[sizeof(sdUiFontFamilyName) - 1] = '\0';
+    needsResave = true;
+  } else {
+    const char* uiFamily = doc["sdUiFontFamilyName"] | "";
+    strncpy(sdUiFontFamilyName, uiFamily, sizeof(sdUiFontFamilyName) - 1);
+    sdUiFontFamilyName[sizeof(sdUiFontFamilyName) - 1] = '\0';
   }
   // Dictionary folder name — uses dynamic getter/setter in SettingsList, load manually
   copyToField(dictionaryName, doc["dictionaryName"] | "", sizeof(dictionaryName));

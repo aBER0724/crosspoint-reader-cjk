@@ -32,11 +32,16 @@ class TextSettingsActivity final : public Activity {
  private:
   // Row indices per tab. enum class (not plain enum) so a LayoutRow can't be
   // silently confused with a StyleRow of equal value.
-  enum class LayoutRow { LineSpacing, ParaSpacing, Alignment, ScreenMargin, Count };
+  enum class LayoutRow { LineSpacing, ParaSpacing, FirstLineIndent, Alignment, ScreenMargin, Count };
   enum class StyleRow { FocusReading, Hyphenation, EmbeddedStyle, AntiAliasing, Count };
+  enum class FontTarget : uint8_t { Reader, Ui, Both };
 
   void applyFamily(int listIndex);
+  void applyFamilyToTarget(int listIndex, FontTarget target);
   void applySize(int listIndex);
+  void rebuildSizeEntries();
+  bool hasFixedExternalSize() const;
+  std::string fontRoleText(int listIndex) const;
   void confirmLayoutRow(int row);
   void confirmStyleRow(int row);
   // Applies the row at the given list index for the active tab (Confirm and tap share this).
