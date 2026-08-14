@@ -248,7 +248,11 @@ void EpubReaderActivity::onExit() {
     queueProgressSave();
   }
 
-  if (section) section->discardBuild();
+  if (section && section->isBuilding()) {
+    const uint32_t suspendStartedMs = millis();
+    section->suspendBuild();
+    LOG_DBG("ERS", "Section build suspended on exit in %u ms", millis() - suspendStartedMs);
+  }
   resetSection();
   if (pendingReadFolderMove && epub) {
     const std::string srcPath = epub->getPath();
