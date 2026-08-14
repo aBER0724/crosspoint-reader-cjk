@@ -26,6 +26,7 @@ class ParsedText {
   std::vector<bool> wordIsFocusSuffix;  // regular tail of a focus bold-prefix split
   BlockStyle blockStyle;
   bool extraParagraphSpacing;
+  bool firstLineIndent;
   bool hyphenationEnabled;
   bool focusReadingEnabled;
   bool isNaturalAlign;
@@ -62,9 +63,11 @@ class ParsedText {
 
  public:
   explicit ParsedText(const bool extraParagraphSpacing, const bool hyphenationEnabled = false,
-                      const bool focusReadingEnabled = false, const BlockStyle& blockStyle = BlockStyle())
+                      const bool focusReadingEnabled = false, const BlockStyle& blockStyle = BlockStyle(),
+                      const bool firstLineIndent = false)
       : blockStyle(blockStyle),
         extraParagraphSpacing(extraParagraphSpacing),
+        firstLineIndent(firstLineIndent),
         hyphenationEnabled(hyphenationEnabled),
         focusReadingEnabled(focusReadingEnabled),
         isNaturalAlign(false),
