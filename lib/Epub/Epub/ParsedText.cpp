@@ -475,15 +475,17 @@ int ParsedText::resolveFirstLineIndent(const bool isFirstLine, const GfxRenderer
     return 0;
   }
   if (blockStyle.textIndentDefined) {
-    if (blockStyle.textIndent < 0 || !extraParagraphSpacing) {
-      return blockStyle.textIndent;
-    }
-    return 0;
+    // Preserve structural hanging indents even when decorative indentation is disabled.
+    if (blockStyle.textIndent < 0) return blockStyle.textIndent;
+    return firstLineIndent ? blockStyle.textIndent : 0;
   }
-  if (!extraParagraphSpacing) {
-    return renderer.getSpaceWidth(fontId, EpdFontFamily::REGULAR) * 3;
-  }
-  return 0;
+  if (!firstLineIndent) return 0;
+
+  // Two ideographs match the conventional CJK paragraph indent. Fall back to
+  // six spaces for fonts without the probe glyph.
+  const int ideographWidth = renderer.getTextAdvanceX(fontId, "\xE4\xB8\x80", EpdFontFamily::REGULAR);
+  if (ideographWidth > 0) return ideographWidth * 2;
+  return renderer.getSpaceWidth(fontId, EpdFontFamily::REGULAR) * 6;
 }
 // Consumes data to minimize memory usage
 void ParsedText::layoutAndExtractLines(const GfxRenderer& renderer, const int fontId, const uint16_t viewportWidth,
