@@ -69,63 +69,16 @@ void Lyra3CoversTheme::resetSelectionBuffers() const {
   selectionBuffersUnavailable = false;
 }
 
-bool Lyra3CoversTheme::buildSelectionBuffers(GfxRenderer& renderer, const Rect coverRect,
-                                             const std::vector<RecentBook>& recentBooks) const {
-  const int recentCount = coverCount(recentBooks);
-  if (recentCount <= 0) return false;
-
-  const int tileWidth = (coverRect.width - 2 * Lyra3CoversMetrics::values.contentSidePadding) / 3;
-  const Rect tileRect{Lyra3CoversMetrics::values.contentSidePadding, coverRect.y, tileWidth, coverRect.height};
-  const size_t bufferSize = renderer.getRegionByteSize(tileRect.x, tileRect.y, tileRect.width, tileRect.height);
-  if (bufferSize == 0) return false;
-
+bool Lyra3CoversTheme::buildSelectionBuffers([[maybe_unused]] GfxRenderer& renderer,
+                                             [[maybe_unused]] const Rect coverRect,
+                                             [[maybe_unused]] const std::vector<RecentBook>& recentBooks) const {
+  // Home already keeps one compact baseline for the complete cover strip.
+  // Caching another selected copy of every tile consumes the contiguous heap
+  // Reader needs for its parser, fonts, and page buffers.
   resetSelectionBuffers();
-  selectionBuffer = static_cast<uint8_t*>(malloc(bufferSize * static_cast<size_t>(recentCount)));
-  uint8_t* scratchBuffer = static_cast<uint8_t*>(malloc(bufferSize));
-  if (!selectionBuffer || !scratchBuffer) {
-    if (scratchBuffer) free(scratchBuffer);
-    resetSelectionBuffers();
-    selectionBuffersUnavailable = true;
-    return false;
-  }
-
-  for (int i = 0; i < recentCount; ++i) {
-    const int tileX = Lyra3CoversMetrics::values.contentSidePadding + tileWidth * i;
-    if (!renderer.copyRegionToBuffer(tileX, coverRect.y, tileWidth, coverRect.height, scratchBuffer, bufferSize)) {
-      free(scratchBuffer);
-      resetSelectionBuffers();
-      selectionBuffersUnavailable = true;
-      return false;
-    }
-
-    const auto title = getCoverTitleLayout(renderer, recentBooks[i], tileWidth);
-    drawSelection(renderer, tileX, coverRect.y, tileWidth, title.selectionHeight);
-    drawCoverTitle(renderer, tileX, coverRect.y, title);
-    const bool copied = renderer.copyRegionToBuffer(tileX, coverRect.y, tileWidth, coverRect.height,
-                                                    selectionBuffer + i * bufferSize, bufferSize);
-    const bool restored =
-        renderer.copyBufferToRegion(tileX, coverRect.y, tileWidth, coverRect.height, scratchBuffer, bufferSize);
-    if (!copied || !restored) {
-      free(scratchBuffer);
-      resetSelectionBuffers();
-      selectionBuffersUnavailable = true;
-      return false;
-    }
-  }
-
-  free(scratchBuffer);
-  selectionBufferRect = tileRect;
-  selectionBufferSize = bufferSize * static_cast<size_t>(recentCount);
-  selectionTileBufferSize = bufferSize;
-  selectionBufferCount = recentCount;
-  selectionBuffersReady = true;
-#if defined(SSD1677_PROBE_DEBUG) && SSD1677_PROBE_DEBUG
-  LOG_INF("HOME", "cover-cache ready tiles=%d bytes=%u", recentCount,
-          static_cast<unsigned>(bufferSize * static_cast<size_t>(recentCount)));
-#endif
-  return true;
+  selectionBuffersUnavailable = true;
+  return false;
 }
-
 bool Lyra3CoversTheme::restoreSelectionBuffer(GfxRenderer& renderer, const int selectorIndex) const {
   if (!selectionBuffersReady || !selectionBuffer || selectorIndex < 0 || selectorIndex >= selectionBufferCount) {
     return false;
@@ -143,7 +96,9 @@ bool Lyra3CoversTheme::restoreSelectionBuffer(GfxRenderer& renderer, const int s
 
 void Lyra3CoversTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, const std::vector<RecentBook>& recentBooks,
                                            const int selectorIndex, bool& coverRendered, bool& coverBufferStored,
-                                           bool& bufferRestored, std::function<bool()> storeCoverBuffer) const {
+                                           bool& bufferRestored, std::function<bool()> storeCoverBuffer,
+                                           const std::function<bool()>& isCancelled) const {
+  if (isCancelled && isCancelled()) return;
   const int tileWidth = (rect.width - 2 * Lyra3CoversMetrics::values.contentSidePadding) / 3;
   const int tileY = rect.y;
   const int recentCount = coverCount(recentBooks);
@@ -156,6 +111,8 @@ void Lyra3CoversTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, con
     if (!coverRendered) {
       resetSelectionBuffers();
       for (int i = 0; i < recentCount; i++) {
+        if (isCancelled && isCancelled()) return;
+
         std::string coverPath = recentBooks[i].coverBmpPath;
         bool hasCover = true;
         int tileX = Lyra3CoversMetrics::values.contentSidePadding + tileWidth * i;
@@ -179,7 +136,8 @@ void Lyra3CoversTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, con
 
               renderer.drawBitmap(bitmap, tileX + hPaddingInSelection, tileY + hPaddingInSelection,
                                   tileWidth - 2 * hPaddingInSelection, Lyra3CoversMetrics::values.homeCoverHeight,
-                                  cropX);
+                                  cropX, 0, isCancelled);
+
             } else {
               hasCover = false;
             }
@@ -203,15 +161,18 @@ void Lyra3CoversTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, con
       // Store an unselected baseline so focus moves only need to restore it
       // and redraw the new selection chrome.
       for (int i = 0; i < recentCount; i++) {
+        if (isCancelled && isCancelled()) return;
         const int tileX = Lyra3CoversMetrics::values.contentSidePadding + tileWidth * i;
         const auto title = getCoverTitleLayout(renderer, recentBooks[i], tileWidth);
         drawCoverTitle(renderer, tileX, tileY, title);
       }
       coverBufferStored = storeCoverBuffer();
+
       coverRendered = coverBufferStored;  // Only consider it rendered if we successfully stored the buffer
     }
 
     if (selectorIndex >= 0 && selectorIndex < recentCount) {
+      if (isCancelled && isCancelled()) return;
       if (bufferRestored && !selectionBuffersReady && !selectionBuffersUnavailable) {
         buildSelectionBuffers(renderer, rect, recentBooks);
       }

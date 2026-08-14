@@ -28,8 +28,6 @@ class HomeActivity final : public Activity {
   bool fullRedrawRequired = true;
   // Selector index from the last completed render; used to detect menu-only moves.
   int lastRenderedSelectorIndex = -1;
-  // Home can be entered while Back is still held (e.g. leaving Settings with
-  // Back): ignore that stale release until a fresh press is seen here.
   bool backPressSeen = false;
   uint8_t* coverBuffer = nullptr;  // HomeActivity's own buffer for cover image
   size_t coverBufferSize = 0;      // Bytes allocated to coverBuffer

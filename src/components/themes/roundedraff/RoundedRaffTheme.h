@@ -82,7 +82,8 @@ class RoundedRaffTheme : public BaseTheme {
                          int& index) const override;
   void drawRecentBookCover(GfxRenderer& renderer, Rect rect, const std::vector<RecentBook>& recentBooks,
                            int selectorIndex, bool& coverRendered, bool& coverBufferStored, bool& bufferRestored,
-                           std::function<bool()> storeCoverBuffer) const override;
+                           std::function<bool()> storeCoverBuffer,
+                           const std::function<bool()>& isCancelled) const override;
   Rect getHomeMenuDirtyRect(Rect menuRect, int previousIndex, int currentIndex) const override;
   bool supportsHomeMenuRowUpdates() const override { return false; }
   void drawButtonMenu(GfxRenderer& renderer, Rect rect, int buttonCount, int selectedIndex,

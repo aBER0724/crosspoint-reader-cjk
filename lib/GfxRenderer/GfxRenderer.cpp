@@ -1803,7 +1803,9 @@ void GfxRenderer::drawIcon(const uint8_t bitmap[], const int x, const int y, con
 }
 
 void GfxRenderer::drawBitmap(const Bitmap& bitmap, const int x, const int y, const int maxWidth, const int maxHeight,
-                             const float cropX, const float cropY) const {
+                             const float cropX, const float cropY, const std::function<bool()>& isCancelled) const {
+  if (isCancelled && isCancelled()) return;
+
   if (fontCacheManager_ && fontCacheManager_->isScanning()) return;
   // Cover art and images should keep their original colors in dark mode
   skipDarkModeForImages = true;
@@ -1811,7 +1813,7 @@ void GfxRenderer::drawBitmap(const Bitmap& bitmap, const int x, const int y, con
 
   // For 1-bit bitmaps, use optimized 1-bit rendering path (no crop support for 1-bit)
   if (bitmap.is1Bit() && cropX == 0.0f && cropY == 0.0f) {
-    drawBitmap1Bit(bitmap, x, y, maxWidth, maxHeight);
+    drawBitmap1Bit(bitmap, x, y, maxWidth, maxHeight, isCancelled);
     cleanup();
     return;
   }
@@ -1863,6 +1865,11 @@ void GfxRenderer::drawBitmap(const Bitmap& bitmap, const int x, const int y, con
   }
 
   for (int bmpY = 0; bmpY < (bitmap.getHeight() - cropPixY); bmpY++) {
+    if (isCancelled && isCancelled()) {
+      cleanup();
+      return;
+    }
+
     // The BMP's (0, 0) is the bottom-left corner (if the height is positive, top-left if negative).
     // Screen's (0, 0) is the top-left corner.
     int screenY = -cropPixY + (bitmap.isTopDown() ? bmpY : bitmap.getHeight() - 1 - bmpY);
@@ -1876,6 +1883,7 @@ void GfxRenderer::drawBitmap(const Bitmap& bitmap, const int x, const int y, con
 
     if (bitmap.readNextRow(buffers.outputRow, buffers.rowBytes) != BmpReaderError::Ok) {
       LOG_ERR("GFX", "Failed to read row %d from bitmap", bmpY);
+      cleanup();
       return;
     }
 
@@ -1917,7 +1925,9 @@ void GfxRenderer::drawBitmap(const Bitmap& bitmap, const int x, const int y, con
 }
 
 void GfxRenderer::drawBitmap1Bit(const Bitmap& bitmap, const int x, const int y, const int maxWidth,
-                                 const int maxHeight) const {
+                                 const int maxHeight, const std::function<bool()>& isCancelled) const {
+  if (isCancelled && isCancelled()) return;
+
   // Cover art and images should keep their original colors in dark mode
   skipDarkModeForImages = true;
   auto cleanup = [this]() { skipDarkModeForImages = false; };
@@ -1950,9 +1960,15 @@ void GfxRenderer::drawBitmap1Bit(const Bitmap& bitmap, const int x, const int y,
   }
 
   for (int bmpY = 0; bmpY < bitmap.getHeight(); bmpY++) {
+    if (isCancelled && isCancelled()) {
+      cleanup();
+      return;
+    }
+
     // Read rows sequentially using readNextRow
     if (bitmap.readNextRow(buffers.outputRow, buffers.rowBytes) != BmpReaderError::Ok) {
       LOG_ERR("GFX", "Failed to read row %d from 1-bit bitmap", bmpY);
+      cleanup();
       return;
     }
 

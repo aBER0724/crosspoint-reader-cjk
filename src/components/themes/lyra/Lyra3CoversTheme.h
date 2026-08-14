@@ -36,7 +36,8 @@ class Lyra3CoversTheme : public LyraTheme {
   ~Lyra3CoversTheme() override { resetSelectionBuffers(); }
   void drawRecentBookCover(GfxRenderer& renderer, Rect rect, const std::vector<RecentBook>& recentBooks,
                            const int selectorIndex, bool& coverRendered, bool& coverBufferStored, bool& bufferRestored,
-                           std::function<bool()> storeCoverBuffer) const override;
+                           std::function<bool()> storeCoverBuffer,
+                           const std::function<bool()>& isCancelled) const override;
   bool supportsHomeCoverSelectionUpdates() const override { return true; }
   Rect drawHomeCoverSelectionUpdate(GfxRenderer& renderer, Rect coverRect, const std::vector<RecentBook>& recentBooks,
                                     int previousSelectorIndex, int selectorIndex) const override;
