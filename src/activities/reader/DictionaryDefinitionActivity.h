@@ -21,6 +21,7 @@ class DictionaryDefinitionActivity final : public Activity {
   void onEnter() override;
   void loop() override;
   void render(RenderLock&&) override;
+  bool needsReaderFontMemory() const override { return true; }
 
  private:
   // One wrapped display line: a byte span of `definition`. Wrapping keeps

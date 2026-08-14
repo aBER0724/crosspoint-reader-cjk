@@ -44,6 +44,10 @@ class Activity {
   virtual bool skipLoopDelay() { return false; }
   virtual bool preventAutoSleep() { return false; }
   virtual bool isReaderActivity() const { return false; }
+  // True only for activities whose foreground work needs the reader font or
+  // similarly large book-page buffers. Reader-flow UI keeps this false so it
+  // can use the independent UI glyph cache.
+  virtual bool needsReaderFontMemory() const { return false; }
   // Returns true when the activity schedules its own forced refresh.
   virtual bool handleForcedRefresh() { return false; }
   virtual bool supportsLandscape() const { return false; }
