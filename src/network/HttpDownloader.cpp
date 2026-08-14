@@ -114,6 +114,10 @@ HttpDownloader::DownloadError runGetWolf(const std::string& startUrl, const std:
       LOG_ERR("HTTP", "wolfSSL incomplete: got %zu of %zu bytes", sink.downloaded, sink.total);
       return HttpDownloader::HTTP_ERROR;
     }
+    if (http.hasContentLength() && sink.downloaded != http.getContentLength()) {
+      LOG_ERR("HTTP", "wolfSSL length mismatch: got %zu of %zu bytes", sink.downloaded, http.getContentLength());
+      return HttpDownloader::HTTP_ERROR;
+    }
     return HttpDownloader::OK;
   }
   LOG_ERR("HTTP", "too many redirects");
