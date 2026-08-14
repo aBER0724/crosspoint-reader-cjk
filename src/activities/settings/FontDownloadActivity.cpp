@@ -1,6 +1,8 @@
 #include "FontDownloadActivity.h"
 
 #include <ArduinoJson.h>
+#include <FontCacheManager.h>
+#include <FontManager.h>
 #include <GfxRenderer.h>
 #include <HalStorage.h>
 #include <I18n.h>
@@ -8,12 +10,15 @@
 #include <WiFi.h>
 #include <esp_rom_crc.h>
 
+#include <algorithm>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <limits>
 #include <utility>
 
 #include "MappedInputManager.h"
 #include "SdCardFontSystem.h"
-#include "SilentRestart.h"
 #include "activities/network/WifiSelectionActivity.h"
 #include "activities/util/ConfirmationActivity.h"
 #include "components/UITheme.h"
@@ -24,6 +29,22 @@ namespace {
 constexpr size_t MAX_MANIFEST_BYTES = 32 * 1024;
 constexpr size_t MAX_MANIFEST_FAMILIES = 32;
 constexpr size_t MAX_FILES_PER_FAMILY = 32;
+constexpr uint64_t STORAGE_RESERVE_BYTES = 8ULL * 1024ULL * 1024ULL;
+constexpr const char* PREVIEW_TMP_PATH = "/.font_preview.cpfont";
+constexpr uint8_t DEFAULT_PREVIEW_POINT_SIZE = 14;
+
+constexpr const char* PREVIEW_SAMPLE_LINES[] = {
+    "\xe9\x98\x85\xe8\xaf\xbb\xe9\xa2\x84\xe8\xa7\x88  "
+    "\xe6\xb1\x89\xe5\xad\x97\xe6\x98\x8e\xe6\x9c\x9d\xe9\xbb\x91\xe4\xbd\x93\xe6\xa5\xb7\xe4\xbd\x93",
+    "\xe7\xb9\x81\xe9\xab\x94\xe4\xb8\xad\xe6\x96\x87  "
+    "\xe9\x96\xb1\xe8\xae\x80\xe9\xa0\x90\xe8\xa6\xbd\xe5\xad\x97\xe9\xab\x94",
+    "\xe3\x81\x82\xe3\x81\x84\xe3\x81\x86\xe3\x81\x88\xe3\x81\x8a  "
+    "\xe3\x82\xa2\xe3\x82\xa4\xe3\x82\xa6\xe3\x82\xa8\xe3\x82\xaa",
+    "The quick brown fox 0123456789",
+};
+constexpr const char* PREVIEW_SAMPLE_TEXT =
+    "\xe9\x98\x85\xe8\xaf\xbb\xe9\xa2\x84\xe8\xa7\x88\xe6\xb1\x89\xe5\xad\x97\xe7\xb9\x81\xe9\xab\x94\xe4\xb8\xad\xe6"
+    "\x96\x87\xe3\x81\x82\xe3\x82\xa2The quick brown fox 0123456789";
 constexpr size_t MAX_STYLES_PER_FAMILY = 8;
 constexpr size_t MAX_BASE_URL_LENGTH = 256;
 constexpr size_t MAX_DESCRIPTION_LENGTH = 160;
@@ -56,11 +77,15 @@ void FontDownloadActivity::onEnter() {
 
 void FontDownloadActivity::onExit() {
   Activity::onExit();
+  // ActivityManager invokes onExit() while holding the rendering mutex.
+  closePreview();
+  if (Storage.exists(PREVIEW_TMP_PATH)) Storage.remove(PREVIEW_TMP_PATH);
 
   if (WiFi.getMode() != WIFI_MODE_NULL) {
     WiFi.disconnect(false);
     delay(30);
-    silentRestart();
+    WiFi.mode(WIFI_OFF);
+    delay(30);
   }
 }
 
@@ -96,6 +121,39 @@ void FontDownloadActivity::onWifiSelectionComplete(const bool success) {
 }
 
 // --- Manifest fetching ---
+bool FontDownloadActivity::parsePointSize(const char* filename, const char* familyName, uint8_t& pointSize) {
+  if (!filename || !familyName) return false;
+
+  const std::string name(filename);
+  const std::string prefix = std::string(familyName) + "_";
+  static constexpr const char* EXTENSION = ".cpfont";
+  const size_t extensionLength = strlen(EXTENSION);
+  if (name.compare(0, prefix.size(), prefix) != 0 || name.size() <= prefix.size() + extensionLength ||
+      name.compare(name.size() - extensionLength, extensionLength, EXTENSION) != 0) {
+    return false;
+  }
+
+  const std::string pointSizeText = name.substr(prefix.size(), name.size() - prefix.size() - extensionLength);
+  char* end = nullptr;
+  const unsigned long parsed = std::strtoul(pointSizeText.c_str(), &end, 10);
+  if (!end || *end != '\0' || parsed == 0 || parsed > UINT8_MAX) return false;
+
+  pointSize = static_cast<uint8_t>(parsed);
+  return true;
+}
+
+int FontDownloadActivity::defaultPreviewFileIndex(const ManifestFamily& family) const {
+  int bestIndex = 0;
+  int bestDistance = 256;
+  for (size_t i = 0; i < family.files.size(); ++i) {
+    const int distance = abs(static_cast<int>(family.files[i].pointSize) - DEFAULT_PREVIEW_POINT_SIZE);
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      bestIndex = static_cast<int>(i);
+    }
+  }
+  return bestIndex;
+}
 
 bool FontDownloadActivity::fetchAndParseManifest() {
   // Download manifest to a temp file on SD card to avoid holding both
@@ -109,9 +167,11 @@ bool FontDownloadActivity::fetchAndParseManifest() {
     return false;
   }
 
+  beginNetworkTransfer();
   const auto result = HttpDownloader::downloadToFile(
       FONT_MANIFEST_URL, MANIFEST_TMP, [this](size_t, size_t) { pollDownloadCancellation(); }, &cancelRequested_, "",
       "", [this] { return pollDownloadCancellation(); });
+  endNetworkTransfer();
   if (result == HttpDownloader::ABORTED) {
     Storage.remove(MANIFEST_TMP);
     return false;
@@ -272,6 +332,11 @@ bool FontDownloadActivity::fetchAndParseManifest() {
       file.name = fileObj["name"].as<const char*>();
       file.size = fileObj["size"].as<size_t>();
       file.crc32 = fileObj["crc32"].as<uint32_t>();
+      if (!parsePointSize(file.name.c_str(), family.name.c_str(), file.pointSize)) {
+        LOG_ERR("FONT", "Font filename does not match family/size convention: %s", file.name.c_str());
+        errorMessage_ = tr(STR_FONT_MANIFEST_INVALID);
+        return false;
+      }
       if (!FontInstaller::isValidCpfontFilename(file.name.c_str()) || file.size == 0 ||
           file.size > MAX_FONT_FILE_BYTES || file.size > std::numeric_limits<size_t>::max() - family.totalSize) {
         LOG_ERR("FONT", "Invalid file entry in manifest: %s", file.name.c_str());
@@ -286,6 +351,13 @@ bool FontDownloadActivity::fetchAndParseManifest() {
         }
       }
 
+      for (const auto& existing : family.files) {
+        if (existing.pointSize == file.pointSize) {
+          LOG_ERR("FONT", "Duplicate point size in family %s: %u", family.name.c_str(), file.pointSize);
+          errorMessage_ = tr(STR_FONT_MANIFEST_INVALID);
+          return false;
+        }
+      }
       char path[160];
       if (!FontInstaller::buildFontPath(family.name.c_str(), file.name.c_str(), path, sizeof(path))) {
         errorMessage_ = tr(STR_FONT_MANIFEST_INVALID);
@@ -295,6 +367,8 @@ bool FontDownloadActivity::fetchAndParseManifest() {
       family.totalSize += file.size;
       manifestFilenames.push_back(file.name);
       family.files.push_back(std::move(file));
+      std::sort(family.files.begin(), family.files.end(),
+                [](const ManifestFile& a, const ManifestFile& b) { return a.pointSize < b.pointSize; });
     }
 
     refreshFamilyState(family);
@@ -313,6 +387,36 @@ bool FontDownloadActivity::pollDownloadCancellation() {
     cancelRequested_ = true;
   }
   return cancelRequested_;
+}
+
+void FontDownloadActivity::beginNetworkTransfer() {
+  RenderLock lock(*this);
+  lowMemoryDownload_ = true;
+  lastProgressPercent_ = -1;
+
+  LOG_DBG("FONT", "Heap before font cache release: free=%d max=%d", ESP.getFreeHeap(), ESP.getMaxAllocHeap());
+  FontManager::getInstance().releaseGlyphCaches();
+  if (auto* cache = renderer.getFontCacheManager()) {
+    cache->clearCache();
+  }
+  LOG_DBG("FONT", "Heap before network transfer: free=%d max=%d", ESP.getFreeHeap(), ESP.getMaxAllocHeap());
+}
+
+void FontDownloadActivity::endNetworkTransfer() {
+  RenderLock lock(*this);
+  lowMemoryDownload_ = false;
+}
+
+void FontDownloadActivity::updateDownloadProgress(const size_t downloaded, const size_t total) {
+  fileProgress_ = downloaded;
+  fileTotal_ = total;
+  pollDownloadCancellation();
+
+  if (total == 0) return;
+  const int percent = static_cast<int>((static_cast<uint64_t>(downloaded) * 100U) / total);
+  if (percent < 100 && percent / 5 == lastProgressPercent_ / 5) return;
+  lastProgressPercent_ = percent;
+  requestUpdate(true);
 }
 
 void FontDownloadActivity::refreshFamilyState(ManifestFamily& family) {
@@ -445,10 +549,146 @@ bool FontDownloadActivity::computeFileCrc32(const char* path, uint32_t& outCrc) 
   outCrc = crc;
   return true;
 }
+void FontDownloadActivity::closePreview() {
+  if (previewFontId_ != 0) {
+    sdFontSystem.endPreview(renderer);
+    previewFontId_ = 0;
+  }
+  if (Storage.exists(PREVIEW_TMP_PATH) && !Storage.remove(PREVIEW_TMP_PATH)) {
+    LOG_ERR("FONT", "Failed to remove preview file");
+  }
+}
+
+void FontDownloadActivity::returnToFamilyList() {
+  RenderLock lock(*this);
+  closePreview();
+  state_ = FAMILY_LIST;
+  errorAction_ = ErrorAction::None;
+}
+
+void FontDownloadActivity::downloadPreview(int familyIndex, int fileIndex) {
+  if (familyIndex < 0 || familyIndex >= static_cast<int>(families_.size())) return;
+  auto& family = families_[familyIndex];
+  if (fileIndex < 0 || fileIndex >= static_cast<int>(family.files.size())) return;
+  const auto& file = family.files[fileIndex];
+
+  {
+    RenderLock lock(*this);
+    closePreview();
+    state_ = DOWNLOADING_PREVIEW;
+    previewFamilyIndex_ = familyIndex;
+    previewFileIndex_ = fileIndex;
+    fileProgress_ = 0;
+    fileTotal_ = file.size;
+    cancelRequested_ = false;
+    errorAction_ = ErrorAction::Preview;
+  }
+  requestUpdateAndWait();
+
+  auto failPreview = [this, &file](const char* message, bool cancelled) {
+    if (Storage.exists(PREVIEW_TMP_PATH)) Storage.remove(PREVIEW_TMP_PATH);
+    RenderLock lock(*this);
+    if (cancelled) {
+      state_ = FAMILY_LIST;
+      errorAction_ = ErrorAction::None;
+    } else {
+      state_ = ERROR;
+      errorMessage_ = std::string(message) + ": " + file.name;
+    }
+  };
+
+  const uint64_t requiredBytes = static_cast<uint64_t>(file.size) + STORAGE_RESERVE_BYTES;
+  if (Storage.freeBytes() < requiredBytes) {
+    failPreview(tr(STR_FONT_INSUFFICIENT_STORAGE), false);
+    requestUpdateAndWait();
+    return;
+  }
+
+  if (Storage.exists(PREVIEW_TMP_PATH) && !Storage.remove(PREVIEW_TMP_PATH)) {
+    failPreview(tr(STR_FONT_CLEANUP_FAILED), false);
+    requestUpdateAndWait();
+    return;
+  }
+
+  beginNetworkTransfer();
+  const auto result = HttpDownloader::downloadToFile(
+      baseUrl_ + file.name, PREVIEW_TMP_PATH,
+      [this](size_t downloaded, size_t total) { updateDownloadProgress(downloaded, total); }, &cancelRequested_, "", "",
+      [this] { return pollDownloadCancellation(); });
+  endNetworkTransfer();
+  if (result == HttpDownloader::ABORTED) {
+    failPreview("", true);
+    requestUpdateAndWait();
+    return;
+  }
+  if (result != HttpDownloader::OK) {
+    failPreview(tr(STR_DOWNLOAD_FAILED), false);
+    requestUpdateAndWait();
+    return;
+  }
+
+  HalFile downloadedFile;
+  if (!Storage.openFileForRead("FONT", PREVIEW_TMP_PATH, downloadedFile)) {
+    failPreview(tr(STR_DOWNLOAD_FAILED), false);
+    requestUpdateAndWait();
+    return;
+  }
+  const size_t actualSize = downloadedFile.fileSize();
+  downloadedFile.close();
+  if (actualSize != file.size) {
+    failPreview(tr(STR_FONT_FILE_SIZE_MISMATCH), false);
+    requestUpdateAndWait();
+    return;
+  }
+
+  uint32_t actualCrc = 0;
+  if (!computeFileCrc32(PREVIEW_TMP_PATH, actualCrc)) {
+    failPreview(tr(STR_FONT_CHECKSUM_FAILED), false);
+    requestUpdateAndWait();
+    return;
+  }
+  if (actualCrc != file.crc32) {
+    failPreview(tr(STR_FONT_CHECKSUM_MISMATCH), false);
+    requestUpdateAndWait();
+    return;
+  }
+  if (!fontInstaller_.validateCpfontFile(PREVIEW_TMP_PATH)) {
+    failPreview(tr(STR_FONT_INVALID_FILE), false);
+    requestUpdateAndWait();
+    return;
+  }
+
+  {
+    RenderLock lock(*this);
+    previewFontId_ = sdFontSystem.beginPreview(renderer, PREVIEW_TMP_PATH, family.name.c_str(), file.pointSize);
+    if (previewFontId_ == 0) {
+      if (Storage.exists(PREVIEW_TMP_PATH)) Storage.remove(PREVIEW_TMP_PATH);
+      state_ = ERROR;
+      errorMessage_ = std::string(tr(STR_FONT_INVALID_FILE)) + ": " + file.name;
+    } else {
+      if (auto* cache = renderer.getFontCacheManager()) {
+        cache->prewarmCache(previewFontId_, PREVIEW_SAMPLE_TEXT, 0x01);
+      }
+      state_ = FONT_PREVIEW;
+    }
+  }
+  requestUpdateAndWait();
+}
+
+void FontDownloadActivity::installPreviewedFamily() {
+  if (previewFamilyIndex_ < 0 || previewFamilyIndex_ >= static_cast<int>(families_.size())) return;
+  const int familyIndex = previewFamilyIndex_;
+  {
+    RenderLock lock(*this);
+    closePreview();
+  }
+  currentFileIndex_ = 0;
+  currentFileTotal_ = families_[familyIndex].files.size();
+  downloadFamily(families_[familyIndex]);
+  requestUpdateAndWait();
+}
 
 void FontDownloadActivity::downloadFamily(ManifestFamily& family) {
-  static constexpr uint64_t STORAGE_RESERVE_BYTES = 8ULL * 1024ULL * 1024ULL;
-
   struct FileTransaction {
     std::string finalPath;
     std::string partPath;
@@ -464,6 +704,7 @@ void FontDownloadActivity::downloadFamily(ManifestFamily& family) {
     fileProgress_ = 0;
     fileTotal_ = 0;
     cancelRequested_ = false;
+    errorAction_ = ErrorAction::Install;
   }
   requestUpdateAndWait();
 
@@ -571,15 +812,12 @@ void FontDownloadActivity::downloadFamily(ManifestFamily& family) {
 
     std::string url = baseUrl_ + file.name;
 
+    beginNetworkTransfer();
     auto result = HttpDownloader::downloadToFile(
         url, current.partPath.c_str(),
-        [this](size_t downloaded, size_t total) {
-          fileProgress_ = downloaded;
-          fileTotal_ = total;
-          pollDownloadCancellation();
-          requestUpdate(true);
-        },
-        &cancelRequested_, "", "", [this] { return pollDownloadCancellation(); });
+        [this](size_t downloaded, size_t total) { updateDownloadProgress(downloaded, total); }, &cancelRequested_, "",
+        "", [this] { return pollDownloadCancellation(); });
+    endNetworkTransfer();
 
     if (result == HttpDownloader::ABORTED) {
       failTransaction("", true);
@@ -669,6 +907,7 @@ void FontDownloadActivity::downloadFamily(ManifestFamily& family) {
     RenderLock lock(*this);
     if (cleanupSucceeded) {
       state_ = COMPLETE;
+      errorAction_ = ErrorAction::None;
     } else {
       state_ = ERROR;
       errorMessage_ = tr(STR_FONT_CLEANUP_FAILED);
@@ -742,11 +981,10 @@ void FontDownloadActivity::loop() {
         }
         updateAll();
       } else {
-        auto& family = families_[familyIndexFromList(selectedIndex_)];
+        const int familyIndex = familyIndexFromList(selectedIndex_);
+        auto& family = families_[familyIndex];
         if (!family.installed || family.hasUpdate) {
-          currentFileIndex_ = 0;
-          currentFileTotal_ = family.files.size();
-          downloadFamily(family);
+          downloadPreview(familyIndex, defaultPreviewFileIndex(family));
         } else {
           promptDeleteSelectedFamily();
           return;
@@ -815,6 +1053,51 @@ void FontDownloadActivity::loop() {
       activateSelected();
       return;
     }
+  } else if (state_ == FONT_PREVIEW) {
+    if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
+      returnToFamilyList();
+      requestUpdate();
+      return;
+    }
+
+    if (mappedInput.wasPressed(MappedInputManager::Button::Confirm)) {
+      installPreviewedFamily();
+      return;
+    }
+
+    if (previewFamilyIndex_ >= 0 && previewFamilyIndex_ < static_cast<int>(families_.size())) {
+      const int fileCount = static_cast<int>(families_[previewFamilyIndex_].files.size());
+      if (fileCount > 0) {
+        auto changePreviewFile = [this, fileCount](const int newIndex) {
+          if (newIndex != previewFileIndex_) {
+            downloadPreview(previewFamilyIndex_, newIndex);
+          }
+        };
+
+        const auto swipe = mappedInput.wasSwipe();
+        if (swipe == MappedInputManager::SwipeDir::Up) {
+          changePreviewFile(ButtonNavigator::previousIndex(previewFileIndex_, fileCount));
+          return;
+        }
+        if (swipe == MappedInputManager::SwipeDir::Down) {
+          changePreviewFile(ButtonNavigator::nextIndex(previewFileIndex_, fileCount));
+          return;
+        }
+
+        buttonNavigator_.onPreviousRelease([this, changePreviewFile, fileCount] {
+          changePreviewFile(ButtonNavigator::previousIndex(previewFileIndex_, fileCount));
+        });
+        buttonNavigator_.onNextRelease([this, changePreviewFile, fileCount] {
+          changePreviewFile(ButtonNavigator::nextIndex(previewFileIndex_, fileCount));
+        });
+        buttonNavigator_.onPreviousContinuous([this, changePreviewFile, fileCount] {
+          changePreviewFile(ButtonNavigator::previousIndex(previewFileIndex_, fileCount));
+        });
+        buttonNavigator_.onNextContinuous([this, changePreviewFile, fileCount] {
+          changePreviewFile(ButtonNavigator::nextIndex(previewFileIndex_, fileCount));
+        });
+      }
+    }
   } else if (state_ == COMPLETE) {
     int x = 0;
     int y = 0;
@@ -828,38 +1111,49 @@ void FontDownloadActivity::loop() {
     }
   } else if (state_ == ERROR) {
     if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
+      returnToFamilyList();
+      requestUpdate();
+      return;
+    }
+
+    auto retry = [this] {
+      switch (errorAction_) {
+        case ErrorAction::Preview:
+          if (previewFamilyIndex_ >= 0 && previewFamilyIndex_ < static_cast<int>(families_.size())) {
+            const auto& family = families_[previewFamilyIndex_];
+            if (previewFileIndex_ >= 0 && previewFileIndex_ < static_cast<int>(family.files.size())) {
+              downloadPreview(previewFamilyIndex_, previewFileIndex_);
+              return;
+            }
+          }
+          break;
+        case ErrorAction::Install:
+          if (downloadingFamilyIndex_ >= 0 && downloadingFamilyIndex_ < static_cast<int>(families_.size())) {
+            downloadFamily(families_[downloadingFamilyIndex_]);
+            requestUpdateAndWait();
+            return;
+          }
+          break;
+        case ErrorAction::None:
+          break;
+      }
       {
         RenderLock lock(*this);
         state_ = FAMILY_LIST;
+        errorAction_ = ErrorAction::None;
       }
       requestUpdate();
-    } else if (mappedInput.wasPressed(MappedInputManager::Button::Confirm)) {
-      if (downloadingFamilyIndex_ >= 0 && downloadingFamilyIndex_ < static_cast<int>(families_.size())) {
-        downloadFamily(families_[downloadingFamilyIndex_]);
-        requestUpdateAndWait();
-        return;
-      } else {
-        {
-          RenderLock lock(*this);
-          state_ = FAMILY_LIST;
-        }
-        requestUpdate();
-      }
-    } else {
-      int x = 0;
-      int y = 0;
-      if (mappedInput.wasScreenTapped(x, y)) {
-        if (downloadingFamilyIndex_ >= 0 && downloadingFamilyIndex_ < static_cast<int>(families_.size())) {
-          downloadFamily(families_[downloadingFamilyIndex_]);
-          requestUpdateAndWait();
-          return;
-        }
-        {
-          RenderLock lock(*this);
-          state_ = FAMILY_LIST;
-        }
-        requestUpdate();
-      }
+    };
+
+    if (mappedInput.wasPressed(MappedInputManager::Button::Confirm)) {
+      retry();
+      return;
+    }
+    int x = 0;
+    int y = 0;
+    if (mappedInput.wasScreenTapped(x, y)) {
+      retry();
+      return;
     }
   }
 }
@@ -879,6 +1173,11 @@ std::string FontDownloadActivity::formatSize(size_t bytes) {
 }
 
 void FontDownloadActivity::render(RenderLock&&) {
+  if (lowMemoryDownload_ && (state_ == DOWNLOADING_PREVIEW || state_ == DOWNLOADING)) {
+    renderLowMemoryProgress();
+    return;
+  }
+
   const auto& metrics = UITheme::getInstance().getMetrics();
   const auto pageWidth = renderer.getScreenWidth();
   const auto pageHeight = renderer.getScreenHeight();
@@ -890,6 +1189,7 @@ void FontDownloadActivity::render(RenderLock&&) {
   const auto lineHeight = renderer.getLineHeight(UI_10_FONT_ID);
   const auto contentTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
   const auto centerY = (pageHeight - lineHeight) / 2;
+  downloadProgressBarY_ = centerY + metrics.verticalSpacing;
 
   if (state_ == LOADING_MANIFEST) {
     renderer.drawCenteredText(UI_10_FONT_ID, centerY, tr(STR_LOADING_FONT_LIST));
@@ -932,12 +1232,65 @@ void FontDownloadActivity::render(RenderLock&&) {
           });
 
       const auto labels = mappedInput.mapLabels(tr(STR_BACK),
-                                                isSelectedFamilyDeletable()      ? tr(STR_DELETE)
-                                                : isUpdateAllRow(selectedIndex_) ? tr(STR_UPDATE)
-                                                                                 : tr(STR_DOWNLOAD),
+                                                isSelectedFamilyDeletable()        ? tr(STR_DELETE)
+                                                : isDownloadAllRow(selectedIndex_) ? tr(STR_DOWNLOAD)
+                                                : isUpdateAllRow(selectedIndex_)   ? tr(STR_UPDATE)
+                                                                                   : tr(STR_PREVIEW),
                                                 tr(STR_DIR_UP), tr(STR_DIR_DOWN));
       GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
     }
+  } else if (state_ == DOWNLOADING_PREVIEW) {
+    std::string statusText = tr(STR_DOWNLOADING);
+    if (previewFamilyIndex_ >= 0 && previewFamilyIndex_ < static_cast<int>(families_.size())) {
+      const auto& family = families_[previewFamilyIndex_];
+      statusText += " " + family.name;
+      if (previewFileIndex_ >= 0 && previewFileIndex_ < static_cast<int>(family.files.size())) {
+        statusText += " " + std::to_string(family.files[previewFileIndex_].pointSize) + " pt";
+      }
+    }
+    renderer.drawCenteredText(UI_10_FONT_ID, centerY - lineHeight, statusText.c_str());
+
+    float progress = 0;
+    if (fileTotal_ > 0) {
+      progress = static_cast<float>(fileProgress_) / static_cast<float>(fileTotal_);
+    }
+
+    const int barY = downloadProgressBarY_;
+    GUI.drawProgressBar(
+        renderer,
+        Rect{metrics.contentSidePadding, barY, pageWidth - metrics.contentSidePadding * 2, metrics.progressBarHeight},
+        static_cast<int>(progress * 100), 100);
+
+    const auto labels = mappedInput.mapLabels(tr(STR_CANCEL), "", "", "");
+    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+  } else if (state_ == FONT_PREVIEW) {
+    if (previewFamilyIndex_ >= 0 && previewFamilyIndex_ < static_cast<int>(families_.size())) {
+      const auto& family = families_[previewFamilyIndex_];
+      if (previewFileIndex_ >= 0 && previewFileIndex_ < static_cast<int>(family.files.size())) {
+        const auto& file = family.files[previewFileIndex_];
+        char label[160];
+        snprintf(label, sizeof(label), "%s %u pt", family.name.c_str(), static_cast<unsigned>(file.pointSize));
+        const auto labelText = renderer.truncatedText(UI_10_FONT_ID, label, pageWidth - 2 * metrics.contentSidePadding);
+        renderer.drawText(UI_10_FONT_ID, metrics.contentSidePadding, contentTop, labelText.c_str());
+
+        const int sampleFontId = previewFontId_ != 0 ? previewFontId_ : UI_10_FONT_ID;
+        const int sampleLineHeight = renderer.getLineHeight(sampleFontId);
+        const int maxY = pageHeight - metrics.buttonHintsHeight - metrics.verticalSpacing;
+        int y = contentTop + lineHeight;
+        for (const char* sample : PREVIEW_SAMPLE_LINES) {
+          if (y + sampleLineHeight > maxY) break;
+          const auto text = renderer.truncatedText(sampleFontId, sample, pageWidth - 2 * metrics.contentSidePadding);
+          renderer.drawText(sampleFontId, metrics.contentSidePadding, y, text.c_str());
+          y += sampleLineHeight;
+        }
+      }
+    }
+    const bool previewHasUpdate = previewFamilyIndex_ >= 0 &&
+                                  previewFamilyIndex_ < static_cast<int>(families_.size()) &&
+                                  families_[previewFamilyIndex_].hasUpdate;
+    const auto labels = mappedInput.mapLabels(tr(STR_BACK), previewHasUpdate ? tr(STR_UPDATE) : tr(STR_DOWNLOAD),
+                                              tr(STR_DIR_UP), tr(STR_DIR_DOWN));
+    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
   } else if (state_ == DOWNLOADING) {
     const auto& family = families_[downloadingFamilyIndex_];
 
@@ -950,7 +1303,7 @@ void FontDownloadActivity::render(RenderLock&&) {
       progress = static_cast<float>(fileProgress_) / static_cast<float>(fileTotal_);
     }
 
-    int barY = centerY + metrics.verticalSpacing;
+    const int barY = downloadProgressBarY_;
     GUI.drawProgressBar(
         renderer,
         Rect{metrics.contentSidePadding, barY, pageWidth - metrics.contentSidePadding * 2, metrics.progressBarHeight},
@@ -972,5 +1325,32 @@ void FontDownloadActivity::render(RenderLock&&) {
     GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
   }
 
-  renderer.displayBuffer();
+  if (renderer.isDarkMode()) {
+    renderer.displayBufferDarkRedrive();
+  } else {
+    renderer.displayBuffer();
+  }
+}
+
+void FontDownloadActivity::renderLowMemoryProgress() {
+  if (fileTotal_ == 0) return;
+
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const int pageWidth = renderer.getScreenWidth();
+  const Rect barRect{metrics.contentSidePadding, downloadProgressBarY_, pageWidth - metrics.contentSidePadding * 2,
+                     metrics.progressBarHeight};
+  const int percent = static_cast<int>((static_cast<uint64_t>(fileProgress_) * 100U) / fileTotal_);
+
+  renderer.fillRect(barRect.x, barRect.y, barRect.width, barRect.height, false);
+  renderer.drawRect(barRect.x, barRect.y, barRect.width, barRect.height);
+  const int fillWidth = (barRect.width - 4) * percent / 100;
+  if (fillWidth > 0) {
+    renderer.fillRect(barRect.x + 2, barRect.y + 2, fillWidth, barRect.height - 4);
+  }
+  renderer.setPartialUpdateRect(barRect.x, barRect.y, barRect.width, barRect.height);
+  if (renderer.isDarkMode()) {
+    renderer.displayBufferDarkRedrive();
+  } else {
+    renderer.displayBuffer();
+  }
 }

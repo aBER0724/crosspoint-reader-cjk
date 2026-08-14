@@ -23,6 +23,14 @@ class SdCardFontSystem {
   /// Also re-discovers if the registry has been marked dirty (e.g. by web upload).
   void ensureLoaded(GfxRenderer& renderer);
 
+  /// Temporarily replace resident fonts with one exact-size .cpfont for an
+  /// online preview. The caller must hold RenderLock while calling this.
+  int beginPreview(GfxRenderer& renderer, const char* filePath, const char* familyName, uint8_t pointSize);
+
+  /// End a temporary preview and restore the configured reader/UI fonts.
+  /// The caller must hold RenderLock while calling this.
+  void endPreview(GfxRenderer& renderer);
+
   /// Resolve an SD card font ID from family name + fontSize enum.
   /// Returns 0 if not found. Used by CrossPointSettings::getReaderFontId().
   int resolveFontId(const char* familyName, uint8_t fontSizeEnum) const;
@@ -59,6 +67,7 @@ class SdCardFontSystem {
 
   SdCardFontRegistry registry_;
   SdCardFontManager manager_;
+  bool previewActive_ = false;
   std::string loadedUiFamilyName_;
   std::atomic<bool> registryDirty_{false};
   std::atomic<bool> residentFontsDirty_{false};
