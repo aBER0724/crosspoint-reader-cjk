@@ -5,6 +5,7 @@
 #include <WebServer.h>
 #include <WebSocketsServer.h>
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -56,12 +57,17 @@ class CrossPointWebServer {
   struct FontUploadState {
     FsFile file;
     std::string familyName;
-    std::string filePath;
+    std::string finalPath;
+    std::string tempPath;
+    std::string backupPath;
     bool valid = false;
     bool magicChecked = false;
     size_t bytesWritten = 0;
+    std::array<uint8_t, 8> magic{};
+    size_t magicBytes = 0;
 
     static constexpr size_t BUFFER_SIZE = 4096;
+    static constexpr size_t MAX_FILE_SIZE = 256ULL * 1024ULL * 1024ULL;
     std::vector<uint8_t> buffer;
     size_t bufferPos = 0;
 

@@ -9,6 +9,9 @@
 /// Handles directory creation, file validation, deletion, and registry refresh.
 class FontInstaller {
  public:
+  static constexpr size_t MAX_FAMILY_NAME_LENGTH = 48;
+  static constexpr size_t MAX_CPFONT_FILENAME_LENGTH = 80;
+
   enum class Error {
     OK,
     INVALID_FAMILY_NAME,
@@ -39,7 +42,8 @@ class FontInstaller {
   /// Build the full SD path for a font file.
   /// Writes "/<root>/<family>/<filename>" to outBuf, choosing <root> the same
   /// way ensureFamilyDir does (existing install dir, else default-write root).
-  static void buildFontPath(const char* family, const char* filename, char* outBuf, size_t outBufSize);
+  /// Returns false when either name is invalid or the path does not fit.
+  static bool buildFontPath(const char* family, const char* filename, char* outBuf, size_t outBufSize);
 
   /// Delete a family directory and all .cpfont files in it.
   /// If the deleted family is the active reader font, clears the setting.

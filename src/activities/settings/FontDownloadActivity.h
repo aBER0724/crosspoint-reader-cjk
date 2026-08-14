@@ -89,6 +89,8 @@ class FontDownloadActivity : public Activity {
 
   void onWifiSelectionComplete(bool success);
   bool fetchAndParseManifest();
+  bool pollDownloadCancellation();
+  void refreshFamilyState(ManifestFamily& family);
   void downloadFamily(ManifestFamily& family);
   void downloadAll();
   void updateAll();

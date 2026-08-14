@@ -55,6 +55,7 @@ void SdCardFontSystem::begin(GfxRenderer& renderer) {
 
 void SdCardFontSystem::ensureLoaded(GfxRenderer& renderer) {
   const bool registryWasDirty = registryDirty_.exchange(false, std::memory_order_acquire);
+  const bool reloadRequested = residentFontsDirty_.exchange(false, std::memory_order_acquire);
   if (registryWasDirty) {
     LOG_DBG("SDFS", "Registry dirty - re-discovering fonts");
     registry_.discover();
@@ -92,9 +93,9 @@ void SdCardFontSystem::ensureLoaded(GfxRenderer& renderer) {
   }
 
   const uint8_t wantedReaderPointSize = readerFile ? readerFile->pointSize : 0;
-  const bool configurationMatches =
-      !registryWasDirty && manager_.currentFamilyName() == wantedReader &&
-      manager_.currentPointSize() == wantedReaderPointSize && loadedUiFamilyName_ == wantedUi;
+  const bool configurationMatches = !reloadRequested && manager_.currentFamilyName() == wantedReader &&
+                                    manager_.currentPointSize() == wantedReaderPointSize &&
+                                    loadedUiFamilyName_ == wantedUi;
   if (configurationMatches) {
     if (settingsChanged) SETTINGS.saveToFile();
     return;
@@ -105,8 +106,7 @@ void SdCardFontSystem::ensureLoaded(GfxRenderer& renderer) {
 
   if (readerFamily) {
     if (manager_.loadFamily(*readerFamily, renderer, sizeEnum)) {
-      LOG_DBG("SDFS", "Loaded reader font family: %s (%u pt)", wantedReader.c_str(),
-              manager_.currentPointSize());
+      LOG_DBG("SDFS", "Loaded reader font family: %s (%u pt)", wantedReader.c_str(), manager_.currentPointSize());
     } else {
       LOG_ERR("SDFS", "Failed to load reader font family: %s (clearing)", wantedReader.c_str());
       SETTINGS.sdFontFamilyName[0] = '\0';
