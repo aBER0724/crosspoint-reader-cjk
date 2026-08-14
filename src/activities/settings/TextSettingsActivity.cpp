@@ -331,7 +331,6 @@ void TextSettingsActivity::applyFamily(int listIndex) {
   bool isUi = false;
   if (fonts_[listIndex].isBuiltin) {
     isReader = SETTINGS.sdFontFamilyName[0] == '\0' && SETTINGS.fontFamily == fonts_[listIndex].settingIndex;
-    isUi = SETTINGS.sdUiFontFamilyName[0] == '\0';
   } else {
     if (!registry_) return;
     const int sdIndex = fonts_[listIndex].settingIndex - CrossPointSettings::BUILTIN_FONT_COUNT;
@@ -380,9 +379,9 @@ void TextSettingsActivity::applyFamilyToTarget(int listIndex, FontTarget target)
     return;
   }
 
+  sdFontSystem.ensureLoaded(renderer);
   currentFamilyIndex_ = findCurrentFontIndex(registry_, SETTINGS.sdFontFamilyName, SETTINGS.fontFamily);
   rebuildSizeEntries();
-  sdFontSystem.ensureLoaded(renderer);
 }
 
 std::string TextSettingsActivity::fontRoleText(int listIndex) const {
@@ -391,10 +390,7 @@ std::string TextSettingsActivity::fontRoleText(int listIndex) const {
   const auto& font = fonts_[listIndex];
   if (font.isBuiltin) {
     const bool isReader = SETTINGS.sdFontFamilyName[0] == '\0' && SETTINGS.fontFamily == font.settingIndex;
-    if (!isReader) return "";
-
-    const bool isUi = SETTINGS.sdUiFontFamilyName[0] == '\0';
-    return isUi ? tr(STR_READER_AND_UI) : tr(STR_EXT_READER_FONT);
+    return isReader ? tr(STR_EXT_READER_FONT) : "";
   }
 
   if (!registry_) return "";
