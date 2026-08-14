@@ -1,5 +1,6 @@
 #include "TextSettingsActivity.h"
 
+#include <FontManager.h>
 #include <GfxRenderer.h>
 #include <I18n.h>
 
@@ -379,7 +380,11 @@ void TextSettingsActivity::applyFamilyToTarget(int listIndex, FontTarget target)
     return;
   }
 
+  const bool targetsReader = target == FontTarget::Reader || target == FontTarget::Both;
+  const bool targetsUi = target == FontTarget::Ui || target == FontTarget::Both;
+  FontManager::getInstance().clearSelections(targetsReader, targetsUi);
   sdFontSystem.ensureLoaded(renderer);
+  SETTINGS.saveToFile();
   currentFamilyIndex_ = findCurrentFontIndex(registry_, SETTINGS.sdFontFamilyName, SETTINGS.fontFamily);
   rebuildSizeEntries();
 }

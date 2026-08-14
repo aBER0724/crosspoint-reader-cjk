@@ -61,6 +61,12 @@ class FontManager {
   void selectUiFont(int index);
 
   /**
+   * Clear legacy font slots after an explicit selection in Text Settings.
+   * Unselected slots remain active for backward compatibility.
+   */
+  void clearSelections(bool reader, bool ui);
+
+  /**
    * Temporarily load reader font without saving settings.
    */
   bool previewFont(int index);

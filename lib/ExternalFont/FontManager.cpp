@@ -148,6 +148,29 @@ void FontManager::selectUiFont(int index) {
   saveSettings();
 }
 
+void FontManager::clearSelections(const bool reader, const bool ui) {
+  if ((!reader || _selectedIndex < 0) && (!ui || _selectedUiIndex < 0)) {
+    return;
+  }
+
+  if (reader) _selectedIndex = -1;
+  if (ui) _selectedUiIndex = -1;
+
+  if (_selectedIndex >= 0) {
+    loadSelectedFont();
+  } else {
+    _activeFont.unload();
+  }
+
+  if (_selectedUiIndex >= 0) {
+    loadSelectedUiFont();
+  } else {
+    _activeUiFont.unload();
+  }
+
+  saveSettings();
+}
+
 bool FontManager::previewFont(int index) {
   _selectedIndex = index;
 
