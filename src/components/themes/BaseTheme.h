@@ -219,7 +219,8 @@ class BaseTheme {
                                  int& index) const;
   virtual void drawRecentBookCover(GfxRenderer& renderer, Rect rect, const std::vector<RecentBook>& recentBooks,
                                    const int selectorIndex, bool& coverRendered, bool& coverBufferStored,
-                                   bool& bufferRestored, std::function<bool()> storeCoverBuffer) const;
+                                   bool& bufferRestored, std::function<bool()> storeCoverBuffer,
+                                   const std::function<bool()>& isCancelled = nullptr) const;
   // Bounds that must be refreshed when home-menu selection changes. Themes
   // whose menu layout is not row-stable can safely retain the whole menu rect.
   virtual Rect getHomeMenuDirtyRect(Rect menuRect, int previousIndex, int currentIndex) const;

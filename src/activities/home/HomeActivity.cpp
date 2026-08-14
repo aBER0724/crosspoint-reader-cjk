@@ -91,60 +91,18 @@ void HomeActivity::loadRecentBooks(int maxBooks) {
   }
 }
 
-void HomeActivity::loadNextRecentCover(int coverHeight) {
-  // The first frame intentionally uses an empty-cover placeholder. Once the
-  // user has been idle, repaint existing thumbnails before any potentially
-  // expensive cache generation below.
-  if (deferRecentCoverDraw) {
-    deferRecentCoverDraw = false;
-    coverRendered = false;
-    fullRedrawRequired = true;
-    requestUpdate();
-    return;
-  }
-
-  // Generate at most one missing cover per call so home navigation stays responsive
-  // even after thumb_v2 cache misses force mass regeneration.
-  while (nextRecentCoverIndex < recentBooks.size()) {
-    RecentBook& book = recentBooks[nextRecentCoverIndex++];
-    if (book.coverBmpPath.empty()) {
-      continue;
-    }
-
-    const std::string coverPath = UITheme::getCoverThumbPath(book.coverBmpPath, coverHeight);
-    if (Storage.exists(coverPath.c_str())) {
-      continue;
-    }
-
-    bool generated = false;
-    if (FsHelpers::hasEpubExtension(book.path)) {
-      Epub epub(book.path, "/.crosspoint");
-      // Skip CSS; metadata/cover only.
-      if (epub.load(false, true)) {
-        generated = epub.generateThumbBmp(coverHeight);
-      }
-    } else if (FsHelpers::hasXtcExtension(book.path)) {
-      Xtc xtc(book.path, "/.crosspoint");
-      if (xtc.load()) {
-        generated = xtc.generateThumbBmp(coverHeight);
-      }
-    }
-
-    if (!generated) {
-      RECENT_BOOKS.updateBook(book.path, book.title, book.author, "");
-      book.coverBmpPath = "";
-    }
-
-    coverRendered = false;
-    fullRedrawRequired = true;
-    requestUpdate();
-    return;
-  }
-
+void HomeActivity::loadNextRecentCover([[maybe_unused]] int coverHeight) {
+  const bool redrawRequired = deferRecentCoverDraw;
+  deferRecentCoverDraw = false;
+  nextRecentCoverIndex = recentBooks.size();
   recentsLoaded = true;
   recentsLoading = false;
+  if (redrawRequired) {
+    coverRendered = false;
+    fullRedrawRequired = true;
+    requestUpdate();
+  }
 }
-
 void HomeActivity::onEnter() {
   Activity::onEnter();
 
@@ -165,6 +123,7 @@ void HomeActivity::onEnter() {
   coverRendered = false;
   coverBufferStored = false;
   deferRecentCoverDraw = true;
+  backPressSeen = false;
 
   // Trigger first update
   requestUpdate();
@@ -225,7 +184,9 @@ void HomeActivity::loop() {
   const auto& metrics = UITheme::getInstance().getMetrics();
 
   auto activateSelection = [this] {
+    LOG_DBG("HOME", "Activating selection %d (recents=%zu)", selectorIndex, recentBooks.size());
     if (selectorIndex < recentBooks.size()) {
+      LOG_DBG("HOME", "Opening recent book: %s", recentBooks[selectorIndex].path.c_str());
       onSelectBook(recentBooks[selectorIndex].path);
       return;
     }
@@ -262,6 +223,23 @@ void HomeActivity::loop() {
     nextRecentCoverLoadAt = millis() + RECENT_COVER_LOAD_IDLE_MS;
     requestUpdate();
   });
+
+  const bool confirmPressed = mappedInput.wasPressed(MappedInputManager::Button::Confirm);
+  const bool confirmReleased = mappedInput.wasReleased(MappedInputManager::Button::Confirm);
+
+  // Home cover/title rendering runs on the render task. Invalidate it as soon
+  // as Confirm goes down. Activation stays release-driven so it remains
+  // compatible with short clicks whose press edge was captured while the app
+  // task was busy.
+  if (confirmPressed) {
+    activityManager.cancelCurrentRender();
+    nextRecentCoverLoadAt = millis() + RECENT_COVER_LOAD_IDLE_MS;
+    if (!confirmReleased) return;
+  }
+  if (confirmReleased) {
+    activateSelection();
+    return;
+  }
 
   const auto swipe = mappedInput.wasSwipe();
   if (swipe == MappedInputManager::SwipeDir::Up) {
@@ -331,11 +309,6 @@ void HomeActivity::loop() {
     return;
   }
 
-  if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
-    activateSelection();
-    return;
-  }
-
   if (firstRenderDone && !recentsLoaded && !recentsLoading && millis() >= nextRecentCoverLoadAt) {
     recentsLoading = true;
     loadNextRecentCover(metrics.homeCoverHeight);
@@ -344,7 +317,7 @@ void HomeActivity::loop() {
   }
 }
 
-void HomeActivity::render(RenderLock&&) {
+void HomeActivity::render(RenderLock&& lock) {
   const auto& metrics = UITheme::getInstance().getMetrics();
   const auto pageWidth = renderer.getScreenWidth();
   const auto pageHeight = renderer.getScreenHeight();
@@ -449,22 +422,25 @@ void HomeActivity::render(RenderLock&&) {
     coverRectW = pageWidth;
     coverRectH = metrics.homeCoverTileHeight;
 
-    // Preserve the actual book title and selection layout, but suppress the
-    // first frame's synchronous bitmap read/crop. The idle cover job below
-    // invalidates this snapshot and draws the real thumbnail later.
+    // Keep the first frame free of synchronous bitmap IO. Existing thumbnails
+    // are drawn after the short idle delay; missing thumbnails stay as placeholders
+    // instead of being regenerated on the home screen.
     std::vector<RecentBook> coverBooks;
     const std::vector<RecentBook>* booksForCover = &recentBooks;
     if (deferRecentCoverDraw) {
       coverBooks = recentBooks;
       for (RecentBook& book : coverBooks) {
         book.coverBmpPath.clear();
+        book.title.clear();
+        book.author.clear();
       }
       booksForCover = &coverBooks;
     }
     GUI.drawRecentBookCover(renderer, Rect{0, metrics.homeTopPadding, pageWidth, metrics.homeCoverTileHeight},
                             *booksForCover, selectorIndex, coverRendered, coverBufferStored, bufferRestored,
-                            std::bind(&HomeActivity::storeCoverBuffer, this));
+                            std::bind(&HomeActivity::storeCoverBuffer, this), [&lock]() { return lock.isStale(); });
 #if defined(SSD1677_PROBE_DEBUG) && SSD1677_PROBE_DEBUG
+
     afterCover = millis();
 #endif
   }
@@ -486,6 +462,10 @@ void HomeActivity::render(RenderLock&&) {
                                               tr(STR_DIR_DOWN));
     GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
   }
+  if (lock.isStale()) {
+    return;
+  }
+
 #if defined(SSD1677_PROBE_DEBUG) && SSD1677_PROBE_DEBUG
   if (!menuOnlyPartialUpdate && !coverOnlyPartialUpdate &&
       (isCoverSelectionIndex(lastRenderedSelectorIndex) || isCoverSelectionIndex(selectorIndex))) {
@@ -518,7 +498,10 @@ void HomeActivity::render(RenderLock&&) {
   }
 }
 
-void HomeActivity::onSelectBook(const std::string& path) { activityManager.goToReader(path); }
+void HomeActivity::onSelectBook(const std::string& path) {
+  activityManager.cancelCurrentRender();
+  activityManager.goToReader(path);
+}
 
 void HomeActivity::onFileBrowserOpen() { activityManager.goToFileBrowser(); }
 
