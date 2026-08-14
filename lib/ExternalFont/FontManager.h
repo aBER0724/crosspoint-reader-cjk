@@ -107,6 +107,8 @@ class FontManager {
 
   void setGlyphCachesSuspended(bool suspended);
   bool areGlyphCachesSuspended() const { return _glyphCachesSuspended; }
+  void setUiGlyphCacheSuspended(bool suspended);
+  bool isUiGlyphCacheSuspended() const { return _uiGlyphCacheSuspended; }
   bool isGlyphCacheSuspendedFor(const ExternalFont* font) const;
 
   class ScopedGlyphCacheSuspension {
@@ -171,9 +173,10 @@ class FontManager {
   int _selectedIndex = -1;    // -1 = built-in font (reader)
   int _selectedUiIndex = -1;  // -1 = fallback to reader font
 
-  ExternalFont _activeFont;    // Reader font
-  ExternalFont _activeUiFont;  // UI font
+  ExternalFont _activeFont;                                                // Reader font
+  ExternalFont _activeUiFont{ExternalFontCachePolicy::kUiGlyphCacheSize};  // UI font
   bool _glyphCachesSuspended = false;
+  bool _uiGlyphCacheSuspended = false;
 
   bool isUiSharingReaderFont() const { return _selectedUiIndex >= 0 && _selectedUiIndex == _selectedIndex; }
 

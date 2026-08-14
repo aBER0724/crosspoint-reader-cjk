@@ -56,7 +56,8 @@ struct EpdInterval {
  */
 class ExternalFont {
  public:
-  ExternalFont() = default;
+  explicit ExternalFont(size_t cacheCapacity = ExternalFontCachePolicy::kGlyphCacheSize)
+      : _cacheCapacity(cacheCapacity) {}
   ~ExternalFont();
 
   // Disable copy
@@ -100,8 +101,8 @@ class ExternalFont {
   uint16_t getBytesPerChar() const { return _bytesPerChar; }
   const char* getFontName() const { return _fontName; }
   uint8_t getFontSize() const { return _fontSize; }
-  size_t getCacheCapacity() const { return CACHE_SIZE; }
-  size_t getPreloadLimit() const { return PRELOAD_LIMIT; }
+  size_t getCacheCapacity() const { return _cacheCapacity; }
+  size_t getPreloadLimit() const { return _cacheCapacity < PRELOAD_LIMIT ? _cacheCapacity : PRELOAD_LIMIT; }
 
   bool isLoaded() const { return _isLoaded; }
   bool isRichMetricsFormat() const { return _isRichMetricsFormat; }
@@ -113,6 +114,11 @@ class ExternalFont {
   // Release bitmap glyph cache while keeping font metadata/file state loaded.
   // Layout measurement uses getGlyphMetricsForLayout() and can run without this cache.
   void releaseGlyphCache();
+
+  // Allocate the bitmap glyph cache before other activity allocations can
+  // fragment the heap. Returns false when the font is not loaded or the cache
+  // cannot be allocated.
+  bool prepareGlyphCache();
 
   /**
    * Check if a font with given dimensions can fit in the glyph cache.
@@ -162,10 +168,8 @@ class ExternalFont {
   uint32_t _bitmapOffset = 0;  // file offset of the bitmap blob
 
   // LRU cache - lazily allocated for bitmap rendering/preload, freed on unload()
-  // or before memory-heavy section builds. 160 glyphs for CJK text rendering
-  // (~44KB per font when loaded).
-  static constexpr int CACHE_SIZE = ExternalFontCachePolicy::kGlyphCacheSize;
-  static constexpr int PRELOAD_LIMIT = ExternalFontCachePolicy::kPreloadLimit;
+  // or before memory-heavy section builds. Capacity is configured per font slot.
+  static constexpr size_t PRELOAD_LIMIT = ExternalFontCachePolicy::kPreloadLimit;
   static constexpr int MAX_GLYPH_BYTES = 260;  // Max 260 bytes per glyph (e.g. up to 38x52)
 
   struct CacheEntry {
@@ -175,8 +179,10 @@ class ExternalFont {
     bool notFound = false;              // True if glyph doesn't exist in font
     ExternalGlyphMetrics metrics = {};  // Cached rendering metrics
   };
+  const size_t _cacheCapacity;
   CacheEntry* _cache = nullptr;  // Lazily allocated when bitmap rendering/preload needs it
   uint32_t _accessCounter = 0;
+  bool _glyphCacheAllocationFailed = false;
 
   // Scratch bitmap for legacy .bin layout metrics. This avoids a 260-byte stack
   // object and repeated heap allocation while keeping full glyph cache suspended.
@@ -190,7 +196,7 @@ class ExternalFont {
   // Simple hash table for O(1) cache lookup (codepoint -> cache index, -1 if
   // not cached)
   int16_t* _hashTable = nullptr;  // Dynamically allocated on load()
-  static int hashCodepoint(uint32_t cp) { return cp % CACHE_SIZE; }
+  size_t hashCodepoint(uint32_t cp) const { return cp % _cacheCapacity; }
 
   /**
    * Parse and validate the EPDFont 32-byte header. The file pointer is
