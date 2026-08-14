@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include <Arduino.h>
 #include <InputManager.h>
@@ -41,6 +41,9 @@
 class HalGPIO {
 #if CROSSPOINT_EMULATED == 0
   InputManager inputMgr;
+  bool asyncInputEnabled = false;
+  uint8_t asyncPressedEvents = 0;
+  uint8_t asyncReleasedEvents = 0;
 #endif
 
   bool lastUsbConnected = false;
@@ -65,6 +68,8 @@ class HalGPIO {
 
   // Button input methods
   void update();
+  void beginAsyncInput();
+  void readButtonAdc(InputManager::ButtonAdcSample& group1, InputManager::ButtonAdcSample& group2);
   bool isPressed(uint8_t buttonIndex) const;
   bool wasPressed(uint8_t buttonIndex) const;
   bool wasAnyPressed() const;

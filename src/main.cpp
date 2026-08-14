@@ -219,6 +219,17 @@ bool parseSerialTestButton(String name, MappedInputManager::Button& button) {
 }
 
 bool handleSerialTestInputCommand(const String& command) {
+  if (command == "INPUT:ADC") {
+    InputManager::ButtonAdcSample group1;
+    InputManager::ButtonAdcSample group2;
+    gpio.readButtonAdc(group1, group2);
+    const int powerPin = BoardConfig::ACTIVE.input.power;
+    const int powerRaw = powerPin >= 0 ? digitalRead(powerPin) : -1;
+    logSerial.printf("TEST_INPUT:ADC:G1=%d,B1=%d,G2=%d,B2=%d,PIN=%d,PWR=%d,ACTIVE_HIGH=%d\n", group1.raw,
+                     group1.button, group2.raw, group2.button, powerPin, powerRaw,
+                     BoardConfig::ACTIVE.input.powerActiveHigh);
+    return true;
+  }
   if (command == "INPUT:CLEAR") {
     mappedInputManager.clearTestButtons();
     logSerial.println("TEST_INPUT:CLEARED");
@@ -524,6 +535,11 @@ void setup() {
 
   // Ensure we're not still holding the power button before leaving setup
   waitForPowerRelease();
+  // Poll X3/X4 ADC buttons independently from the app/render loop. The main
+  // loop drops to a 50 ms idle cadence and can also be occupied by reader
+  // parsing, so short physical clicks must be queued instead of sampled only
+  // once per loop iteration.
+  gpio.beginAsyncInput();
   allowSleepAt = millis() + 2000;
 }
 
@@ -535,6 +551,14 @@ void loop() {
   gpio.setSharedConfirmPowerShortPressEmitsPower(SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::SLEEP);
   gpio.update();
 #ifdef ENABLE_SERIAL_INPUT_TEST
+  for (uint8_t button = HalGPIO::BTN_BACK; button <= HalGPIO::BTN_POWER; button++) {
+    if (gpio.wasPressed(button)) {
+      LOG_INF("INPUT", "Raw button %u pressed", button);
+    }
+    if (gpio.wasReleased(button)) {
+      LOG_INF("INPUT", "Raw button %u released", button);
+    }
+  }
   mappedInputManager.beginTestInputFrame();
 #endif
   BLUETOOTH_PAGE_TURN.setReaderSessionActive(activityManager.isReaderActivity());

@@ -1,4 +1,4 @@
-﻿#include <HalGPIO.h>
+#include <HalGPIO.h>
 #include <Logging.h>
 #include <PowerManager.h>
 #include <Preferences.h>
@@ -209,7 +209,15 @@ void HalGPIO::begin() {
 }
 
 void HalGPIO::update() {
-  inputMgr.update();
+  if (asyncInputEnabled) {
+    asyncPressedEvents = 0;
+    asyncReleasedEvents = 0;
+    uint8_t button = 0;
+    while (inputMgr.popPress(button)) asyncPressedEvents |= 1 << button;
+    while (inputMgr.popRelease(button)) asyncReleasedEvents |= 1 << button;
+  } else {
+    inputMgr.update();
+  }
   const bool connected = isUsbConnected();
   usbStateChanged = (connected != lastUsbConnected);
   lastUsbConnected = connected;
@@ -217,15 +225,35 @@ void HalGPIO::update() {
 
 bool HalGPIO::wasUsbStateChanged() const { return usbStateChanged; }
 
+void HalGPIO::beginAsyncInput() {
+  if (!isXteinkDevice() || asyncInputEnabled) return;
+  asyncInputEnabled = inputMgr.beginAsync(2, 5, 32);
+  if (asyncInputEnabled) {
+    LOG_INF("INPUT", "Async button polling started (5 ms)");
+  } else {
+    LOG_ERR("INPUT", "Async button polling failed; using main-loop polling");
+  }
+}
+
+void HalGPIO::readButtonAdc(InputManager::ButtonAdcSample& group1, InputManager::ButtonAdcSample& group2) {
+  inputMgr.readButtonAdc(group1, group2);
+}
+
 bool HalGPIO::isPressed(uint8_t buttonIndex) const { return inputMgr.isPressed(buttonIndex); }
 
-bool HalGPIO::wasPressed(uint8_t buttonIndex) const { return inputMgr.wasPressed(buttonIndex); }
+bool HalGPIO::wasPressed(uint8_t buttonIndex) const {
+  return asyncInputEnabled ? asyncPressedEvents & (1 << buttonIndex) : inputMgr.wasPressed(buttonIndex);
+}
 
-bool HalGPIO::wasAnyPressed() const { return inputMgr.wasAnyPressed(); }
+bool HalGPIO::wasAnyPressed() const { return asyncInputEnabled ? asyncPressedEvents != 0 : inputMgr.wasAnyPressed(); }
 
-bool HalGPIO::wasReleased(uint8_t buttonIndex) const { return inputMgr.wasReleased(buttonIndex); }
+bool HalGPIO::wasReleased(uint8_t buttonIndex) const {
+  return asyncInputEnabled ? asyncReleasedEvents & (1 << buttonIndex) : inputMgr.wasReleased(buttonIndex);
+}
 
-bool HalGPIO::wasAnyReleased() const { return inputMgr.wasAnyReleased(); }
+bool HalGPIO::wasAnyReleased() const {
+  return asyncInputEnabled ? asyncReleasedEvents != 0 : inputMgr.wasAnyReleased();
+}
 
 unsigned long HalGPIO::getHeldTime() const { return inputMgr.getHeldTime(); }
 
