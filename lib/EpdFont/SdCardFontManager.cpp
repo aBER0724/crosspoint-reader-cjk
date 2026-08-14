@@ -50,7 +50,7 @@ int SdCardFontManager::loadFile(const SdCardFontFileInfo& file, const char* fami
     return 0;
   }
   renderer.registerSdCardFont(fontId, font);
-  loaded_.push_back({font, fontId, file.pointSize});
+  loaded_.push_back({font, fontId, file.pointSize, familyName});
 
   LOG_DBG("SDMGR", "Loaded %s size=%u id=%d styles=%u", file.path.c_str(), file.pointSize, fontId, font->styleCount());
 
@@ -60,8 +60,9 @@ int SdCardFontManager::loadFile(const SdCardFontFileInfo& file, const char* fami
 }
 
 bool SdCardFontManager::loadFamily(const SdCardFontFamilyInfo& family, GfxRenderer& renderer, uint8_t fontSizeEnum) {
-  // Unload any previously loaded family first
-  if (!loadedFamilyName_.empty()) {
+  // A reader-family load starts a coordinated font configuration. The system
+  // loads the reader first, then adds the independently selected UI sizes.
+  if (!loaded_.empty()) {
     unloadAll(renderer);
   }
 
@@ -88,10 +89,10 @@ int SdCardFontManager::loadFamilyExtraSize(const SdCardFontFamilyInfo& family, G
   const SdCardFontFileInfo* file = family.findFile(pointSize);
   if (!file) return 0;  // family has no .cpfont at this exact size
 
-  // Reuse an already-loaded font of the same size (e.g. when a reader size
-  // happens to match a UI size) instead of double-loading the file.
+  // Reuse only an identical family/size pair. Different families can have the
+  // same physical size and must never share a font ID or glyph source.
   for (const auto& lf : loaded_) {
-    if (lf.size == pointSize) return lf.fontId;
+    if (lf.familyName == family.name && lf.size == pointSize) return lf.fontId;
   }
 
   return loadFile(*file, family.name.c_str(), renderer);
@@ -100,9 +101,8 @@ int SdCardFontManager::loadFamilyExtraSize(const SdCardFontFamilyInfo& family, G
 void SdCardFontManager::unloadAll(GfxRenderer& renderer) {
   // Drop UI CJK fallbacks before the SD fonts they point at are freed.
   renderer.clearFallbackFonts();
-  renderer.clearSdCardFonts();
   for (auto& lf : loaded_) {
-    renderer.removeFont(lf.fontId);
+    renderer.unregisterSdCardFont(lf.fontId);
     delete lf.font;
   }
   loaded_.clear();
@@ -111,6 +111,9 @@ void SdCardFontManager::unloadAll(GfxRenderer& renderer) {
 }
 
 int SdCardFontManager::getFontId(const std::string& familyName) const {
-  if (familyName != loadedFamilyName_ || loaded_.empty()) return 0;
-  return loaded_.front().fontId;
+  if (familyName != loadedFamilyName_ || loadedPointSize_ == 0) return 0;
+  for (const auto& lf : loaded_) {
+    if (lf.familyName == familyName && lf.size == loadedPointSize_) return lf.fontId;
+  }
+  return 0;
 }

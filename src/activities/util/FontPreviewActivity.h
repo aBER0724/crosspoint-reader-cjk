@@ -33,5 +33,6 @@ class FontPreviewActivity final : public Activity {
   void restorePreviewFont();
   void applyReaderFont();
   void applyUiFont();
+  void applyReaderAndUiFont();
   void closePreview(bool applied);
 };

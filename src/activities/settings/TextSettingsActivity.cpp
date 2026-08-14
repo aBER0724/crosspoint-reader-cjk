@@ -19,6 +19,7 @@
 namespace {
 // Tab labels for Font | Size | Layout | Style (shared by render and loop touch hit-testing).
 constexpr StrId TAB_NAME_IDS[] = {StrId::STR_FONT, StrId::STR_SIZE, StrId::STR_LAYOUT, StrId::STR_STYLE};
+constexpr StrId FONT_TARGET_IDS[] = {StrId::STR_EXT_READER_FONT, StrId::STR_EXT_UI_FONT, StrId::STR_READER_AND_UI};
 
 int findCurrentFontIndex(const SdCardFontRegistry* registry, const char* sdFontFamilyName, uint8_t fontFamily) {
   if (sdFontFamilyName[0] != '\0' && registry) {
@@ -69,18 +70,14 @@ void TextSettingsActivity::onEnter() {
     }
   }
 
-  sizes_.clear();
-  sizes_.reserve(CrossPointSettings::FONT_SIZE_COUNT);
-  sizes_.push_back({I18N.get(StrId::STR_SMALL), static_cast<uint8_t>(CrossPointSettings::SMALL)});
-  sizes_.push_back({I18N.get(StrId::STR_MEDIUM), static_cast<uint8_t>(CrossPointSettings::MEDIUM)});
-  sizes_.push_back({I18N.get(StrId::STR_LARGE), static_cast<uint8_t>(CrossPointSettings::LARGE)});
-  sizes_.push_back({I18N.get(StrId::STR_X_LARGE), static_cast<uint8_t>(CrossPointSettings::EXTRA_LARGE)});
-
   currentFamilyIndex_ = findCurrentFontIndex(registry_, SETTINGS.sdFontFamilyName, SETTINGS.fontFamily);
-  currentSizeIndex_ = findCurrentFontSizeIndex(SETTINGS.fontSize, sizes_.size());
-  std::fill(std::begin(selectedIndex_), std::end(selectedIndex_), 1);       // default to the first list row
-  selectedIndex_[static_cast<int>(Tab::Family)] = currentFamilyIndex_ + 1;  // Family/Size open on current selection
-  selectedIndex_[static_cast<int>(Tab::Size)] = currentSizeIndex_ + 1;
+  int focusedFamilyIndex = currentFamilyIndex_;
+  if (SETTINGS.sdFontFamilyName[0] == '\0' && SETTINGS.sdUiFontFamilyName[0] != '\0') {
+    focusedFamilyIndex = findCurrentFontIndex(registry_, SETTINGS.sdUiFontFamilyName, SETTINGS.fontFamily);
+  }
+  std::fill(std::begin(selectedIndex_), std::end(selectedIndex_), 1);  // default to the first list row
+  selectedIndex_[static_cast<int>(Tab::Family)] = focusedFamilyIndex + 1;
+  rebuildSizeEntries();
 
   requestUpdate();
 }
@@ -229,7 +226,7 @@ void TextSettingsActivity::render(RenderLock&&) {
       GUI.drawList(
           renderer, listRect, static_cast<int>(fonts_.size()), selectedItem,
           [this](int index) { return fonts_[index].name; }, nullptr, nullptr,
-          [this](int index) -> std::string { return index == currentFamilyIndex_ ? tr(STR_SELECTED) : ""; }, true);
+          [this](int index) { return fontRoleText(index); }, true);
       if (onTabBar) confirmLabel = tr(STR_SIZE);
       break;
 
@@ -238,21 +235,28 @@ void TextSettingsActivity::render(RenderLock&&) {
           renderer, listRect, static_cast<int>(sizes_.size()), selectedItem,
           [this](int index) { return sizes_[index].name; }, nullptr, nullptr,
           [this](int index) -> std::string { return index == currentSizeIndex_ ? tr(STR_SELECTED) : ""; }, true);
-      if (onTabBar) confirmLabel = tr(STR_LAYOUT);
+      if (onTabBar)
+        confirmLabel = tr(STR_LAYOUT);
+      else if (hasFixedExternalSize())
+        confirmLabel = "";
       break;
 
     case Tab::Layout: {
       constexpr int LAYOUT_ROWS = static_cast<int>(LayoutRow::Count);
       static constexpr StrId ROW_NAME_IDS[LAYOUT_ROWS] = {StrId::STR_LINE_SPACING, StrId::STR_EXTRA_SPACING,
-                                                          StrId::STR_ALIGNMENT, StrId::STR_SCREEN_MARGIN};
+                                                          StrId::STR_FIRST_LINE_INDENT, StrId::STR_ALIGNMENT,
+                                                          StrId::STR_SCREEN_MARGIN};
       GUI.drawList(
           renderer, listRect, LAYOUT_ROWS, selectedItem,
           [](int index) { return std::string(I18N.get(ROW_NAME_IDS[index])); }, nullptr, nullptr,
           [this](int index) { return layoutValueText(index); }, true);
-      if (onTabBar)
+      if (onTabBar) {
         confirmLabel = tr(STR_STYLE);
-      else  // Extra Paragraph Spacing toggles; the rest open a picker
-        confirmLabel = (selectedItem == static_cast<int>(LayoutRow::ParaSpacing)) ? tr(STR_TOGGLE) : tr(STR_SELECT);
+      } else {
+        const bool isToggle = selectedItem == static_cast<int>(LayoutRow::ParaSpacing) ||
+                              selectedItem == static_cast<int>(LayoutRow::FirstLineIndent);
+        confirmLabel = isToggle ? tr(STR_TOGGLE) : tr(STR_SELECT);
+      }
       break;
     }
 
@@ -286,35 +290,133 @@ void TextSettingsActivity::render(RenderLock&&) {
 // Font switching runs on the main task from loop(), which deliberately holds no
 // RenderLock. ensureLoaded() deletes the resident SdCardFont before loading the
 // next one, and the render task walks that same object inside the preview's
-// prewarmCache() — so without this lock a font switch can free the mini glyph
+// prewarmCache(), so without this lock a font switch can free the mini glyph
 // arrays out from under prewarmStyle() (crash: null s.miniGlyphs mid-read/sort).
+void TextSettingsActivity::rebuildSizeEntries() {
+  sizes_.clear();
+  currentSizeIndex_ = 0;
+
+  const SdCardFontFamilyInfo* sdFamily = nullptr;
+  if (registry_ && currentFamilyIndex_ >= CrossPointSettings::BUILTIN_FONT_COUNT) {
+    const int sdIndex = currentFamilyIndex_ - CrossPointSettings::BUILTIN_FONT_COUNT;
+    const auto& families = registry_->getFamilies();
+    if (sdIndex >= 0 && sdIndex < static_cast<int>(families.size())) sdFamily = &families[sdIndex];
+  }
+
+  if (sdFamily) {
+    const SdCardFontFileInfo* currentFile = sdFamily->findClosestReaderSize(SETTINGS.fontSize);
+    if (currentFile) sizes_.push_back({std::to_string(currentFile->pointSize) + " pt", SETTINGS.fontSize});
+  }
+
+  if (sizes_.empty()) {
+    sizes_.reserve(CrossPointSettings::FONT_SIZE_COUNT);
+    sizes_.push_back({I18N.get(StrId::STR_SMALL), static_cast<uint8_t>(CrossPointSettings::SMALL)});
+    sizes_.push_back({I18N.get(StrId::STR_MEDIUM), static_cast<uint8_t>(CrossPointSettings::MEDIUM)});
+    sizes_.push_back({I18N.get(StrId::STR_LARGE), static_cast<uint8_t>(CrossPointSettings::LARGE)});
+    sizes_.push_back({I18N.get(StrId::STR_X_LARGE), static_cast<uint8_t>(CrossPointSettings::EXTRA_LARGE)});
+    currentSizeIndex_ = findCurrentFontSizeIndex(SETTINGS.fontSize, sizes_.size());
+  }
+
+  selectedIndex_[static_cast<int>(Tab::Size)] = currentSizeIndex_ + 1;
+}
+
+bool TextSettingsActivity::hasFixedExternalSize() const {
+  return currentFamilyIndex_ >= CrossPointSettings::BUILTIN_FONT_COUNT && sizes_.size() == 1;
+}
+
 void TextSettingsActivity::applyFamily(int listIndex) {
+  if (listIndex < 0 || listIndex >= static_cast<int>(fonts_.size())) return;
+
+  bool isReader = false;
+  bool isUi = false;
+  if (fonts_[listIndex].isBuiltin) {
+    isReader = SETTINGS.sdFontFamilyName[0] == '\0' && SETTINGS.fontFamily == fonts_[listIndex].settingIndex;
+    isUi = SETTINGS.sdUiFontFamilyName[0] == '\0';
+  } else {
+    if (!registry_) return;
+    const int sdIndex = fonts_[listIndex].settingIndex - CrossPointSettings::BUILTIN_FONT_COUNT;
+    const auto& families = registry_->getFamilies();
+    if (sdIndex < 0 || sdIndex >= static_cast<int>(families.size())) return;
+
+    const std::string& familyName = families[sdIndex].name;
+    isReader = familyName == SETTINGS.sdFontFamilyName;
+    isUi = familyName == SETTINGS.sdUiFontFamilyName;
+  }
+  const int currentTarget = isReader && isUi
+                                ? static_cast<int>(FontTarget::Both)
+                                : (isUi ? static_cast<int>(FontTarget::Ui) : static_cast<int>(FontTarget::Reader));
+  optionPopup_.show(StrId::STR_FONT, FONT_TARGET_IDS, static_cast<int>(std::size(FONT_TARGET_IDS)), currentTarget,
+                    [this, listIndex](int target) { applyFamilyToTarget(listIndex, static_cast<FontTarget>(target)); });
+}
+
+void TextSettingsActivity::applyFamilyToTarget(int listIndex, FontTarget target) {
+  if (listIndex < 0 || listIndex >= static_cast<int>(fonts_.size())) return;
+
   RenderLock lock;
   const auto& font = fonts_[listIndex];
   if (font.isBuiltin) {
-    SETTINGS.fontFamily = font.settingIndex;
-    SETTINGS.sdFontFamilyName[0] = '\0';
-    sdFontSystem.ensureLoaded(renderer);  // unloads the previously resident SD font
-    currentFamilyIndex_ = listIndex;
-  } else if (registry_) {
-    const int sdIdx = font.settingIndex - CrossPointSettings::BUILTIN_FONT_COUNT;
-    const auto& families = registry_->getFamilies();
-    if (sdIdx < static_cast<int>(families.size())) {
-      strncpy(SETTINGS.sdFontFamilyName, families[sdIdx].name.c_str(), sizeof(SETTINGS.sdFontFamilyName) - 1);
-      SETTINGS.sdFontFamilyName[sizeof(SETTINGS.sdFontFamilyName) - 1] = '\0';
-      sdFontSystem.ensureLoaded(renderer);
-      currentFamilyIndex_ = listIndex;
+    if (target == FontTarget::Reader || target == FontTarget::Both) {
+      SETTINGS.fontFamily = font.settingIndex;
+      SETTINGS.sdFontFamilyName[0] = '\0';
     }
+    if (target == FontTarget::Ui || target == FontTarget::Both) {
+      SETTINGS.sdUiFontFamilyName[0] = '\0';
+    }
+  } else if (registry_) {
+    const int sdIndex = font.settingIndex - CrossPointSettings::BUILTIN_FONT_COUNT;
+    const auto& families = registry_->getFamilies();
+    if (sdIndex < 0 || sdIndex >= static_cast<int>(families.size())) return;
+
+    const std::string& familyName = families[sdIndex].name;
+    if (target == FontTarget::Reader || target == FontTarget::Both) {
+      strncpy(SETTINGS.sdFontFamilyName, familyName.c_str(), sizeof(SETTINGS.sdFontFamilyName) - 1);
+      SETTINGS.sdFontFamilyName[sizeof(SETTINGS.sdFontFamilyName) - 1] = '\0';
+    }
+    if (target == FontTarget::Ui || target == FontTarget::Both) {
+      strncpy(SETTINGS.sdUiFontFamilyName, familyName.c_str(), sizeof(SETTINGS.sdUiFontFamilyName) - 1);
+      SETTINGS.sdUiFontFamilyName[sizeof(SETTINGS.sdUiFontFamilyName) - 1] = '\0';
+    }
+  } else {
+    return;
   }
+
+  currentFamilyIndex_ = findCurrentFontIndex(registry_, SETTINGS.sdFontFamilyName, SETTINGS.fontFamily);
+  rebuildSizeEntries();
+  sdFontSystem.ensureLoaded(renderer);
+}
+
+std::string TextSettingsActivity::fontRoleText(int listIndex) const {
+  if (listIndex < 0 || listIndex >= static_cast<int>(fonts_.size())) return "";
+
+  const auto& font = fonts_[listIndex];
+  if (font.isBuiltin) {
+    const bool isReader = SETTINGS.sdFontFamilyName[0] == '\0' && SETTINGS.fontFamily == font.settingIndex;
+    if (!isReader) return "";
+
+    const bool isUi = SETTINGS.sdUiFontFamilyName[0] == '\0';
+    return isUi ? tr(STR_READER_AND_UI) : tr(STR_EXT_READER_FONT);
+  }
+
+  if (!registry_) return "";
+
+  const int sdIndex = font.settingIndex - CrossPointSettings::BUILTIN_FONT_COUNT;
+  const auto& families = registry_->getFamilies();
+  if (sdIndex < 0 || sdIndex >= static_cast<int>(families.size())) return "";
+
+  const std::string& familyName = families[sdIndex].name;
+  const bool isReader = familyName == SETTINGS.sdFontFamilyName;
+  const bool isUi = familyName == SETTINGS.sdUiFontFamilyName;
+  if (isReader && isUi) return tr(STR_READER_AND_UI);
+  if (isReader) return tr(STR_EXT_READER_FONT);
+  if (isUi) return tr(STR_EXT_UI_FONT);
+  return "";
 }
 
 void TextSettingsActivity::activateRow(int row) {
   switch (tab_) {
     case Tab::Family:
-      if (row != currentFamilyIndex_) {
-        applyFamily(row);
-        requestUpdate();
-      }
+      applyFamily(row);
+      requestUpdate();
       break;
     case Tab::Size:
       if (row != currentSizeIndex_) {
@@ -336,8 +438,9 @@ void TextSettingsActivity::activateRow(int row) {
 // Same RenderLock rationale as applyFamily(): a size change reloads the SD font
 // file, which frees and replaces the SdCardFont the render task may be reading.
 void TextSettingsActivity::applySize(int listIndex) {
-  RenderLock lock;
+  if (hasFixedExternalSize() || listIndex < 0 || listIndex >= static_cast<int>(sizes_.size())) return;
 
+  RenderLock lock;
   currentSizeIndex_ = listIndex;
   SETTINGS.fontSize = sizes_[listIndex].settingIndex;
   sdFontSystem.ensureLoaded(renderer);
@@ -347,6 +450,10 @@ void TextSettingsActivity::confirmLayoutRow(int row) {
   switch (static_cast<LayoutRow>(row)) {
     case LayoutRow::ParaSpacing:
       SETTINGS.extraParagraphSpacing = !SETTINGS.extraParagraphSpacing;
+      requestUpdate();
+      break;
+    case LayoutRow::FirstLineIndent:
+      SETTINGS.firstLineIndent = !SETTINGS.firstLineIndent;
       requestUpdate();
       break;
     case LayoutRow::LineSpacing:
@@ -384,6 +491,8 @@ std::string TextSettingsActivity::layoutValueText(int row) const {
     }
     case LayoutRow::ParaSpacing:
       return SETTINGS.extraParagraphSpacing ? tr(STR_STATE_ON) : tr(STR_STATE_OFF);
+    case LayoutRow::FirstLineIndent:
+      return SETTINGS.firstLineIndent ? tr(STR_STATE_ON) : tr(STR_STATE_OFF);
     case LayoutRow::Alignment: {
       const uint8_t v = SETTINGS.paragraphAlignment;
       return v < std::size(ALIGNMENT_IDS) ? I18N.get(ALIGNMENT_IDS[v]) : I18N.get(StrId::STR_JUSTIFY);
