@@ -40,7 +40,12 @@ struct Sink {
   bool* cancelFlag = nullptr;
   size_t total = 0;
   size_t downloaded = 0;
+  size_t maxBytes = 0;
 };
+
+bool exceedsLimit(const Sink& sink, const size_t len) {
+  return sink.maxBytes != 0 && (sink.downloaded > sink.maxBytes || len > sink.maxBytes - sink.downloaded);
+}
 
 bool isRedirect(int status) {
   return status == 301 || status == 302 || status == 303 || status == 307 || status == 308;
@@ -79,6 +84,7 @@ HttpDownloader::DownloadError runGetWolf(const std::string& startUrl, const std:
         [&http, &sink](const uint8_t* data, size_t len) {
           if (http.getStatus() != 200) return true;
           if (sink.total == 0 && http.hasContentLength()) sink.total = http.getContentLength();
+          if (exceedsLimit(sink, len)) return false;
           if (!sink.write(data, len)) return false;
           sink.downloaded += len;
           if (sink.progress && sink.total > 0) sink.progress(sink.downloaded, sink.total);
@@ -184,6 +190,11 @@ HttpDownloader::DownloadError runGet(const std::string& url, const std::string& 
   // fetch_headers returns 0 for a chunked response (no Content-Length); leave
   // total at 0 so progress stays silent and the size check is skipped.
   sink.total = contentLength > 0 ? static_cast<size_t>(contentLength) : 0;
+  if (sink.maxBytes != 0 && sink.total > sink.maxBytes) {
+    LOG_ERR("HTTP", "response exceeds %zu byte limit", sink.maxBytes);
+    esp_http_client_cleanup(client);
+    return HttpDownloader::FILE_ERROR;
+  }
 
   auto buf = makeUniqueNoThrow<char[]>(READ_CHUNK);
   if (!buf) {
@@ -204,6 +215,11 @@ HttpDownloader::DownloadError runGet(const std::string& url, const std::string& 
       return HttpDownloader::HTTP_ERROR;
     }
     if (read == 0) break;  // all data received
+    if (exceedsLimit(sink, static_cast<size_t>(read))) {
+      LOG_ERR("HTTP", "response exceeds %zu byte limit", sink.maxBytes);
+      esp_http_client_cleanup(client);
+      return HttpDownloader::FILE_ERROR;
+    }
     if (!sink.write(reinterpret_cast<const uint8_t*>(buf.get()), read)) {
       esp_http_client_cleanup(client);
       return HttpDownloader::FILE_ERROR;
@@ -267,7 +283,7 @@ bool HttpDownloader::fetchUrl(const std::string& url, const DataCallback& onData
 HttpDownloader::DownloadError HttpDownloader::downloadToFile(const std::string& url, const std::string& destPath,
                                                              ProgressCallback progress, bool* cancelFlag,
                                                              const std::string& username, const std::string& password,
-                                                             CancelCallback cancel) {
+                                                             CancelCallback cancel, const size_t maxBytes) {
   LOG_DBG("HTTP", "Downloading: %s -> %s", url.c_str(), destPath.c_str());
 
   if (Storage.exists(destPath.c_str()) && !Storage.remove(destPath.c_str())) {
@@ -284,6 +300,7 @@ HttpDownloader::DownloadError HttpDownloader::downloadToFile(const std::string& 
   sink.progress = std::move(progress);
   sink.cancel = std::move(cancel);
   sink.cancelFlag = cancelFlag;
+  sink.maxBytes = maxBytes;
   sink.write = [&file](const uint8_t* data, size_t len) { return file.write(data, len) == len; };
 
   const DownloadError result = runGetSecure(url, username, password, sink);
