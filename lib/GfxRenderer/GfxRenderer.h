@@ -276,6 +276,9 @@ class GfxRenderer {
   // a follow-up synchronous display call.
   bool refreshBusy() const;
   void waitRefreshComplete() const;
+  // Release RAM retained for single-buffer async refreshes. The framebuffer
+  // remains valid and the next async refresh recreates the baseline lazily.
+  void releaseAsyncShadow() const;
   // Rendering runs under ActivityManager's RenderLock. When this is enabled,
   // display requests made during an active async waveform are retained as one
   // full-frame refresh instead of waiting in the render task.

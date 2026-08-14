@@ -8,6 +8,7 @@
 #include "XtcReaderActivity.h"
 
 #include <Arduino.h>
+#include <FontManager.h>
 #include <FsHelpers.h>
 #include <GfxRenderer.h>
 #include <HalGPIO.h>
@@ -300,14 +301,101 @@ void XtcReaderActivity::renderPage(RenderLock& lock, const bool interactiveRende
   // Allocate page buffer
   uint8_t* pageBuffer = static_cast<uint8_t*>(malloc(pageBufferSize));
   if (!pageBuffer) {
-    LOG_ERR("XTR", "Failed to allocate page buffer (%lu bytes)", pageBufferSize);
+    // Reader subactivities may have populated fallback glyph caches while the
+    // page buffer was absent. Reclaim both cache classes before falling back to
+    // streamed rendering.
+    FontManager::getInstance().releaseGlyphCaches();
+    renderer.releaseAsyncShadow();
+    pageBuffer = static_cast<uint8_t*>(malloc(pageBufferSize));
+  }
+  if (!pageBuffer) {
+    LOG_INF("XTR", "Page buffer unavailable (%lu bytes), using streamed rendering", pageBufferSize);
     renderer.clearScreen();
-    renderer.drawCenteredText(UI_12_FONT_ID, 300, tr(STR_MEMORY_ERROR), true, EpdFontFamily::BOLD);
+
+    bool cancelled = false;
+    const size_t rowBytes = (pageWidth + 7) / 8;
+    const size_t colBytes = (pageHeight + 7) / 8;
+    const xtc::XtcError streamError = xtc->loadPagePlaneChunks(
+        currentPage, [&](const uint8_t* plane1, const uint8_t* plane2, size_t size, size_t offset) {
+          if (lock.isStale()) {
+            cancelled = true;
+            return false;
+          }
+
+          for (size_t i = 0; i < size; i++) {
+            if ((i & 0xFF) == 0) {
+              yield();
+              if (lock.isStale()) {
+                cancelled = true;
+                return false;
+              }
+            }
+
+            const size_t sourceOffset = offset + i;
+            if (bitDepth == 2) {
+              const size_t column = sourceOffset / colBytes;
+              if (column >= pageWidth) {
+                continue;
+              }
+              const uint16_t x = pageWidth - 1 - column;
+              const uint16_t yBase = (sourceOffset % colBytes) * 8;
+              for (uint8_t bit = 0; bit < 8 && yBase + bit < pageHeight; bit++) {
+                const uint8_t shift = 7 - bit;
+                const uint8_t value = (((plane1[i] >> shift) & 1) << 1) | ((plane2[i] >> shift) & 1);
+                if (value != 0) {
+                  renderer.drawPixel(x, yBase + bit, true);
+                }
+              }
+            } else {
+              const size_t y = sourceOffset / rowBytes;
+              if (y >= pageHeight) {
+                continue;
+              }
+              const uint16_t xBase = (sourceOffset % rowBytes) * 8;
+              for (uint8_t bit = 0; bit < 8 && xBase + bit < pageWidth; bit++) {
+                if (((plane1[i] >> (7 - bit)) & 1) == 0) {
+                  renderer.drawPixel(xBase + bit, y, true);
+                }
+              }
+            }
+          }
+          return true;
+        });
+
+    if (cancelled) {
+      return;
+    }
+    if (streamError != xtc::XtcError::OK) {
+      LOG_ERR("XTR", "Streamed page load failed: %s", xtc::errorToString(streamError));
+      renderer.clearScreen();
+      renderer.drawCenteredText(UI_12_FONT_ID, 300, tr(STR_PAGE_LOAD_ERROR), true, EpdFontFamily::BOLD);
+      if (renderer.isDarkMode()) {
+        renderer.displayBufferDarkRedrive();
+      } else {
+        renderer.displayBuffer();
+      }
+      return;
+    }
+
+    if (bitDepth == 1) {
+      if (SETTINGS.statusBarSpec().xtcMode == CrossPointSettings::XTC_STATUS_BAR_MODE::XTC_STATUS_BAR_TOP) {
+        renderStatusBarOverlay(StatusBarOverlayPosition::Top);
+      } else {
+        renderStatusBarOverlay(StatusBarOverlayPosition::Bottom);
+      }
+    }
+
+    if (lock.isStale()) {
+      return;
+    }
     if (renderer.isDarkMode()) {
       renderer.displayBufferDarkRedrive();
+      pagesUntilFullRefresh = SETTINGS.getRefreshFrequency();
     } else {
-      renderer.displayBuffer();
+      ReaderUtils::displayWithRefreshCycle(renderer, pagesUntilFullRefresh,
+                                           bitDepth == 1 && renderer.supportsAsyncRefresh());
     }
+    LOG_DBG("XTR", "Rendered page %lu/%lu (%u-bit streamed BW)", currentPage + 1, xtc->getPageCount(), bitDepth);
     return;
   }
 

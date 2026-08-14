@@ -52,6 +52,8 @@ class HalDisplay {
   void displayBufferAsync(RefreshMode mode = RefreshMode::FAST_REFRESH, bool turnOffScreen = false);
   // Block until a pending deferred refresh completes (no-op when none is).
   void waitRefreshComplete();
+  // Release the single-buffer async baseline without releasing the framebuffer.
+  void releaseAsyncShadow();
   // True while a deferred refresh is still running on the panel. Unlike
   // waitRefreshComplete(), this never waits for the waveform to finish.
   bool refreshBusy();

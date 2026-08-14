@@ -541,6 +541,13 @@ xtc::XtcError Xtc::loadPageStreaming(uint32_t pageIndex,
   }
   return const_cast<xtc::XtcParser*>(parser.get())->loadPageStreaming(pageIndex, callback, chunkSize);
 }
+xtc::XtcError Xtc::loadPagePlaneChunks(
+    uint32_t pageIndex,
+    std::function<bool(const uint8_t* plane1, const uint8_t* plane2, size_t size, size_t offset)> callback,
+    size_t chunkSize) const {
+  if (!loaded || !parser) return xtc::XtcError::FILE_NOT_FOUND;
+  return const_cast<xtc::XtcParser*>(parser.get())->loadPagePlaneChunks(pageIndex, std::move(callback), chunkSize);
+}
 
 uint8_t Xtc::calculateProgress(uint32_t currentPage) const {
   if (!loaded || !parser || parser->getPageCount() == 0) {
