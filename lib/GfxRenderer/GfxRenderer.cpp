@@ -2205,6 +2205,8 @@ bool GfxRenderer::refreshBusy() const { return display.refreshBusy(); }
 
 void GfxRenderer::waitRefreshComplete() const { display.waitRefreshComplete(); }
 
+void GfxRenderer::releaseAsyncShadow() const { display.releaseAsyncShadow(); }
+
 bool GfxRenderer::flushDeferredRefresh() {
   if (!deferredRefreshPending_ || display.refreshBusy()) {
     return false;

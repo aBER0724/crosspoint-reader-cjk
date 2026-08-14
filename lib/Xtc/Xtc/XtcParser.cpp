@@ -12,6 +12,7 @@
 #include <Logging.h>
 
 #include <cstring>
+#include <new>
 
 namespace xtc {
 
@@ -521,6 +522,89 @@ XtcError XtcParser::loadPageStreaming(uint32_t pageIndex,
   return XtcError::OK;
 }
 
+XtcError XtcParser::loadPagePlaneChunks(
+    uint32_t pageIndex,
+    std::function<bool(const uint8_t* plane1, const uint8_t* plane2, size_t size, size_t offset)> callback,
+    size_t chunkSize) {
+  if (!m_isOpen) {
+    m_lastError = XtcError::FILE_NOT_FOUND;
+    return m_lastError;
+  }
+  if (pageIndex >= m_header.pageCount) {
+    m_lastError = XtcError::PAGE_OUT_OF_RANGE;
+    return m_lastError;
+  }
+  if (!callback || chunkSize == 0) {
+    m_lastError = XtcError::MEMORY_ERROR;
+    return m_lastError;
+  }
+
+  PageInfo page;
+  if (!readPageTableEntry(pageIndex, page) || !ensureFileOpen()) {
+    m_lastError = XtcError::READ_ERROR;
+    closeFile();
+    return m_lastError;
+  }
+  if (!m_file.seek(page.offset)) {
+    m_lastError = XtcError::READ_ERROR;
+    closeFile();
+    return m_lastError;
+  }
+
+  XtgPageHeader pageHeader;
+  const size_t headerRead = m_file.read(reinterpret_cast<uint8_t*>(&pageHeader), sizeof(pageHeader));
+  const uint32_t expectedMagic = m_bitDepth == 2 ? XTH_MAGIC : XTG_MAGIC;
+  if (headerRead != sizeof(pageHeader) || pageHeader.magic != expectedMagic) {
+    m_lastError = headerRead == sizeof(pageHeader) ? XtcError::INVALID_MAGIC : XtcError::READ_ERROR;
+    closeFile();
+    return m_lastError;
+  }
+
+  const size_t planeSize = m_bitDepth == 2 ? (static_cast<size_t>(pageHeader.width) * pageHeader.height + 7) / 8
+                                           : ((pageHeader.width + 7) / 8) * pageHeader.height;
+  const size_t requiredSize = planeSize * m_bitDepth;
+  if (planeSize == 0 || pageHeader.dataSize < requiredSize) {
+    m_lastError = XtcError::CORRUPTED_HEADER;
+    closeFile();
+    return m_lastError;
+  }
+
+  std::unique_ptr<uint8_t[]> plane1(new (std::nothrow) uint8_t[chunkSize]);
+  std::unique_ptr<uint8_t[]> plane2;
+  if (m_bitDepth == 2) {
+    plane2.reset(new (std::nothrow) uint8_t[chunkSize]);
+  }
+  if (!plane1 || (m_bitDepth == 2 && !plane2)) {
+    m_lastError = XtcError::MEMORY_ERROR;
+    closeFile();
+    return m_lastError;
+  }
+
+  const uint64_t bitmapOffset = static_cast<uint64_t>(page.offset) + sizeof(XtgPageHeader);
+  for (size_t offset = 0; offset < planeSize; offset += chunkSize) {
+    const size_t bytesToRead = std::min(chunkSize, planeSize - offset);
+    if (!m_file.seek(bitmapOffset + offset) || m_file.read(plane1.get(), bytesToRead) != bytesToRead) {
+      m_lastError = XtcError::READ_ERROR;
+      closeFile();
+      return m_lastError;
+    }
+    if (m_bitDepth == 2 &&
+        (!m_file.seek(bitmapOffset + planeSize + offset) || m_file.read(plane2.get(), bytesToRead) != bytesToRead)) {
+      m_lastError = XtcError::READ_ERROR;
+      closeFile();
+      return m_lastError;
+    }
+    if (!callback(plane1.get(), plane2.get(), bytesToRead, offset)) {
+      m_lastError = XtcError::OK;
+      closeFile();
+      return m_lastError;
+    }
+  }
+
+  m_lastError = XtcError::OK;
+  closeFile();
+  return m_lastError;
+}
 bool XtcParser::isValidXtcFile(const char* filepath) {
   FsFile file;
   if (!Storage.openFileForRead("XTC", filepath, file)) {
