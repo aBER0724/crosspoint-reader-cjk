@@ -37,6 +37,7 @@ class KOReaderSyncActivity final : public Activity {
         localProgress(std::move(localKoPos)) {}
 
   void onEnter() override;
+  bool isReaderActivity() const override { return true; }
   void onExit() override;
   void loop() override;
   void render(RenderLock&&) override;
