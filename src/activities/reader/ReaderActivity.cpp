@@ -134,8 +134,8 @@ void ReaderActivity::onEnter() {
     return;
   }
 
-  sdFontSystem.ensureLoaded(renderer);
-
+  // SD fonts are initialized at boot and reloaded by font settings changes.
+  // Keep reader entry free of synchronous SD parsing and font teardown.
   currentBookPath = initialBookPath;
   switch (FileTypeUtils::getOpenRoute(initialBookPath)) {
     case FileTypeUtils::FileOpenRoute::EpubReader: {
