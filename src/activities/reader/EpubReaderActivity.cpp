@@ -377,8 +377,8 @@ void EpubReaderActivity::runDeferredReaderWork() {
   // past the watermark soon. Only resume when the source HTML is already cached: startBuild()
   // otherwise inflates a whole EPUB item synchronously, which is unsuitable for deferred work.
   // Uses the last render's viewport so pagination matches the partial being extended.
-  if (section && !section->isBuilding() && section->isPartial() && section->hasHtmlCache() &&
-      !RenderLock::peek() && buildViewportWidth > 0 && !partialRebuildStartFailed &&
+  if (section && !section->isBuilding() && section->isPartial() && section->hasHtmlCache() && !RenderLock::peek() &&
+      buildViewportWidth > 0 && !partialRebuildStartFailed &&
       (waiting || section->currentPage + PARTIAL_REBUILD_START_MARGIN >= static_cast<int>(section->pageCount))) {
     RenderLock lock(false, true);
     if (!lock.locked()) return;
