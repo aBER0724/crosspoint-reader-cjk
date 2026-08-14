@@ -61,6 +61,7 @@ class TxtReaderActivity final : public Activity {
   void render(RenderLock&&) override;
   bool supportsLandscape() const override { return true; }
   bool isReaderActivity() const override { return true; }
+  bool needsReaderFontMemory() const override { return true; }
   bool handleForcedRefresh() override {
     {
       RenderLock lock(*this);

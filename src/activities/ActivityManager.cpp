@@ -125,16 +125,11 @@ void ActivityManager::renderTaskLoop() {
 }
 
 void ActivityManager::updateReaderUiGlyphCacheMode() {
-  bool readerFlowActive = currentActivity && currentActivity->isReaderActivity();
-  for (const auto& activity : stackActivities) {
-    if (activity && activity->isReaderActivity()) {
-      readerFlowActive = true;
-      break;
-    }
-  }
-  LOG_DBG("ACT", "Reader flow %s before UI cache update: free=%u max=%u", readerFlowActive ? "active" : "inactive",
-          static_cast<unsigned>(ESP.getFreeHeap()), static_cast<unsigned>(ESP.getMaxAllocHeap()));
-  FontManager::getInstance().setUiGlyphCacheSuspended(readerFlowActive);
+  const bool readerFontMemoryNeeded = currentActivity && currentActivity->needsReaderFontMemory();
+  LOG_DBG("ACT", "Reader font memory %s before UI cache update: free=%u max=%u",
+          readerFontMemoryNeeded ? "needed" : "available", static_cast<unsigned>(ESP.getFreeHeap()),
+          static_cast<unsigned>(ESP.getMaxAllocHeap()));
+  FontManager::getInstance().setUiGlyphCacheSuspended(readerFontMemoryNeeded);
   LOG_DBG("ACT", "UI cache update complete: free=%u max=%u", static_cast<unsigned>(ESP.getFreeHeap()),
           static_cast<unsigned>(ESP.getMaxAllocHeap()));
 }

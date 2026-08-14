@@ -214,6 +214,7 @@ class EpubReaderActivity final : public Activity {
            millis() - lastBackgroundBuildMs >= (waiting ? FOREGROUND_BUILD_INTERVAL_MS : BACKGROUND_BUILD_INTERVAL_MS);
   }
   bool isReaderActivity() const override { return true; }
+  bool needsReaderFontMemory() const override { return true; }
   bool handleForcedRefresh() override {
     {
       RenderLock lock(*this);
