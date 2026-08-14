@@ -45,5 +45,5 @@ class HttpDownloader {
   static DownloadError downloadToFile(const std::string& url, const std::string& destPath,
                                       ProgressCallback progress = nullptr, bool* cancelFlag = nullptr,
                                       const std::string& username = "", const std::string& password = "",
-                                      CancelCallback cancel = nullptr);
+                                      CancelCallback cancel = nullptr, size_t maxBytes = 0);
 };

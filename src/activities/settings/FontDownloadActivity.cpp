@@ -31,6 +31,8 @@ constexpr size_t MAX_MANIFEST_FAMILIES = 32;
 constexpr size_t MAX_FILES_PER_FAMILY = 32;
 constexpr uint64_t STORAGE_RESERVE_BYTES = 8ULL * 1024ULL * 1024ULL;
 constexpr const char* PREVIEW_TMP_PATH = "/.font_preview.cpfont";
+constexpr const char* PREVIEW_NEXT_PATH = "/.font_preview_next.cpfont";
+constexpr const char* PREVIEW_BACKUP_PATH = "/.font_preview_backup.cpfont";
 constexpr uint8_t DEFAULT_PREVIEW_POINT_SIZE = 14;
 
 constexpr const char* PREVIEW_SAMPLE_LINES[] = {
@@ -52,12 +54,11 @@ constexpr size_t MAX_STYLE_NAME_LENGTH = 32;
 constexpr size_t MAX_FONT_FILE_BYTES = 256ULL * 1024ULL * 1024ULL;
 
 bool isValidBaseUrl(const std::string& url) {
-  const bool isHttp = url.compare(0, 7, "http://") == 0;
   const bool isHttps = url.compare(0, 8, "https://") == 0;
-  if ((!isHttp && !isHttps) || url.empty() || url.size() > MAX_BASE_URL_LENGTH || url.back() != '/') return false;
+  if (!isHttps || url.empty() || url.size() > MAX_BASE_URL_LENGTH || url.back() != '/') return false;
   if (url.find_first_of(" \t\r\n\\?#") != std::string::npos) return false;
 
-  const size_t hostStart = isHttps ? 8 : 7;
+  const size_t hostStart = 8;
   const size_t pathStart = url.find('/', hostStart);
   return pathStart != std::string::npos && pathStart > hostStart && url.find("..", pathStart) == std::string::npos;
 }
@@ -80,6 +81,8 @@ void FontDownloadActivity::onExit() {
   // ActivityManager invokes onExit() while holding the rendering mutex.
   closePreview();
   if (Storage.exists(PREVIEW_TMP_PATH)) Storage.remove(PREVIEW_TMP_PATH);
+  if (Storage.exists(PREVIEW_NEXT_PATH)) Storage.remove(PREVIEW_NEXT_PATH);
+  if (Storage.exists(PREVIEW_BACKUP_PATH)) Storage.remove(PREVIEW_BACKUP_PATH);
 
   if (WiFi.getMode() != WIFI_MODE_NULL) {
     WiFi.disconnect(false);
@@ -170,7 +173,7 @@ bool FontDownloadActivity::fetchAndParseManifest() {
   beginNetworkTransfer();
   const auto result = HttpDownloader::downloadToFile(
       FONT_MANIFEST_URL, MANIFEST_TMP, [this](size_t, size_t) { pollDownloadCancellation(); }, &cancelRequested_, "",
-      "", [this] { return pollDownloadCancellation(); });
+      "", [this] { return pollDownloadCancellation(); }, MAX_MANIFEST_BYTES);
   endNetworkTransfer();
   if (result == HttpDownloader::ABORTED) {
     Storage.remove(MANIFEST_TMP);
@@ -537,6 +540,9 @@ bool FontDownloadActivity::computeFileCrc32(const char* path, uint32_t& outCrc) 
   const size_t fileSize = f.fileSize();
   size_t bytesRead = 0;
   while (bytesRead < fileSize) {
+    if ((bytesRead & 0xFFFF) == 0 && pollDownloadCancellation()) {
+      return false;
+    }
     const size_t remaining = fileSize - bytesRead;
     const int n = f.read(buf, remaining < BUF_SIZE ? remaining : BUF_SIZE);
     if (n <= 0) {
@@ -554,8 +560,16 @@ void FontDownloadActivity::closePreview() {
     sdFontSystem.endPreview(renderer);
     previewFontId_ = 0;
   }
+  activePreviewFamilyIndex_ = -1;
+  activePreviewFileIndex_ = -1;
   if (Storage.exists(PREVIEW_TMP_PATH) && !Storage.remove(PREVIEW_TMP_PATH)) {
     LOG_ERR("FONT", "Failed to remove preview file");
+  }
+  if (Storage.exists(PREVIEW_NEXT_PATH) && !Storage.remove(PREVIEW_NEXT_PATH)) {
+    LOG_ERR("FONT", "Failed to remove staged preview file");
+  }
+  if (Storage.exists(PREVIEW_BACKUP_PATH) && !Storage.remove(PREVIEW_BACKUP_PATH)) {
+    LOG_ERR("FONT", "Failed to remove preview backup");
   }
 }
 
@@ -567,14 +581,17 @@ void FontDownloadActivity::returnToFamilyList() {
 }
 
 void FontDownloadActivity::downloadPreview(int familyIndex, int fileIndex) {
+  if (state_ == DOWNLOADING_PREVIEW || state_ == DOWNLOADING) return;
   if (familyIndex < 0 || familyIndex >= static_cast<int>(families_.size())) return;
   auto& family = families_[familyIndex];
   if (fileIndex < 0 || fileIndex >= static_cast<int>(family.files.size())) return;
   const auto& file = family.files[fileIndex];
+  const bool hadPreview = previewFontId_ != 0;
+  const int previousFamilyIndex = activePreviewFamilyIndex_;
+  const int previousFileIndex = activePreviewFileIndex_;
 
   {
     RenderLock lock(*this);
-    closePreview();
     state_ = DOWNLOADING_PREVIEW;
     previewFamilyIndex_ = familyIndex;
     previewFileIndex_ = fileIndex;
@@ -585,11 +602,18 @@ void FontDownloadActivity::downloadPreview(int familyIndex, int fileIndex) {
   }
   requestUpdateAndWait();
 
-  auto failPreview = [this, &file](const char* message, bool cancelled) {
-    if (Storage.exists(PREVIEW_TMP_PATH)) Storage.remove(PREVIEW_TMP_PATH);
+  auto failPreview = [this, &file, hadPreview, previousFamilyIndex, previousFileIndex](const char* message,
+                                                                                       bool cancelled) {
+    if (Storage.exists(PREVIEW_NEXT_PATH)) Storage.remove(PREVIEW_NEXT_PATH);
     RenderLock lock(*this);
     if (cancelled) {
-      state_ = FAMILY_LIST;
+      if (hadPreview) {
+        previewFamilyIndex_ = activePreviewFamilyIndex_;
+        previewFileIndex_ = activePreviewFileIndex_;
+        state_ = FONT_PREVIEW;
+      } else {
+        state_ = FAMILY_LIST;
+      }
       errorAction_ = ErrorAction::None;
     } else {
       state_ = ERROR;
@@ -604,7 +628,7 @@ void FontDownloadActivity::downloadPreview(int familyIndex, int fileIndex) {
     return;
   }
 
-  if (Storage.exists(PREVIEW_TMP_PATH) && !Storage.remove(PREVIEW_TMP_PATH)) {
+  if (Storage.exists(PREVIEW_NEXT_PATH) && !Storage.remove(PREVIEW_NEXT_PATH)) {
     failPreview(tr(STR_FONT_CLEANUP_FAILED), false);
     requestUpdateAndWait();
     return;
@@ -612,9 +636,9 @@ void FontDownloadActivity::downloadPreview(int familyIndex, int fileIndex) {
 
   beginNetworkTransfer();
   const auto result = HttpDownloader::downloadToFile(
-      baseUrl_ + file.name, PREVIEW_TMP_PATH,
+      baseUrl_ + file.name, PREVIEW_NEXT_PATH,
       [this](size_t downloaded, size_t total) { updateDownloadProgress(downloaded, total); }, &cancelRequested_, "", "",
-      [this] { return pollDownloadCancellation(); });
+      [this] { return pollDownloadCancellation(); }, file.size);
   endNetworkTransfer();
   if (result == HttpDownloader::ABORTED) {
     failPreview("", true);
@@ -626,9 +650,14 @@ void FontDownloadActivity::downloadPreview(int familyIndex, int fileIndex) {
     requestUpdateAndWait();
     return;
   }
+  if (pollDownloadCancellation()) {
+    failPreview("", true);
+    requestUpdateAndWait();
+    return;
+  }
 
   HalFile downloadedFile;
-  if (!Storage.openFileForRead("FONT", PREVIEW_TMP_PATH, downloadedFile)) {
+  if (!Storage.openFileForRead("FONT", PREVIEW_NEXT_PATH, downloadedFile)) {
     failPreview(tr(STR_DOWNLOAD_FAILED), false);
     requestUpdateAndWait();
     return;
@@ -642,7 +671,12 @@ void FontDownloadActivity::downloadPreview(int familyIndex, int fileIndex) {
   }
 
   uint32_t actualCrc = 0;
-  if (!computeFileCrc32(PREVIEW_TMP_PATH, actualCrc)) {
+  if (!computeFileCrc32(PREVIEW_NEXT_PATH, actualCrc)) {
+    if (cancelRequested_) {
+      failPreview("", true);
+      requestUpdateAndWait();
+      return;
+    }
     failPreview(tr(STR_FONT_CHECKSUM_FAILED), false);
     requestUpdateAndWait();
     return;
@@ -652,20 +686,96 @@ void FontDownloadActivity::downloadPreview(int familyIndex, int fileIndex) {
     requestUpdateAndWait();
     return;
   }
-  if (!fontInstaller_.validateCpfontFile(PREVIEW_TMP_PATH)) {
+  if (pollDownloadCancellation()) {
+    failPreview("", true);
+    requestUpdateAndWait();
+    return;
+  }
+  if (!fontInstaller_.validateCpfontFile(PREVIEW_NEXT_PATH)) {
     failPreview(tr(STR_FONT_INVALID_FILE), false);
+    requestUpdateAndWait();
+    return;
+  }
+  if (pollDownloadCancellation()) {
+    failPreview("", true);
     requestUpdateAndWait();
     return;
   }
 
   {
     RenderLock lock(*this);
-    previewFontId_ = sdFontSystem.beginPreview(renderer, PREVIEW_TMP_PATH, family.name.c_str(), file.pointSize);
-    if (previewFontId_ == 0) {
-      if (Storage.exists(PREVIEW_TMP_PATH)) Storage.remove(PREVIEW_TMP_PATH);
+    bool canActivate = true;
+    if (Storage.exists(PREVIEW_BACKUP_PATH) && !Storage.remove(PREVIEW_BACKUP_PATH)) {
+      canActivate = false;
+      errorMessage_ = std::string(tr(STR_FONT_CLEANUP_FAILED)) + ": " + file.name;
+    }
+
+    if (canActivate && hadPreview) {
+      sdFontSystem.endPreview(renderer);
+      previewFontId_ = 0;
+      activePreviewFamilyIndex_ = -1;
+      activePreviewFileIndex_ = -1;
+      if (!Storage.rename(PREVIEW_TMP_PATH, PREVIEW_BACKUP_PATH)) {
+        previewFontId_ =
+            sdFontSystem.beginPreview(renderer, PREVIEW_TMP_PATH, families_[previousFamilyIndex].name.c_str(),
+                                      families_[previousFamilyIndex].files[previousFileIndex].pointSize);
+        if (previewFontId_ != 0) {
+          activePreviewFamilyIndex_ = previousFamilyIndex;
+          activePreviewFileIndex_ = previousFileIndex;
+        }
+        canActivate = false;
+        errorMessage_ = std::string(tr(STR_FONT_REPLACEMENT_FAILED)) + ": " + file.name;
+      }
+    } else if (canActivate && Storage.exists(PREVIEW_TMP_PATH) && !Storage.remove(PREVIEW_TMP_PATH)) {
+      canActivate = false;
+      errorMessage_ = std::string(tr(STR_FONT_CLEANUP_FAILED)) + ": " + file.name;
+    }
+
+    if (canActivate && !Storage.rename(PREVIEW_NEXT_PATH, PREVIEW_TMP_PATH)) {
+      if (hadPreview && Storage.rename(PREVIEW_BACKUP_PATH, PREVIEW_TMP_PATH)) {
+        previewFontId_ =
+            sdFontSystem.beginPreview(renderer, PREVIEW_TMP_PATH, families_[previousFamilyIndex].name.c_str(),
+                                      families_[previousFamilyIndex].files[previousFileIndex].pointSize);
+        if (previewFontId_ != 0) {
+          activePreviewFamilyIndex_ = previousFamilyIndex;
+          activePreviewFileIndex_ = previousFileIndex;
+        }
+      }
+      canActivate = false;
+      errorMessage_ = std::string(tr(STR_FONT_REPLACEMENT_FAILED)) + ": " + file.name;
+    }
+
+    if (canActivate) {
+      previewFontId_ = sdFontSystem.beginPreview(renderer, PREVIEW_TMP_PATH, family.name.c_str(), file.pointSize);
+      if (previewFontId_ == 0) {
+        if (Storage.exists(PREVIEW_TMP_PATH)) Storage.remove(PREVIEW_TMP_PATH);
+        if (hadPreview && Storage.rename(PREVIEW_BACKUP_PATH, PREVIEW_TMP_PATH)) {
+          previewFontId_ =
+              sdFontSystem.beginPreview(renderer, PREVIEW_TMP_PATH, families_[previousFamilyIndex].name.c_str(),
+                                        families_[previousFamilyIndex].files[previousFileIndex].pointSize);
+          if (previewFontId_ != 0) {
+            activePreviewFamilyIndex_ = previousFamilyIndex;
+            activePreviewFileIndex_ = previousFileIndex;
+          }
+        }
+        canActivate = false;
+        errorMessage_ = std::string(tr(STR_FONT_INVALID_FILE)) + ": " + file.name;
+      }
+    }
+
+    if (!canActivate) {
+      if (Storage.exists(PREVIEW_NEXT_PATH)) Storage.remove(PREVIEW_NEXT_PATH);
+      if (hadPreview && previewFontId_ != 0) {
+        activePreviewFamilyIndex_ = previousFamilyIndex;
+        activePreviewFileIndex_ = previousFileIndex;
+      }
       state_ = ERROR;
-      errorMessage_ = std::string(tr(STR_FONT_INVALID_FILE)) + ": " + file.name;
     } else {
+      if (Storage.exists(PREVIEW_BACKUP_PATH) && !Storage.remove(PREVIEW_BACKUP_PATH)) {
+        LOG_ERR("FONT", "Failed to remove previous preview backup");
+      }
+      activePreviewFamilyIndex_ = familyIndex;
+      activePreviewFileIndex_ = fileIndex;
       if (auto* cache = renderer.getFontCacheManager()) {
         cache->prewarmCache(previewFontId_, PREVIEW_SAMPLE_TEXT, 0x01);
       }
@@ -816,7 +926,7 @@ void FontDownloadActivity::downloadFamily(ManifestFamily& family) {
     auto result = HttpDownloader::downloadToFile(
         url, current.partPath.c_str(),
         [this](size_t downloaded, size_t total) { updateDownloadProgress(downloaded, total); }, &cancelRequested_, "",
-        "", [this] { return pollDownloadCancellation(); });
+        "", [this] { return pollDownloadCancellation(); }, file.size);
     endNetworkTransfer();
 
     if (result == HttpDownloader::ABORTED) {
@@ -827,6 +937,10 @@ void FontDownloadActivity::downloadFamily(ManifestFamily& family) {
     if (result != HttpDownloader::OK) {
       LOG_ERR("FONT", "Download failed: %s (%d)", file.name.c_str(), result);
       failTransaction(std::string(tr(STR_DOWNLOAD_FAILED)) + ": " + file.name, false);
+      return;
+    }
+    if (pollDownloadCancellation()) {
+      failTransaction("", true);
       return;
     }
 
@@ -845,6 +959,10 @@ void FontDownloadActivity::downloadFamily(ManifestFamily& family) {
 
     uint32_t actualCrc = 0;
     if (!computeFileCrc32(current.partPath.c_str(), actualCrc)) {
+      if (cancelRequested_) {
+        failTransaction("", true);
+        return;
+      }
       LOG_ERR("FONT", "Failed to open file for CRC check: %s", current.partPath.c_str());
       failTransaction(std::string(tr(STR_FONT_CHECKSUM_FAILED)) + ": " + file.name, false);
       return;
@@ -854,11 +972,19 @@ void FontDownloadActivity::downloadFamily(ManifestFamily& family) {
       failTransaction(std::string(tr(STR_FONT_CHECKSUM_MISMATCH)) + ": " + file.name, false);
       return;
     }
+    if (pollDownloadCancellation()) {
+      failTransaction("", true);
+      return;
+    }
     LOG_DBG("FONT", "Downloaded %s (size=%zu crc32=%08x)", file.name.c_str(), file.size, actualCrc);
 
     if (!fontInstaller_.validateCpfontFile(current.partPath.c_str())) {
       LOG_ERR("FONT", "Invalid .cpfont: %s", current.partPath.c_str());
       failTransaction(std::string(tr(STR_FONT_INVALID_FILE)) + ": " + file.name, false);
+      return;
+    }
+    if (pollDownloadCancellation()) {
+      failTransaction("", true);
       return;
     }
 
@@ -1088,12 +1214,6 @@ void FontDownloadActivity::loop() {
           changePreviewFile(ButtonNavigator::previousIndex(previewFileIndex_, fileCount));
         });
         buttonNavigator_.onNextRelease([this, changePreviewFile, fileCount] {
-          changePreviewFile(ButtonNavigator::nextIndex(previewFileIndex_, fileCount));
-        });
-        buttonNavigator_.onPreviousContinuous([this, changePreviewFile, fileCount] {
-          changePreviewFile(ButtonNavigator::previousIndex(previewFileIndex_, fileCount));
-        });
-        buttonNavigator_.onNextContinuous([this, changePreviewFile, fileCount] {
           changePreviewFile(ButtonNavigator::nextIndex(previewFileIndex_, fileCount));
         });
       }

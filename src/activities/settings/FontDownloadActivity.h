@@ -85,6 +85,8 @@ class FontDownloadActivity : public Activity {
 
   int previewFamilyIndex_ = -1;
   int previewFileIndex_ = -1;
+  int activePreviewFamilyIndex_ = -1;
+  int activePreviewFileIndex_ = -1;
   int previewFontId_ = 0;
   ErrorAction errorAction_ = ErrorAction::None;
   // Download progress
@@ -116,7 +118,7 @@ class FontDownloadActivity : public Activity {
   void returnToFamilyList();
   void installPreviewedFamily();
   void updateAll();
-  static bool computeFileCrc32(const char* path, uint32_t& outCrc);
+  bool computeFileCrc32(const char* path, uint32_t& outCrc);
   bool showDownloadAllRow() const;
   bool showUpdateAllRow() const;
   int specialRowCount() const;
