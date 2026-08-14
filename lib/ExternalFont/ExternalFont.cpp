@@ -418,32 +418,44 @@ void ExternalFont::releaseGlyphCache() {
   delete[] _hashTable;
   _hashTable = nullptr;
   _accessCounter = 0;
+  _glyphCacheAllocationFailed = false;
   _lastReadOffset = 0;
   _hasLastReadOffset = false;
+}
+
+bool ExternalFont::prepareGlyphCache() {
+  if (!_isLoaded) {
+    return false;
+  }
+  return ensureGlyphCache();
 }
 
 bool ExternalFont::ensureGlyphCache() {
   if (_cache && _hashTable) {
     return true;
   }
-
-  releaseGlyphCache();
-
-  _cache = new (std::nothrow) CacheEntry[CACHE_SIZE];
-  _hashTable = new (std::nothrow) int16_t[CACHE_SIZE];
-  if (!_cache || !_hashTable) {
-    LOG_ERR("EFT", "Failed to allocate glyph cache (%d bytes)",
-            static_cast<int>(CACHE_SIZE * (sizeof(CacheEntry) + sizeof(int16_t))));
-    releaseGlyphCache();
+  if (_glyphCacheAllocationFailed) {
     return false;
   }
 
-  std::memset(_hashTable, -1, CACHE_SIZE * sizeof(int16_t));
+  releaseGlyphCache();
+
+  _cache = new (std::nothrow) CacheEntry[_cacheCapacity];
+  _hashTable = new (std::nothrow) int16_t[_cacheCapacity];
+  if (!_cache || !_hashTable) {
+    LOG_ERR("EFT", "Failed to allocate glyph cache (%d bytes)",
+            static_cast<int>(_cacheCapacity * (sizeof(CacheEntry) + sizeof(int16_t))));
+    releaseGlyphCache();
+    _glyphCacheAllocationFailed = true;
+    return false;
+  }
+
+  std::memset(_hashTable, -1, _cacheCapacity * sizeof(int16_t));
   _accessCounter = 0;
   _lastReadOffset = 0;
   _hasLastReadOffset = false;
   LOG_DBG("EFT", "Glyph cache allocated: %dKB",
-          static_cast<int>(CACHE_SIZE * (sizeof(CacheEntry) + sizeof(int16_t)) / 1024));
+          static_cast<int>(_cacheCapacity * (sizeof(CacheEntry) + sizeof(int16_t)) / 1024));
   return true;
 }
 
@@ -453,9 +465,9 @@ int ExternalFont::findInCache(uint32_t codepoint) const {
   }
 
   // O(1) hash table lookup with linear probing for collisions
-  int hash = hashCodepoint(codepoint);
-  for (int i = 0; i < CACHE_SIZE; i++) {
-    int idx = (hash + i) % CACHE_SIZE;
+  size_t hash = hashCodepoint(codepoint);
+  for (size_t i = 0; i < _cacheCapacity; i++) {
+    size_t idx = (hash + i) % _cacheCapacity;
     int16_t cacheIdx = _hashTable[idx];
     if (cacheIdx == -1) {
       return -1;
@@ -471,7 +483,7 @@ int ExternalFont::getLruSlot() {
   int lruIndex = 0;
   uint32_t minUsed = _cache[0].lastUsed;
 
-  for (int i = 1; i < CACHE_SIZE; i++) {
+  for (size_t i = 1; i < _cacheCapacity; i++) {
     if (_cache[i].codepoint == 0xFFFFFFFF) {
       return i;
     }
@@ -540,9 +552,9 @@ const uint8_t* ExternalFont::getGlyph(uint32_t codepoint) {
   // Cache miss: pick an LRU slot and remove its old hash table entry.
   int slot = getLruSlot();
   if (_cache[slot].codepoint != 0xFFFFFFFF) {
-    int oldHash = hashCodepoint(_cache[slot].codepoint);
-    for (int i = 0; i < CACHE_SIZE; i++) {
-      int idx = (oldHash + i) % CACHE_SIZE;
+    size_t oldHash = hashCodepoint(_cache[slot].codepoint);
+    for (size_t i = 0; i < _cacheCapacity; i++) {
+      size_t idx = (oldHash + i) % _cacheCapacity;
       if (_hashTable[idx] == slot) {
         _hashTable[idx] = -1;
         break;
@@ -732,9 +744,9 @@ const uint8_t* ExternalFont::getGlyph(uint32_t codepoint) {
   }
 
   // Insert into hash table.
-  int hash = hashCodepoint(codepoint);
-  for (int i = 0; i < CACHE_SIZE; i++) {
-    int idx = (hash + i) % CACHE_SIZE;
+  size_t hash = hashCodepoint(codepoint);
+  for (size_t i = 0; i < _cacheCapacity; i++) {
+    size_t idx = (hash + i) % _cacheCapacity;
     if (_hashTable[idx] == -1) {
       _hashTable[idx] = slot;
       break;
@@ -939,7 +951,7 @@ bool ExternalFont::preloadGlyphs(const uint32_t* codepoints, const size_t count,
     return true;
   }
 
-  const size_t maxLoad = std::min(count, static_cast<size_t>(PRELOAD_LIMIT));
+  const size_t maxLoad = std::min(count, getPreloadLimit());
 
   // Sort + dedupe so SD reads stay roughly sequential (especially for legacy
   // .bin where neighbouring codepoints are neighbouring file offsets).
@@ -1011,9 +1023,9 @@ bool ExternalFont::preloadGlyphs(const uint32_t* codepoints, const size_t count,
 
       const int slot = getLruSlot();
       if (_cache[slot].codepoint != 0xFFFFFFFF) {
-        const int oldHash = hashCodepoint(_cache[slot].codepoint);
-        for (int i = 0; i < CACHE_SIZE; i++) {
-          const int idx = (oldHash + i) % CACHE_SIZE;
+        const size_t oldHash = hashCodepoint(_cache[slot].codepoint);
+        for (size_t i = 0; i < _cacheCapacity; i++) {
+          const size_t idx = (oldHash + i) % _cacheCapacity;
           if (_hashTable[idx] == slot) {
             _hashTable[idx] = -1;
             break;
@@ -1042,9 +1054,9 @@ bool ExternalFont::preloadGlyphs(const uint32_t* codepoints, const size_t count,
         _cache[slot].metrics.advanceX = _charWidth / 3;
       }
 
-      const int hash = hashCodepoint(glyph.codepoint);
-      for (int i = 0; i < CACHE_SIZE; i++) {
-        const int idx = (hash + i) % CACHE_SIZE;
+      const size_t hash = hashCodepoint(glyph.codepoint);
+      for (size_t i = 0; i < _cacheCapacity; i++) {
+        const size_t idx = (hash + i) % _cacheCapacity;
         if (_hashTable[idx] == -1) {
           _hashTable[idx] = slot;
           break;

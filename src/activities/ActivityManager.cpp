@@ -2,6 +2,7 @@
 
 #include <Epub/Section.h>
 #include <FontCacheManager.h>
+#include <FontManager.h>
 #include <HalGPIO.h>
 #include <HalPowerManager.h>
 
@@ -71,6 +72,7 @@ void ActivityManager::renderTaskLoop() {
   while (true) {
     ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
     const uint32_t renderSerial = renderRequestSerial.load(std::memory_order_relaxed);
+
     TaskHandle_t waiter = nullptr;
     uint32_t waiterSerial = 0;
     taskENTER_CRITICAL(&activityManagerSpinlock);
@@ -90,6 +92,7 @@ void ActivityManager::renderTaskLoop() {
       // Acquire the lock before reading currentActivity to avoid a TOCTOU race
       // where the main task deletes the activity between the null-check and render().
       RenderLock renderLock(true, true);
+
       renderer.setDeferRefreshWhileBusy(!mustWaitForDisplay);
       if (currentActivity) {
         HalPowerManager::Lock powerLock;  // Ensure we don't go into low-power mode while rendering
@@ -119,6 +122,21 @@ void ActivityManager::renderTaskLoop() {
 
     completedRenderSerial.store(renderSerial, std::memory_order_release);
   }
+}
+
+void ActivityManager::updateReaderUiGlyphCacheMode() {
+  bool readerFlowActive = currentActivity && currentActivity->isReaderActivity();
+  for (const auto& activity : stackActivities) {
+    if (activity && activity->isReaderActivity()) {
+      readerFlowActive = true;
+      break;
+    }
+  }
+  LOG_DBG("ACT", "Reader flow %s before UI cache update: free=%u max=%u", readerFlowActive ? "active" : "inactive",
+          static_cast<unsigned>(ESP.getFreeHeap()), static_cast<unsigned>(ESP.getMaxAllocHeap()));
+  FontManager::getInstance().setUiGlyphCacheSuspended(readerFlowActive);
+  LOG_DBG("ACT", "UI cache update complete: free=%u max=%u", static_cast<unsigned>(ESP.getFreeHeap()),
+          static_cast<unsigned>(ESP.getMaxAllocHeap()));
 }
 
 void ActivityManager::loop() {
@@ -170,6 +188,7 @@ void ActivityManager::loop() {
 
       } else {
         currentActivity = std::move(stackActivities.back());
+        updateReaderUiGlyphCacheMode();
         stackActivities.pop_back();
         LOG_DBG("ACT", "Popped from activity stack, new size = %zu", stackActivities.size());
 
@@ -219,6 +238,7 @@ void ActivityManager::loop() {
       }
       pendingAction = PendingAction::None;
       currentActivity = std::move(pendingActivity);
+      updateReaderUiGlyphCacheMode();
 
       lock.unlock();  // onEnter may acquire its own lock
       // Apply screen+input orientation BEFORE onEnter so the activity's
@@ -331,6 +351,7 @@ void ActivityManager::replaceActivity(std::unique_ptr<Activity>&& newActivity) {
   } else {
     // No current activity, safe to launch immediately
     currentActivity = std::move(newActivity);
+    updateReaderUiGlyphCacheMode();
     // Apply orientation before onEnter so the first render is rotated correctly.
     OrientationHelper::applyOrientation(renderer, mappedInput, currentActivity.get());
     currentActivity->onEnter();
@@ -362,6 +383,7 @@ void ActivityManager::goToBrowser() {
 }
 
 void ActivityManager::goToReader(std::string path) {
+  LOG_DBG("ACT", "goToReader requested: %s", path.c_str());
   replaceActivity(std::make_unique<ReaderActivity>(renderer, mappedInput, std::move(path)));
 }
 

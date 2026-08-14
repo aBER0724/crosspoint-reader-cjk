@@ -221,14 +221,33 @@ void FontManager::setGlyphCachesSuspended(bool suspended) {
   }
 }
 
+void FontManager::setUiGlyphCacheSuspended(bool suspended) {
+  if (_uiGlyphCacheSuspended == suspended) {
+    if (suspended && !isUiSharingReaderFont()) {
+      _activeUiFont.releaseGlyphCache();
+    }
+    return;
+  }
+  _uiGlyphCacheSuspended = suspended;
+  if (suspended && !isUiSharingReaderFont()) {
+    _activeUiFont.releaseGlyphCache();
+  } else if (!suspended && !isUiSharingReaderFont()) {
+    // Release the reader bitmap cache before UI drawing resumes so the
+    // independent UI font can immediately claim one contiguous cache block
+    // before home cover/title allocations fragment the heap.
+    _activeFont.releaseGlyphCache();
+    _activeUiFont.prepareGlyphCache();
+  }
+}
+
 bool FontManager::isGlyphCacheSuspendedFor(const ExternalFont* font) const {
-  if (!_glyphCachesSuspended || !font) {
+  if (!font) {
     return false;
   }
-  if (isUiSharingReaderFont()) {
-    return false;
+  if (_glyphCachesSuspended && !isUiSharingReaderFont() && font == &_activeFont) {
+    return true;
   }
-  return font == &_activeFont;
+  return _uiGlyphCacheSuspended && !isUiSharingReaderFont() && font == &_activeUiFont;
 }
 
 FontManager::ScopedGlyphCacheSuspension::ScopedGlyphCacheSuspension(FontManager& manager)
