@@ -325,8 +325,33 @@ bool EpubReaderActivity::resolvePendingAnchor() {
   return true;
 }
 
+bool EpubReaderActivity::resolvePendingResumePage() {
+  if (!pendingResumePage || !section) {
+    return false;
+  }
+
+  int targetPage = *pendingResumePage;
+  if (targetPage >= static_cast<int>(section->pageCount)) {
+    if (section->isBuilding()) {
+      return false;
+    }
+    if (section->pageCount == 0) {
+      pendingResumePage.reset();
+      return false;
+    }
+    targetPage = section->pageCount - 1;
+  }
+
+  section->currentPage = targetPage;
+  pendingResumePage.reset();
+  waitingForCurrentPage.store(false, std::memory_order_release);
+  LOG_DBG("ERS", "Saved resume page is available: %d", targetPage);
+  return true;
+}
+
 void EpubReaderActivity::resetSection() {
   waitingForCurrentPage.store(false, std::memory_order_release);
+  pendingResumePage.reset();
   section.reset();
 }
 
@@ -352,9 +377,9 @@ void EpubReaderActivity::runDeferredReaderWork() {
   // past the watermark soon. Only resume when the source HTML is already cached: startBuild()
   // otherwise inflates a whole EPUB item synchronously, which is unsuitable for deferred work.
   // Uses the last render's viewport so pagination matches the partial being extended.
-  if (!waiting && section && !section->isBuilding() && section->isPartial() && section->hasHtmlCache() &&
+  if (section && !section->isBuilding() && section->isPartial() && section->hasHtmlCache() &&
       !RenderLock::peek() && buildViewportWidth > 0 && !partialRebuildStartFailed &&
-      section->currentPage + PARTIAL_REBUILD_START_MARGIN >= static_cast<int>(section->pageCount)) {
+      (waiting || section->currentPage + PARTIAL_REBUILD_START_MARGIN >= static_cast<int>(section->pageCount))) {
     RenderLock lock(false, true);
     if (!lock.locked()) return;
     // Reuse the last render's viewport so the extension paginates identically to the partial.
@@ -412,14 +437,15 @@ void EpubReaderActivity::runDeferredReaderWork() {
         requestUpdate();
       } else {
         const bool anchorResolved = resolvePendingAnchor();
+        const bool resumeResolved = resolvePendingResumePage();
         const bool pageAvailable = section->currentPage >= 0 && section->currentPage < section->pageCount;
-        const bool targetAvailable = pendingAnchor.empty() && pageAvailable;
+        const bool targetAvailable = !pendingResumePage && pendingAnchor.empty() && pageAvailable;
         if (waiting && (targetAvailable || section->isBuildComplete())) {
           waitingForCurrentPage.store(false, std::memory_order_release);
           prioritizeNextReaderRender();
           requestUpdate();
         }
-        if ((section->isBuildComplete() && applyDeferredReposition()) || anchorResolved) {
+        if ((section->isBuildComplete() && applyDeferredReposition()) || anchorResolved || resumeResolved) {
           // The chapter re-paginated since the saved progress (settings changed): we now know the
           // real page count, so re-render at the remapped page. No-op for an unchanged resume.
           requestUpdate();
@@ -1084,6 +1110,10 @@ void EpubReaderActivity::toggleAutoPageTurn(const uint8_t selectedPageTurnOption
 void EpubReaderActivity::pageTurn(bool isForwardTurn) {
   const unsigned long now = millis();
   prioritizeNextReaderRender();
+  // Once the user turns away from the temporary fallback page, their explicit
+  // navigation takes precedence over the saved-page auto-resume.
+  pendingResumePage.reset();
+  waitingForCurrentPage.store(false, std::memory_order_release);
 
   if (isForwardTurn) {
     // Advance within the section while there are (or may still be) more pages: either a built
@@ -1091,7 +1121,7 @@ void EpubReaderActivity::pageTurn(bool isForwardTurn) {
     // beyond the current watermark and render()'s ensure-built pump will lay them out. Only when
     // the section is fully built AND we're on its last page do we move to the next spine -- using
     // the live pageCount alone would mistake the build watermark for the end of a giant spine.
-    if (section->currentPage < section->pageCount - 1 || section->isBuilding()) {
+    if (section->currentPage < section->pageCount - 1 || section->isBuilding() || section->isPartial()) {
       section->currentPage++;
     } else {
       // We don't want to delete the section mid-render, so grab the semaphore
@@ -1224,6 +1254,17 @@ void EpubReaderActivity::render(RenderLock&& lock) {
       cachedChapterTotalPageCount = 0;
     }
     const bool cacheComplete = cacheLoaded && !section->isPartial();
+    const bool resumeBeyondPartial = cacheLoaded && section->isPartial() && !pendingPageJump && pendingAnchor.empty() &&
+                                     !pendingPercentJump && nextPageNumber >= static_cast<int>(section->pageCount) &&
+                                     section->pageCount > 0;
+    if (resumeBeyondPartial) {
+      pendingResumePage = static_cast<uint16_t>(nextPageNumber);
+      // The fallback page is already readable. Treating this as a foreground wait
+      // immediately rebuilds the whole chapter at foreground cadence and starves input.
+      waitingForCurrentPage.store(false, std::memory_order_release);
+      LOG_DBG("ERS", "Resume page %d exceeds partial cache; showing page %d and rebuilding when idle", nextPageNumber,
+              section->pageCount - 1);
+    }
     if (!cacheComplete) {
       if (section->isPartial()) {
         LOG_DBG("ERS", "Partial cache found (%d pages), resuming build...", section->pageCount);
@@ -1279,9 +1320,13 @@ void EpubReaderActivity::render(RenderLock&& lock) {
         // from page 0 (minutes of background CPU + SD writes on a giant spine), pure waste when
         // the reader never nears the watermark this session. loop() starts it lazily once the
         // reader is within PARTIAL_REBUILD_START_MARGIN pages of the watermark.
-        if (section->isPartial() &&
-            (anchorJump ? section->getPageForAnchor(pendingAnchor).has_value()
-                        : target + PARTIAL_REBUILD_START_MARGIN < static_cast<int>(section->pageCount))) {
+        if (resumeBeyondPartial) {
+          // Do not inflate and restart the whole chapter while the first frame is
+          // waiting. Render the cached fallback page now; loop() resumes the
+          // incremental rebuild only after the reader has been idle.
+        } else if (section->isPartial() &&
+                   (anchorJump ? section->getPageForAnchor(pendingAnchor).has_value()
+                               : target + PARTIAL_REBUILD_START_MARGIN < static_cast<int>(section->pageCount))) {
           LOG_DBG("ERS", "Partial covers target %d of %d; deferring extension build", target, section->pageCount);
         } else {
           bool started;
@@ -1312,7 +1357,9 @@ void EpubReaderActivity::render(RenderLock&& lock) {
       LOG_DBG("ERS", "Cache found, skipping build...");
     }
 
-    if (pendingPageJump.has_value()) {
+    if (pendingResumePage) {
+      section->currentPage = section->pageCount - 1;
+    } else if (pendingPageJump.has_value()) {
       section->currentPage = *pendingPageJump;
       pendingPageJump.reset();
     } else {
@@ -1385,9 +1432,23 @@ void EpubReaderActivity::render(RenderLock&& lock) {
   const bool pagePending = section->currentPage < 0 || section->currentPage >= static_cast<int>(section->pageCount);
   if (section->isBuilding() && (anchorPending || pagePending)) {
     waitingForCurrentPage.store(true, std::memory_order_release);
-    return;
+    // A legacy partial cache can contain fewer pages than the persisted resume
+    // position. Keep the last valid cached page on screen while the incremental
+    // builder catches up instead of leaving the previous activity visible for
+    // tens of seconds. Anchor navigation still waits because no safe fallback
+    // destination is known.
+    if (pagePending && !anchorPending && section->isPartial() && section->pageCount > 0) {
+      pendingResumePage = static_cast<uint16_t>(section->currentPage);
+      section->currentPage = section->pageCount - 1;
+      LOG_DBG("ERS", "Resume page %d exceeds partial cache; showing page %d while rebuilding", *pendingResumePage,
+              section->currentPage);
+    } else {
+      return;
+    }
   }
-  waitingForCurrentPage.store(false, std::memory_order_release);
+  if (!pendingResumePage) {
+    waitingForCurrentPage.store(false, std::memory_order_release);
+  }
 
   // Apply a deferred settings-change reposition now that the real page count is known (a no-op for
   // a plain resume / unchanged pagination). If still building, this defers to loop() on completion.
@@ -1543,7 +1604,7 @@ bool EpubReaderActivity::saveProgress(int spineIndex, int currentPage, int pageC
 }
 
 void EpubReaderActivity::queueProgressSave() {
-  if (!epub || !section) return;
+  if (!epub || !section || pendingResumePage) return;
 
   EpubReaderUtils::queueProgressSave(epub->getCachePath(), currentSpineIndex, section->currentPage,
                                      section->estimatedTotalPages());

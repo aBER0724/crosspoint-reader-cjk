@@ -20,6 +20,11 @@ class EpubReaderActivity final : public Activity {
   int currentSpineIndex = 0;
   int nextPageNumber = 0;
   std::optional<uint16_t> pendingPageJump;
+  // A saved page beyond a loaded partial cache's watermark. The last cached page
+  // stays visible while incremental layout catches up, then the reader jumps here.
+  // Progress persistence is suppressed while this is set so the fallback page does
+  // not overwrite the real saved position.
+  std::optional<uint16_t> pendingResumePage;
   // Set when navigating to a footnote href with a fragment (e.g. #note1).
   // Cleared on the next render after the new section loads and resolves it to a page.
   std::string pendingAnchor;
@@ -155,6 +160,8 @@ class EpubReaderActivity final : public Activity {
   // Resolve a fragment anchor from pages laid out so far. Call only while the
   // section is protected by RenderLock.
   bool resolvePendingAnchor();
+  // Apply a saved page once an incremental partial-cache rebuild reaches it.
+  bool resolvePendingResumePage();
   // Cancels an urgent build wait before discarding the active section. All
   // navigation paths that replace a section use this to avoid carrying an
   // obsolete wait state into the next render.
