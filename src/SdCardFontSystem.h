@@ -35,7 +35,13 @@ class SdCardFontSystem {
 
   /// Mark the registry as needing re-discovery.
   /// Thread-safe: can be called from the web server task.
-  void markRegistryDirty() { registryDirty_.store(true, std::memory_order_release); }
+  void markRegistryDirty() {
+    registryDirty_.store(true, std::memory_order_release);
+    residentFontsDirty_.store(true, std::memory_order_release);
+  }
+
+  void markResidentFontsDirty() { residentFontsDirty_.store(true, std::memory_order_release); }
+  bool hasPendingReload() const { return residentFontsDirty_.load(std::memory_order_acquire); }
 
   /// If the registry is dirty, re-scan the SD card now and clear the flag.
   /// Used by the web UI so uploaded/deleted fonts appear in the list
@@ -55,6 +61,7 @@ class SdCardFontSystem {
   SdCardFontManager manager_;
   std::string loadedUiFamilyName_;
   std::atomic<bool> registryDirty_{false};
+  std::atomic<bool> residentFontsDirty_{false};
 };
 
 // Global SD card font system instance (defined in main.cpp).

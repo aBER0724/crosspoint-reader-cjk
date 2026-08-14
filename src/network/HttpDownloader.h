@@ -12,6 +12,7 @@
 class HttpDownloader {
  public:
   using ProgressCallback = std::function<void(size_t downloaded, size_t total)>;
+  using CancelCallback = std::function<bool()>;
   // Called with each body chunk as it arrives; return false to abort. Lets a
   // streaming parser consume the response without buffering the whole body.
   using DataCallback = std::function<bool(const uint8_t* data, size_t len)>;
@@ -43,5 +44,6 @@ class HttpDownloader {
    */
   static DownloadError downloadToFile(const std::string& url, const std::string& destPath,
                                       ProgressCallback progress = nullptr, bool* cancelFlag = nullptr,
-                                      const std::string& username = "", const std::string& password = "");
+                                      const std::string& username = "", const std::string& password = "",
+                                      CancelCallback cancel = nullptr);
 };

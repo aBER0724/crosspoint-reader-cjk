@@ -2303,7 +2303,9 @@ void CrossPointWebServer::handleFontUploadData() {
   if (!isAdminAuthorized()) {
     if (upload.status == UPLOAD_FILE_START) {
       fontUpload.valid = false;
-      fontUpload.filePath.clear();
+      fontUpload.finalPath.clear();
+      fontUpload.tempPath.clear();
+      fontUpload.backupPath.clear();
     }
     return;
   }
@@ -2311,13 +2313,22 @@ void CrossPointWebServer::handleFontUploadData() {
   switch (upload.status) {
     case UPLOAD_FILE_START: {
       resetTaskWatchdogIfSubscribed();
+      if (fontUpload.file.isOpen()) fontUpload.file.close();
+      if (!fontUpload.tempPath.empty() && Storage.exists(fontUpload.tempPath.c_str())) {
+        Storage.remove(fontUpload.tempPath.c_str());
+      }
+
       String family = server->arg("family");
       fontUpload.file = FsFile();
       fontUpload.familyName.clear();
-      fontUpload.filePath.clear();
+      fontUpload.finalPath.clear();
+      fontUpload.tempPath.clear();
+      fontUpload.backupPath.clear();
       fontUpload.valid = false;
       fontUpload.magicChecked = false;
       fontUpload.bytesWritten = 0;
+      fontUpload.magic.fill(0);
+      fontUpload.magicBytes = 0;
       fontUpload.bufferPos = 0;
 
       if (!FontInstaller::isValidFamilyName(family.c_str())) {
@@ -2327,7 +2338,6 @@ void CrossPointWebServer::handleFontUploadData() {
 
       String filename = upload.filename;
       filename.replace(' ', '_');
-      // Validate filename: rejects path traversal and enforces a .cpfont basename.
       if (!FontInstaller::isValidCpfontFilename(filename.c_str())) {
         LOG_ERR("WEB", "Invalid font filename: %s", filename.c_str());
         break;
@@ -2335,24 +2345,44 @@ void CrossPointWebServer::handleFontUploadData() {
 
       fontUpload.familyName = family.c_str();
 
-      // Create a temporary FontInstaller for directory creation
       FontInstaller installer(sdFontSystem.registry());
       if (!installer.ensureFamilyDir(family.c_str())) {
         LOG_ERR("WEB", "Failed to create font family dir");
         break;
       }
 
-      char path[128];
-      FontInstaller::buildFontPath(family.c_str(), filename.c_str(), path, sizeof(path));
-      fontUpload.filePath = path;
+      char path[160];
+      if (!FontInstaller::buildFontPath(family.c_str(), filename.c_str(), path, sizeof(path))) {
+        LOG_ERR("WEB", "Invalid or oversized font upload path");
+        break;
+      }
+      fontUpload.finalPath = path;
+      fontUpload.tempPath = fontUpload.finalPath + ".part";
+      fontUpload.backupPath = fontUpload.finalPath + ".bak";
 
-      if (!Storage.openFileForWrite("WEB", path, fontUpload.file)) {
-        LOG_ERR("WEB", "Failed to open font file for write: %s", path);
+      if (Storage.exists(fontUpload.tempPath.c_str()) && !Storage.remove(fontUpload.tempPath.c_str())) {
+        LOG_ERR("WEB", "Failed to remove stale font upload: %s", fontUpload.tempPath.c_str());
+        break;
+      }
+      if (Storage.exists(fontUpload.backupPath.c_str())) {
+        if (Storage.exists(fontUpload.finalPath.c_str())) {
+          if (!Storage.remove(fontUpload.backupPath.c_str())) {
+            LOG_ERR("WEB", "Failed to remove stale font backup: %s", fontUpload.backupPath.c_str());
+            break;
+          }
+        } else if (!Storage.rename(fontUpload.backupPath.c_str(), fontUpload.finalPath.c_str())) {
+          LOG_ERR("WEB", "Failed to restore interrupted font upload: %s", fontUpload.finalPath.c_str());
+          break;
+        }
+      }
+
+      if (!Storage.openFileForWrite("WEB", fontUpload.tempPath.c_str(), fontUpload.file)) {
+        LOG_ERR("WEB", "Failed to open font upload for write: %s", fontUpload.tempPath.c_str());
         break;
       }
 
       fontUpload.valid = true;
-      LOG_DBG("WEB", "Font upload started: %s -> %s", filename.c_str(), path);
+      LOG_DBG("WEB", "Font upload started: %s -> %s", filename.c_str(), fontUpload.tempPath.c_str());
       break;
     }
 
@@ -2360,31 +2390,51 @@ void CrossPointWebServer::handleFontUploadData() {
       if (!fontUpload.valid) break;
       resetTaskWatchdogIfSubscribed();
 
-      // Validate magic bytes on first chunk only
-      if (!fontUpload.magicChecked && upload.currentSize >= 8) {
-        if (memcmp(upload.buf, "CPFONT\0\0", 8) != 0) {
-          LOG_ERR("WEB", "Invalid .cpfont magic bytes");
-          fontUpload.valid = false;
-          break;
-        }
-        fontUpload.magicChecked = true;
+      const size_t bufferedTotal = fontUpload.bytesWritten + fontUpload.bufferPos;
+      if (bufferedTotal > FontUploadState::MAX_FILE_SIZE ||
+          upload.currentSize > FontUploadState::MAX_FILE_SIZE - bufferedTotal) {
+        LOG_ERR("WEB", "Font upload exceeds maximum size");
+        fontUpload.valid = false;
+        break;
       }
 
-      // Buffer writes for efficiency
+      if (!fontUpload.magicChecked) {
+        const size_t magicRemaining = fontUpload.magic.size() - fontUpload.magicBytes;
+        const size_t magicChunk = upload.currentSize < magicRemaining ? upload.currentSize : magicRemaining;
+        if (magicChunk > 0) {
+          memcpy(fontUpload.magic.data() + fontUpload.magicBytes, upload.buf, magicChunk);
+          fontUpload.magicBytes += magicChunk;
+        }
+        if (fontUpload.magicBytes == fontUpload.magic.size()) {
+          fontUpload.magicChecked = true;
+          if (memcmp(fontUpload.magic.data(), "CPFONT\0\0", fontUpload.magic.size()) != 0) {
+            LOG_ERR("WEB", "Invalid .cpfont magic bytes");
+            fontUpload.valid = false;
+            break;
+          }
+        }
+      }
+
       size_t remaining = upload.currentSize;
       const uint8_t* src = upload.buf;
-      while (remaining > 0) {
-        size_t space = FontUploadState::BUFFER_SIZE - fontUpload.bufferPos;
-        size_t chunk = (remaining < space) ? remaining : space;
+      while (remaining > 0 && fontUpload.valid) {
+        const size_t space = FontUploadState::BUFFER_SIZE - fontUpload.bufferPos;
+        const size_t chunk = remaining < space ? remaining : space;
         memcpy(fontUpload.buffer.data() + fontUpload.bufferPos, src, chunk);
         fontUpload.bufferPos += chunk;
         src += chunk;
         remaining -= chunk;
 
-        if (fontUpload.bufferPos >= FontUploadState::BUFFER_SIZE) {
-          fontUpload.file.write(fontUpload.buffer.data(), fontUpload.bufferPos);
-          fontUpload.bytesWritten += fontUpload.bufferPos;
+        if (fontUpload.bufferPos == FontUploadState::BUFFER_SIZE) {
+          const size_t pending = fontUpload.bufferPos;
+          const size_t written = fontUpload.file.write(fontUpload.buffer.data(), pending);
+          fontUpload.bytesWritten += written;
           fontUpload.bufferPos = 0;
+          if (written != pending) {
+            LOG_ERR("WEB", "Failed to write font upload: %zu/%zu bytes", written, pending);
+            fontUpload.valid = false;
+            break;
+          }
           resetTaskWatchdogIfSubscribed();
         }
       }
@@ -2392,18 +2442,55 @@ void CrossPointWebServer::handleFontUploadData() {
     }
 
     case UPLOAD_FILE_END: {
-      // Flush remaining buffer
       if (fontUpload.valid && fontUpload.bufferPos > 0) {
-        fontUpload.file.write(fontUpload.buffer.data(), fontUpload.bufferPos);
-        fontUpload.bytesWritten += fontUpload.bufferPos;
+        const size_t pending = fontUpload.bufferPos;
+        const size_t written = fontUpload.file.write(fontUpload.buffer.data(), pending);
+        fontUpload.bytesWritten += written;
         fontUpload.bufferPos = 0;
+        if (written != pending) {
+          LOG_ERR("WEB", "Failed to flush font upload: %zu/%zu bytes", written, pending);
+          fontUpload.valid = false;
+        }
       }
-      if (fontUpload.file.isOpen()) {
-        fontUpload.file.close();
+      if (!fontUpload.magicChecked || fontUpload.bytesWritten < fontUpload.magic.size()) {
+        LOG_ERR("WEB", "Font upload is shorter than the .cpfont header");
+        fontUpload.valid = false;
+      }
+      if (fontUpload.file.isOpen()) fontUpload.file.close();
+
+      FontInstaller installer(sdFontSystem.registry());
+      if (fontUpload.valid && !installer.validateCpfontFile(fontUpload.tempPath.c_str())) {
+        LOG_ERR("WEB", "Uploaded .cpfont failed validation: %s", fontUpload.tempPath.c_str());
+        fontUpload.valid = false;
       }
 
-      if (!fontUpload.valid && !fontUpload.filePath.empty()) {
-        Storage.remove(fontUpload.filePath.c_str());
+      bool backupCreated = false;
+      if (fontUpload.valid && Storage.exists(fontUpload.finalPath.c_str())) {
+        if (Storage.exists(fontUpload.backupPath.c_str()) && !Storage.remove(fontUpload.backupPath.c_str())) {
+          LOG_ERR("WEB", "Failed to clear font backup: %s", fontUpload.backupPath.c_str());
+          fontUpload.valid = false;
+        } else if (!Storage.rename(fontUpload.finalPath.c_str(), fontUpload.backupPath.c_str())) {
+          LOG_ERR("WEB", "Failed to back up existing font: %s", fontUpload.finalPath.c_str());
+          fontUpload.valid = false;
+        } else {
+          backupCreated = true;
+        }
+      }
+
+      if (fontUpload.valid && !Storage.rename(fontUpload.tempPath.c_str(), fontUpload.finalPath.c_str())) {
+        LOG_ERR("WEB", "Failed to install uploaded font: %s", fontUpload.finalPath.c_str());
+        fontUpload.valid = false;
+        if (backupCreated && !Storage.rename(fontUpload.backupPath.c_str(), fontUpload.finalPath.c_str())) {
+          LOG_ERR("WEB", "Failed to restore font backup: %s", fontUpload.backupPath.c_str());
+        }
+      }
+
+      if (fontUpload.valid && backupCreated && Storage.exists(fontUpload.backupPath.c_str()) &&
+          !Storage.remove(fontUpload.backupPath.c_str())) {
+        LOG_ERR("WEB", "Failed to remove old font backup: %s", fontUpload.backupPath.c_str());
+      }
+      if (!fontUpload.valid && !fontUpload.tempPath.empty() && Storage.exists(fontUpload.tempPath.c_str())) {
+        Storage.remove(fontUpload.tempPath.c_str());
       }
 
       LOG_DBG("WEB", "Font upload end: valid=%d, %zu bytes", fontUpload.valid, fontUpload.bytesWritten);
@@ -2411,11 +2498,9 @@ void CrossPointWebServer::handleFontUploadData() {
     }
 
     case UPLOAD_FILE_ABORTED: {
-      if (fontUpload.file) {
-        fontUpload.file.close();
-      }
-      if (!fontUpload.filePath.empty()) {
-        Storage.remove(fontUpload.filePath.c_str());
+      if (fontUpload.file.isOpen()) fontUpload.file.close();
+      if (!fontUpload.tempPath.empty() && Storage.exists(fontUpload.tempPath.c_str())) {
+        Storage.remove(fontUpload.tempPath.c_str());
       }
       fontUpload.valid = false;
       LOG_DBG("WEB", "Font upload aborted");
@@ -2423,7 +2508,6 @@ void CrossPointWebServer::handleFontUploadData() {
     }
   }
 }
-
 void CrossPointWebServer::handleFontUpload() {
   if (!requireAdminAuth()) {
     return;
@@ -2432,7 +2516,7 @@ void CrossPointWebServer::handleFontUpload() {
   if (fontUpload.valid) {
     sdFontSystem.markRegistryDirty();
     server->send(200, "application/json", "{\"ok\":true}");
-    LOG_DBG("WEB", "Font upload complete: %s", fontUpload.filePath.c_str());
+    LOG_DBG("WEB", "Font upload complete: %s", fontUpload.finalPath.c_str());
   } else {
     server->send(400, "application/json", "{\"error\":\"Invalid .cpfont file\"}");
   }

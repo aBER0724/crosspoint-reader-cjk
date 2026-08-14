@@ -11,6 +11,7 @@
 
 #include "MappedInputManager.h"
 #include "NetworkModeSelectionActivity.h"
+#include "SdCardFontSystem.h"
 #include "WifiSelectionActivity.h"
 #include "activities/network/CalibreConnectActivity.h"
 #include "components/UITheme.h"
@@ -340,6 +341,14 @@ void CrossPointWebServerActivity::loop() {
         }
       }
       lastHandleClientTime = millis();
+    }
+
+    if (sdFontSystem.hasPendingReload()) {
+      RenderLock lock(false);
+      if (lock.locked()) {
+        sdFontSystem.ensureLoaded(renderer);
+        requestUpdate();
+      }
     }
 
     // Handle exit on Back button (also check outside loop)

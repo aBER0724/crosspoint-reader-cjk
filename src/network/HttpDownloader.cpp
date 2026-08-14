@@ -36,6 +36,7 @@ constexpr int MAX_REDIRECTS = 5;
 struct Sink {
   std::function<bool(const uint8_t*, size_t)> write;  // returns false to abort the transfer
   HttpDownloader::ProgressCallback progress;
+  HttpDownloader::CancelCallback cancel;
   bool* cancelFlag = nullptr;
   size_t total = 0;
   size_t downloaded = 0;
@@ -43,6 +44,11 @@ struct Sink {
 
 bool isRedirect(int status) {
   return status == 301 || status == 302 || status == 303 || status == 307 || status == 308;
+}
+
+bool isCancelled(Sink& sink) {
+  if (sink.cancel && sink.cancel()) return true;
+  return sink.cancelFlag && *sink.cancelFlag;
 }
 
 #if defined(FREEINK_NET_WOLFSSL)
@@ -78,7 +84,7 @@ HttpDownloader::DownloadError runGetWolf(const std::string& startUrl, const std:
           if (sink.progress && sink.total > 0) sink.progress(sink.downloaded, sink.total);
           return true;
         },
-        [&sink]() { return sink.cancelFlag && *sink.cancelFlag; });
+        [&sink]() { return isCancelled(sink); });
 
     if (http.aborted()) return HttpDownloader::ABORTED;
     if (status < 0) {
@@ -187,7 +193,7 @@ HttpDownloader::DownloadError runGet(const std::string& url, const std::string& 
   }
 
   while (true) {
-    if (sink.cancelFlag && *sink.cancelFlag) {
+    if (isCancelled(sink)) {
       esp_http_client_cleanup(client);
       return HttpDownloader::ABORTED;
     }
@@ -260,11 +266,13 @@ bool HttpDownloader::fetchUrl(const std::string& url, const DataCallback& onData
 
 HttpDownloader::DownloadError HttpDownloader::downloadToFile(const std::string& url, const std::string& destPath,
                                                              ProgressCallback progress, bool* cancelFlag,
-                                                             const std::string& username, const std::string& password) {
+                                                             const std::string& username, const std::string& password,
+                                                             CancelCallback cancel) {
   LOG_DBG("HTTP", "Downloading: %s -> %s", url.c_str(), destPath.c_str());
 
-  if (Storage.exists(destPath.c_str())) {
-    Storage.remove(destPath.c_str());
+  if (Storage.exists(destPath.c_str()) && !Storage.remove(destPath.c_str())) {
+    LOG_ERR("HTTP", "Failed to remove existing destination");
+    return FILE_ERROR;
   }
   HalFile file;
   if (!Storage.openFileForWrite("HTTP", destPath.c_str(), file)) {
@@ -274,6 +282,7 @@ HttpDownloader::DownloadError HttpDownloader::downloadToFile(const std::string& 
 
   Sink sink;
   sink.progress = std::move(progress);
+  sink.cancel = std::move(cancel);
   sink.cancelFlag = cancelFlag;
   sink.write = [&file](const uint8_t* data, size_t len) { return file.write(data, len) == len; };
 
@@ -283,12 +292,16 @@ HttpDownloader::DownloadError HttpDownloader::downloadToFile(const std::string& 
   file.close();
 
   if (result != OK) {
-    Storage.remove(destPath.c_str());
+    if (Storage.exists(destPath.c_str()) && !Storage.remove(destPath.c_str())) {
+      LOG_ERR("HTTP", "Failed to remove partial download");
+    }
     return result;
   }
   if (sink.downloaded == 0) {
     LOG_ERR("HTTP", "no data received");
-    Storage.remove(destPath.c_str());
+    if (Storage.exists(destPath.c_str()) && !Storage.remove(destPath.c_str())) {
+      LOG_ERR("HTTP", "Failed to remove empty download");
+    }
     return HTTP_ERROR;
   }
   LOG_DBG("HTTP", "Downloaded %zu bytes", sink.downloaded);

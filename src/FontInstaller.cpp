@@ -13,6 +13,9 @@ FontInstaller::FontInstaller(SdCardFontRegistry& registry) : registry_(registry)
 bool FontInstaller::isValidFamilyName(const char* name) {
   if (name == nullptr || name[0] == '\0') return false;
 
+  const size_t nameLen = strlen(name);
+  if (nameLen > MAX_FAMILY_NAME_LENGTH) return false;
+
   // Reject path traversal
   if (strstr(name, "..") != nullptr) return false;
   if (strchr(name, '/') != nullptr) return false;
@@ -30,6 +33,9 @@ bool FontInstaller::isValidFamilyName(const char* name) {
 bool FontInstaller::isValidCpfontFilename(const char* name) {
   if (name == nullptr || name[0] == '\0') return false;
 
+  const size_t nameLen = strlen(name);
+  if (nameLen > MAX_CPFONT_FILENAME_LENGTH) return false;
+
   // Reject path separators / traversal up front. Anything that could escape
   // the family directory or refer to a different one is a hard reject.
   if (strstr(name, "..") != nullptr) return false;
@@ -39,12 +45,11 @@ bool FontInstaller::isValidCpfontFilename(const char* name) {
   // Must end with ".cpfont" exactly.
   static constexpr char kExt[] = ".cpfont";
   static constexpr size_t kExtLen = sizeof(kExt) - 1;
-  size_t nameLen = strlen(name);
   if (nameLen <= kExtLen) return false;
   if (strcmp(name + nameLen - kExtLen, kExt) != 0) return false;
 
   // Basename (before .cpfont) must be alphanumeric + hyphen + underscore only.
-  // No additional dots — keeps stray "Foo.cpfont.tmp"-style names out.
+  // No additional dots keeps stray "Foo.cpfont.tmp"-style names out.
   size_t baseLen = nameLen - kExtLen;
   for (size_t i = 0; i < baseLen; ++i) {
     char c = name[i];
@@ -56,6 +61,11 @@ bool FontInstaller::isValidCpfontFilename(const char* name) {
 }
 
 bool FontInstaller::ensureFamilyDir(const char* familyName) {
+  if (!isValidFamilyName(familyName)) {
+    LOG_ERR("FONT", "Invalid font family name");
+    return false;
+  }
+
   // Reuse the family's existing root if installed; otherwise pick the
   // default-write root (hidden if no roots exist yet).
   const char* root = SdCardFontRegistry::findFamilyRoot(familyName);
@@ -69,7 +79,11 @@ bool FontInstaller::ensureFamilyDir(const char* familyName) {
   }
 
   char dirPath[160];
-  snprintf(dirPath, sizeof(dirPath), "%s/%s", root, familyName);
+  const int pathLength = snprintf(dirPath, sizeof(dirPath), "%s/%s", root, familyName);
+  if (pathLength < 0 || static_cast<size_t>(pathLength) >= sizeof(dirPath)) {
+    LOG_ERR("FONT", "Font family path is too long: %s", familyName);
+    return false;
+  }
 
   if (!Storage.exists(dirPath)) {
     if (!Storage.mkdir(dirPath)) {
@@ -104,12 +118,21 @@ bool FontInstaller::validateCpfontFile(const char* path) {
   return true;
 }
 
-void FontInstaller::buildFontPath(const char* family, const char* filename, char* outBuf, size_t outBufSize) {
+bool FontInstaller::buildFontPath(const char* family, const char* filename, char* outBuf, size_t outBufSize) {
+  if (outBuf == nullptr || outBufSize == 0) return false;
+  outBuf[0] = '\0';
+  if (!isValidFamilyName(family) || !isValidCpfontFilename(filename)) return false;
+
   // Use the same root selection as ensureFamilyDir: existing install dir wins,
   // otherwise the default-write root.
   const char* root = SdCardFontRegistry::findFamilyRoot(family);
   if (!root) root = SdCardFontRegistry::defaultWriteRoot();
-  snprintf(outBuf, outBufSize, "%s/%s/%s", root, family, filename);
+  const int pathLength = snprintf(outBuf, outBufSize, "%s/%s/%s", root, family, filename);
+  if (pathLength < 0 || static_cast<size_t>(pathLength) >= outBufSize) {
+    outBuf[0] = '\0';
+    return false;
+  }
+  return true;
 }
 
 FontInstaller::Error FontInstaller::deleteFamily(const char* familyName) {
@@ -140,10 +163,18 @@ FontInstaller::Error FontInstaller::deleteFamily(const char* familyName) {
   (void)removedAny;
 
   // If this was the active font, clear the setting
+  bool settingsChanged = false;
   if (strcmp(SETTINGS.sdFontFamilyName, familyName) == 0) {
     SETTINGS.sdFontFamilyName[0] = '\0';
+    settingsChanged = true;
+  }
+  if (strcmp(SETTINGS.sdUiFontFamilyName, familyName) == 0) {
+    SETTINGS.sdUiFontFamilyName[0] = '\0';
+    settingsChanged = true;
+  }
+  if (settingsChanged) {
     SETTINGS.saveToFile();
-    LOG_DBG("FONT", "Cleared active SD font (deleted family: %s)", familyName);
+    LOG_DBG("FONT", "Cleared active SD font slots (deleted family: %s)", familyName);
   }
 
   return Error::OK;
