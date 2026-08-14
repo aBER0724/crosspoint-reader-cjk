@@ -1,6 +1,8 @@
 #include "SettingsActivity.h"
 
 #include <BoardConfig.h>
+#include <ExternalFont.h>
+#include <FontManager.h>
 #include <GfxRenderer.h>
 #include <Logging.h>
 
@@ -11,9 +13,6 @@
 #include "ButtonRemapActivity.h"
 #include "ClearCacheActivity.h"
 #include "CrossPointSettings.h"
-#include <ExternalFont.h>
-#include <FontManager.h>
-
 #include "FontDownloadActivity.h"
 #include "FontSelectActivity.h"
 #include "KOReaderSettingsActivity.h"
@@ -88,11 +87,8 @@ void SettingsActivity::rebuildSettingsLists() {
   readerSettings.insert(readerSettings.begin(),
                         SettingInfo::Action(StrId::STR_TEXT_SETTINGS, SettingAction::TextSettings));
   readerSettings.insert(readerSettings.begin() + 1,
-                        SettingInfo::Action(StrId::STR_EXT_READER_FONT, SettingAction::SelectReaderFont));
-  readerSettings.insert(readerSettings.begin() + 2,
                         SettingInfo::Action(StrId::STR_MANAGE_FONTS, SettingAction::DownloadFonts));
   readerSettings.push_back(SettingInfo::Action(StrId::STR_CUSTOMISE_STATUS_BAR, SettingAction::CustomiseStatusBar));
-  displaySettings.push_back(SettingInfo::Action(StrId::STR_EXT_UI_FONT, SettingAction::SelectUiFont));
 
   // Update currentSettings pointer and count for the active category
   switch (selectedCategoryIndex) {
