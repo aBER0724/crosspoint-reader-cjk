@@ -54,6 +54,13 @@ void SdCardFontSystem::begin(GfxRenderer& renderer) {
 }
 
 void SdCardFontSystem::ensureLoaded(GfxRenderer& renderer) {
+  if (previewActive_) {
+    if (manager_.hasLoadedFonts()) manager_.unloadAll(renderer);
+    loadedUiFamilyName_.clear();
+    previewActive_ = false;
+    residentFontsDirty_.store(true, std::memory_order_release);
+  }
+
   const bool registryWasDirty = registryDirty_.exchange(false, std::memory_order_acquire);
   const bool reloadRequested = residentFontsDirty_.exchange(false, std::memory_order_acquire);
   if (registryWasDirty) {
@@ -129,6 +136,36 @@ void SdCardFontSystem::ensureLoaded(GfxRenderer& renderer) {
   }
 
   if (settingsChanged) SETTINGS.saveToFile();
+}
+int SdCardFontSystem::beginPreview(GfxRenderer& renderer, const char* filePath, const char* familyName,
+                                   uint8_t pointSize) {
+  if (manager_.hasLoadedFonts()) manager_.unloadAll(renderer);
+  loadedUiFamilyName_.clear();
+  previewActive_ = false;
+
+  SdCardFontFamilyInfo previewFamily;
+  previewFamily.name = familyName;
+  previewFamily.files.push_back({filePath, pointSize, 0});
+  const int fontId = manager_.loadFamilyExtraSize(previewFamily, renderer, pointSize);
+  if (fontId == 0) {
+    residentFontsDirty_.store(true, std::memory_order_release);
+    ensureLoaded(renderer);
+    return 0;
+  }
+
+  previewActive_ = true;
+  LOG_DBG("SDFS", "Loaded preview font: %s (%u pt)", familyName, pointSize);
+  return fontId;
+}
+
+void SdCardFontSystem::endPreview(GfxRenderer& renderer) {
+  if (!previewActive_) return;
+
+  if (manager_.hasLoadedFonts()) manager_.unloadAll(renderer);
+  loadedUiFamilyName_.clear();
+  previewActive_ = false;
+  residentFontsDirty_.store(true, std::memory_order_release);
+  ensureLoaded(renderer);
 }
 
 bool SdCardFontSystem::setupUiFallbacks(GfxRenderer& renderer, const SdCardFontFamilyInfo& family) {

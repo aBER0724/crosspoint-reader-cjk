@@ -35,7 +35,7 @@ class FontDownloadActivity : public Activity {
   void loop() override;
   void render(RenderLock&&) override;
   bool preventAutoSleep() override {
-    return state_ == LOADING_MANIFEST || state_ == DOWNLOADING ||
+    return state_ == LOADING_MANIFEST || state_ == DOWNLOADING_PREVIEW || state_ == DOWNLOADING ||
            // The download is synchronous and blocks the main loop until it
            // completes, so activityManager.preventAutoSleep() is never polled
            // during downloading.
@@ -48,14 +48,19 @@ class FontDownloadActivity : public Activity {
     WIFI_SELECTION,
     LOADING_MANIFEST,
     FAMILY_LIST,
+    DOWNLOADING_PREVIEW,
+    FONT_PREVIEW,
     DOWNLOADING,
     COMPLETE,
     ERROR,
   };
 
+  enum class ErrorAction { None, Preview, Install };
+
   struct ManifestFile {
     std::string name;
     size_t size = 0;
+    uint8_t pointSize = 0;
     uint32_t crc32 = 0;
   };
 
@@ -78,6 +83,10 @@ class FontDownloadActivity : public Activity {
   std::vector<ManifestFamily> families_;
   int selectedIndex_ = 0;
 
+  int previewFamilyIndex_ = -1;
+  int previewFileIndex_ = -1;
+  int previewFontId_ = 0;
+  ErrorAction errorAction_ = ErrorAction::None;
   // Download progress
   size_t currentFileIndex_ = 0;
   size_t currentFileTotal_ = 0;
@@ -86,13 +95,26 @@ class FontDownloadActivity : public Activity {
   int downloadingFamilyIndex_ = 0;
   std::string errorMessage_;
   bool cancelRequested_ = false;
+  bool lowMemoryDownload_ = false;
+  int lastProgressPercent_ = -1;
+  int downloadProgressBarY_ = 0;
 
   void onWifiSelectionComplete(bool success);
   bool fetchAndParseManifest();
   bool pollDownloadCancellation();
+  void beginNetworkTransfer();
+  void endNetworkTransfer();
+  void updateDownloadProgress(size_t downloaded, size_t total);
+  void renderLowMemoryProgress();
   void refreshFamilyState(ManifestFamily& family);
   void downloadFamily(ManifestFamily& family);
   void downloadAll();
+  static bool parsePointSize(const char* filename, const char* familyName, uint8_t& pointSize);
+  int defaultPreviewFileIndex(const ManifestFamily& family) const;
+  void downloadPreview(int familyIndex, int fileIndex);
+  void closePreview();
+  void returnToFamilyList();
+  void installPreviewedFamily();
   void updateAll();
   static bool computeFileCrc32(const char* path, uint32_t& outCrc);
   bool showDownloadAllRow() const;
