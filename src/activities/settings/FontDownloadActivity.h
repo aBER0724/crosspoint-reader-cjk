@@ -114,6 +114,7 @@ class FontDownloadActivity : public Activity {
   static bool parsePointSize(const char* filename, const char* familyName, uint8_t& pointSize);
   int defaultPreviewFileIndex(const ManifestFamily& family) const;
   void downloadPreview(int familyIndex, int fileIndex);
+  void removePreviewTemporaryFiles();
   void closePreview();
   void returnToFamilyList();
   void installPreviewedFamily();
