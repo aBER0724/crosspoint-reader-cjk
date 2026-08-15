@@ -31,6 +31,31 @@
 #   Requires fonttools: pip install -r requirements.txt
 
 families:
+  # CJK families are intentionally regular-only. Firmware style fallback maps
+  # bold/italic requests to regular, while keeping each six-size family small
+  # enough for practical download and SD-card use.
+
+  - name: NotoSansSC
+    description: "Simplified Chinese sans-serif with Japanese kana"
+    intervals: latin-ext,cjk
+    sizes: [8, 10, 12, 14, 16, 18]
+    styles:
+      regular: {url: "https://raw.githubusercontent.com/google/fonts/main/ofl/notosanssc/NotoSansSC%5Bwght%5D.ttf", variable: {wght: 400}}
+
+  - name: NotoSansTC
+    description: "Traditional Chinese sans-serif with Japanese kana"
+    intervals: latin-ext,cjk
+    sizes: [8, 10, 12, 14, 16, 18]
+    styles:
+      regular: {url: "https://raw.githubusercontent.com/google/fonts/main/ofl/notosanstc/NotoSansTC%5Bwght%5D.ttf", variable: {wght: 400}}
+
+  - name: NotoSansJP
+    description: "Japanese sans-serif with kanji and kana"
+    intervals: latin-ext,cjk
+    sizes: [8, 10, 12, 14, 16, 18]
+    styles:
+      regular: {url: "https://raw.githubusercontent.com/google/fonts/main/ofl/notosansjp/NotoSansJP%5Bwght%5D.ttf", variable: {wght: 400}}
+
   # 鈹€鈹€ Serif 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
   - name: Literata
