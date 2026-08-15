@@ -71,6 +71,7 @@ FontDownloadActivity::FontDownloadActivity(GfxRenderer& renderer, MappedInputMan
 
 void FontDownloadActivity::onEnter() {
   Activity::onEnter();
+  removePreviewTemporaryFiles();
   WiFi.mode(WIFI_STA);
   startActivityForResult(std::make_unique<WifiSelectionActivity>(renderer, mappedInput),
                          [this](const ActivityResult& result) { onWifiSelectionComplete(!result.isCancelled); });
@@ -80,9 +81,6 @@ void FontDownloadActivity::onExit() {
   Activity::onExit();
   // ActivityManager invokes onExit() while holding the rendering mutex.
   closePreview();
-  if (Storage.exists(PREVIEW_TMP_PATH)) Storage.remove(PREVIEW_TMP_PATH);
-  if (Storage.exists(PREVIEW_NEXT_PATH)) Storage.remove(PREVIEW_NEXT_PATH);
-  if (Storage.exists(PREVIEW_BACKUP_PATH)) Storage.remove(PREVIEW_BACKUP_PATH);
 
   if (WiFi.getMode() != WIFI_MODE_NULL) {
     WiFi.disconnect(false);
@@ -528,6 +526,18 @@ size_t FontDownloadActivity::totalUpdateSize() const {
   return total;
 }
 
+void FontDownloadActivity::removePreviewTemporaryFiles() {
+  if (Storage.exists(PREVIEW_TMP_PATH) && !Storage.remove(PREVIEW_TMP_PATH)) {
+    LOG_ERR("FONT", "Failed to remove preview file");
+  }
+  if (Storage.exists(PREVIEW_NEXT_PATH) && !Storage.remove(PREVIEW_NEXT_PATH)) {
+    LOG_ERR("FONT", "Failed to remove staged preview file");
+  }
+  if (Storage.exists(PREVIEW_BACKUP_PATH) && !Storage.remove(PREVIEW_BACKUP_PATH)) {
+    LOG_ERR("FONT", "Failed to remove preview backup");
+  }
+}
+
 // Standard CRC32 matching zlib/Python zlib.crc32().
 bool FontDownloadActivity::computeFileCrc32(const char* path, uint32_t& outCrc) {
   HalFile f;
@@ -562,15 +572,7 @@ void FontDownloadActivity::closePreview() {
   }
   activePreviewFamilyIndex_ = -1;
   activePreviewFileIndex_ = -1;
-  if (Storage.exists(PREVIEW_TMP_PATH) && !Storage.remove(PREVIEW_TMP_PATH)) {
-    LOG_ERR("FONT", "Failed to remove preview file");
-  }
-  if (Storage.exists(PREVIEW_NEXT_PATH) && !Storage.remove(PREVIEW_NEXT_PATH)) {
-    LOG_ERR("FONT", "Failed to remove staged preview file");
-  }
-  if (Storage.exists(PREVIEW_BACKUP_PATH) && !Storage.remove(PREVIEW_BACKUP_PATH)) {
-    LOG_ERR("FONT", "Failed to remove preview backup");
-  }
+  removePreviewTemporaryFiles();
 }
 
 void FontDownloadActivity::returnToFamilyList() {
