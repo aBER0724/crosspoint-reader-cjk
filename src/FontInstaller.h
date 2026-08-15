@@ -31,9 +31,30 @@ class FontInstaller {
   static bool isValidCpfontFilename(const char* name);
 
   /// Recover interrupted transactional replacements under both font roots.
-  /// Restores a .bak when the final file is absent, removes an obsolete .bak
-  /// after a successful commit, and removes stale .part files.
+  /// Family transactions are rolled back unless their committed marker is
+  /// present. Legacy per-file .part/.bak transactions are also recovered.
   static bool recoverInterruptedInstalls();
+
+  /// Start a durable family-level transaction. Must be called before any
+  /// installed file is moved or replaced.
+  static bool beginFamilyInstall(const char* familyName, uint32_t fingerprint);
+
+  /// Preserve the current file for rollback, or record that the replacement
+  /// is a newly installed file when no current file exists.
+  static bool prepareFontReplacement(const char* finalPath);
+
+  /// Atomically switch a family transaction from rollback to committed state.
+  static bool commitFamilyInstall(const char* familyName);
+
+  /// Roll back every replacement in the family and remove transaction files.
+  static bool rollbackFamilyInstall(const char* familyName);
+
+  /// Remove backups and transaction markers after a successful commit.
+  static bool cleanupCommittedFamilyInstall(const char* familyName);
+
+  /// Compare the installed family receipt with the current manifest metadata.
+  /// This reads only a small receipt and never scans the font files.
+  static bool installedFamilyMatches(const char* familyName, uint32_t fingerprint);
 
   /// Ensure /<root>/<family>/ exists, where <root> is /.fonts (preferred) or /fonts.
   /// Re-uses the existing root if the family is already installed; otherwise

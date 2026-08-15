@@ -372,6 +372,20 @@ bool FontDownloadActivity::fetchAndParseManifest() {
                 [](const ManifestFile& a, const ManifestFile& b) { return a.pointSize < b.pointSize; });
     }
 
+    uint32_t fingerprint = 2166136261U;
+    const auto hashBytes = [&fingerprint](const void* data, size_t size) {
+      const auto* bytes = static_cast<const uint8_t*>(data);
+      for (size_t i = 0; i < size; ++i) {
+        fingerprint ^= bytes[i];
+        fingerprint *= 16777619U;
+      }
+    };
+    for (const auto& file : family.files) {
+      hashBytes(file.name.data(), file.name.size());
+      hashBytes(&file.size, sizeof(file.size));
+      hashBytes(&file.crc32, sizeof(file.crc32));
+    }
+    family.fingerprint = fingerprint;
     refreshFamilyState(family);
     parsedFamilies.push_back(std::move(family));
   }
@@ -422,28 +436,8 @@ void FontDownloadActivity::updateDownloadProgress(const size_t downloaded, const
 
 void FontDownloadActivity::refreshFamilyState(ManifestFamily& family) {
   family.installed = fontInstaller_.isFamilyInstalled(family.name.c_str());
-  family.hasUpdate = false;
-  if (!family.installed) return;
-
-  for (const auto& file : family.files) {
-    char path[160];
-    if (!FontInstaller::buildFontPath(family.name.c_str(), file.name.c_str(), path, sizeof(path))) {
-      family.hasUpdate = true;
-      return;
-    }
-
-    HalFile installedFile;
-    if (!Storage.openFileForRead("FONT", path, installedFile)) {
-      family.hasUpdate = true;
-      return;
-    }
-    const size_t actualSize = installedFile.fileSize();
-    installedFile.close();
-    if (actualSize != file.size) {
-      family.hasUpdate = true;
-      return;
-    }
-  }
+  family.hasUpdate =
+      family.installed && !FontInstaller::installedFamilyMatches(family.name.c_str(), family.fingerprint);
 }
 
 // --- Download ---
@@ -801,14 +795,6 @@ void FontDownloadActivity::installPreviewedFamily() {
 }
 
 void FontDownloadActivity::downloadFamily(ManifestFamily& family) {
-  struct FileTransaction {
-    std::string finalPath;
-    std::string partPath;
-    std::string backupPath;
-    bool backupCreated = false;
-    bool replacementInstalled = false;
-  };
-
   {
     RenderLock lock(*this);
     state_ = DOWNLOADING;
@@ -838,38 +824,15 @@ void FontDownloadActivity::downloadFamily(ManifestFamily& family) {
     return;
   }
 
-  std::vector<FileTransaction> transactions;
-  transactions.reserve(family.files.size());
-
-  auto rollback = [&transactions]() {
-    bool success = true;
-    for (auto it = transactions.rbegin(); it != transactions.rend(); ++it) {
-      if (Storage.exists(it->partPath.c_str()) && !Storage.remove(it->partPath.c_str())) {
-        LOG_ERR("FONT", "Failed to remove partial download during rollback: %s", it->partPath.c_str());
-        success = false;
-      }
-
-      if (it->backupCreated) {
-        if (Storage.exists(it->finalPath.c_str()) && !Storage.remove(it->finalPath.c_str())) {
-          LOG_ERR("FONT", "Failed to remove replacement during rollback: %s", it->finalPath.c_str());
-          success = false;
-          continue;
-        }
-        if (!Storage.rename(it->backupPath.c_str(), it->finalPath.c_str())) {
-          LOG_ERR("FONT", "Failed to restore backup: %s", it->backupPath.c_str());
-          success = false;
-        }
-      } else if (it->replacementInstalled && Storage.exists(it->finalPath.c_str()) &&
-                 !Storage.remove(it->finalPath.c_str())) {
-        LOG_ERR("FONT", "Failed to remove new font during rollback: %s", it->finalPath.c_str());
-        success = false;
-      }
-    }
-    return success;
-  };
+  if (!fontInstaller_.beginFamilyInstall(family.name.c_str(), family.fingerprint)) {
+    RenderLock lock(*this);
+    state_ = ERROR;
+    errorMessage_ = tr(STR_FONT_REPLACEMENT_FAILED);
+    return;
+  }
 
   auto failTransaction = [&](const std::string& message, const bool cancelled) {
-    const bool rollbackSucceeded = rollback();
+    const bool rollbackSucceeded = fontInstaller_.rollbackFamilyInstall(family.name.c_str());
     fontInstaller_.refreshRegistry();
     refreshFamilyState(family);
     RenderLock lock(*this);
@@ -898,25 +861,22 @@ void FontDownloadActivity::downloadFamily(ManifestFamily& family) {
       return;
     }
 
-    FileTransaction transaction;
-    transaction.finalPath = destPath;
-    transaction.partPath = transaction.finalPath + ".part";
-    transaction.backupPath = transaction.finalPath + ".bak";
-    transactions.push_back(std::move(transaction));
-    auto& current = transactions.back();
+    const std::string finalPath = destPath;
+    const std::string partPath = finalPath + ".part";
 
-    if (Storage.exists(current.partPath.c_str()) && !Storage.remove(current.partPath.c_str())) {
-      LOG_ERR("FONT", "Failed to remove stale partial download: %s", current.partPath.c_str());
+    if (Storage.exists(partPath.c_str()) && !Storage.remove(partPath.c_str())) {
+      LOG_ERR("FONT", "Failed to remove stale partial download: %s", partPath.c_str());
       failTransaction(tr(STR_FONT_CLEANUP_FAILED), false);
       return;
     }
-    if (Storage.exists(current.backupPath.c_str())) {
-      if (Storage.exists(current.finalPath.c_str())) {
-        if (!Storage.remove(current.backupPath.c_str())) {
+    const std::string legacyBackupPath = finalPath + ".bak";
+    if (Storage.exists(legacyBackupPath.c_str())) {
+      if (Storage.exists(finalPath.c_str())) {
+        if (!Storage.remove(legacyBackupPath.c_str())) {
           failTransaction(tr(STR_FONT_REPLACEMENT_FAILED), false);
           return;
         }
-      } else if (!Storage.rename(current.backupPath.c_str(), current.finalPath.c_str())) {
+      } else if (!Storage.rename(legacyBackupPath.c_str(), finalPath.c_str())) {
         failTransaction(tr(STR_FONT_ROLLBACK_FAILED), false);
         return;
       }
@@ -926,9 +886,8 @@ void FontDownloadActivity::downloadFamily(ManifestFamily& family) {
 
     beginNetworkTransfer();
     auto result = HttpDownloader::downloadToFile(
-        url, current.partPath.c_str(),
-        [this](size_t downloaded, size_t total) { updateDownloadProgress(downloaded, total); }, &cancelRequested_, "",
-        "", [this] { return pollDownloadCancellation(); }, file.size);
+        url, partPath.c_str(), [this](size_t downloaded, size_t total) { updateDownloadProgress(downloaded, total); },
+        &cancelRequested_, "", "", [this] { return pollDownloadCancellation(); }, file.size);
     endNetworkTransfer();
 
     if (result == HttpDownloader::ABORTED) {
@@ -947,7 +906,7 @@ void FontDownloadActivity::downloadFamily(ManifestFamily& family) {
     }
 
     HalFile downloadedFile;
-    if (!Storage.openFileForRead("FONT", current.partPath.c_str(), downloadedFile)) {
+    if (!Storage.openFileForRead("FONT", partPath.c_str(), downloadedFile)) {
       failTransaction(std::string(tr(STR_DOWNLOAD_FAILED)) + ": " + file.name, false);
       return;
     }
@@ -960,12 +919,12 @@ void FontDownloadActivity::downloadFamily(ManifestFamily& family) {
     }
 
     uint32_t actualCrc = 0;
-    if (!computeFileCrc32(current.partPath.c_str(), actualCrc)) {
+    if (!computeFileCrc32(partPath.c_str(), actualCrc)) {
       if (cancelRequested_) {
         failTransaction("", true);
         return;
       }
-      LOG_ERR("FONT", "Failed to open file for CRC check: %s", current.partPath.c_str());
+      LOG_ERR("FONT", "Failed to open file for CRC check: %s", partPath.c_str());
       failTransaction(std::string(tr(STR_FONT_CHECKSUM_FAILED)) + ": " + file.name, false);
       return;
     }
@@ -980,8 +939,8 @@ void FontDownloadActivity::downloadFamily(ManifestFamily& family) {
     }
     LOG_DBG("FONT", "Downloaded %s (size=%zu crc32=%08x)", file.name.c_str(), file.size, actualCrc);
 
-    if (!fontInstaller_.validateCpfontFile(current.partPath.c_str())) {
-      LOG_ERR("FONT", "Invalid .cpfont: %s", current.partPath.c_str());
+    if (!fontInstaller_.validateCpfontFile(partPath.c_str())) {
+      LOG_ERR("FONT", "Invalid .cpfont: %s", partPath.c_str());
       failTransaction(std::string(tr(STR_FONT_INVALID_FILE)) + ": " + file.name, false);
       return;
     }
@@ -990,35 +949,26 @@ void FontDownloadActivity::downloadFamily(ManifestFamily& family) {
       return;
     }
 
-    if (Storage.exists(current.finalPath.c_str())) {
-      if (!Storage.rename(current.finalPath.c_str(), current.backupPath.c_str())) {
-        LOG_ERR("FONT", "Failed to back up existing font: %s", current.finalPath.c_str());
-        failTransaction(tr(STR_FONT_REPLACEMENT_FAILED), false);
-        return;
-      }
-      current.backupCreated = true;
-    }
-
-    if (!Storage.rename(current.partPath.c_str(), current.finalPath.c_str())) {
-      LOG_ERR("FONT", "Failed to install validated font: %s", current.finalPath.c_str());
+    if (!fontInstaller_.prepareFontReplacement(finalPath.c_str())) {
       failTransaction(tr(STR_FONT_REPLACEMENT_FAILED), false);
       return;
     }
-    current.replacementInstalled = true;
+
+    if (!Storage.rename(partPath.c_str(), finalPath.c_str())) {
+      LOG_ERR("FONT", "Failed to install validated font: %s", finalPath.c_str());
+      failTransaction(tr(STR_FONT_REPLACEMENT_FAILED), false);
+      return;
+    }
     currentFileIndex_++;
   }
 
-  bool cleanupSucceeded = true;
-  for (const auto& transaction : transactions) {
-    if (Storage.exists(transaction.partPath.c_str()) && !Storage.remove(transaction.partPath.c_str())) {
-      LOG_ERR("FONT", "Failed to remove partial download: %s", transaction.partPath.c_str());
-      cleanupSucceeded = false;
-    }
-    if (transaction.backupCreated && Storage.exists(transaction.backupPath.c_str()) &&
-        !Storage.remove(transaction.backupPath.c_str())) {
-      LOG_ERR("FONT", "Failed to remove font backup: %s", transaction.backupPath.c_str());
-      cleanupSucceeded = false;
-    }
+  if (!fontInstaller_.commitFamilyInstall(family.name.c_str())) {
+    failTransaction(tr(STR_FONT_REPLACEMENT_FAILED), false);
+    return;
+  }
+  const bool cleanupSucceeded = fontInstaller_.cleanupCommittedFamilyInstall(family.name.c_str());
+  if (!cleanupSucceeded) {
+    LOG_ERR("FONT", "Committed family cleanup deferred until recovery: %s", family.name.c_str());
   }
 
   const bool reloadResidentFonts =
@@ -1033,13 +983,8 @@ void FontDownloadActivity::downloadFamily(ManifestFamily& family) {
 
   {
     RenderLock lock(*this);
-    if (cleanupSucceeded) {
-      state_ = COMPLETE;
-      errorAction_ = ErrorAction::None;
-    } else {
-      state_ = ERROR;
-      errorMessage_ = tr(STR_FONT_CLEANUP_FAILED);
-    }
+    state_ = COMPLETE;
+    errorAction_ = ErrorAction::None;
   }
 }
 

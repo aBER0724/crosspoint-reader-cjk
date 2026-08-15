@@ -70,6 +70,7 @@ class FontDownloadActivity : public Activity {
     std::vector<std::string> styles;
     std::vector<ManifestFile> files;
     size_t totalSize = 0;
+    uint32_t fingerprint = 0;
     bool installed = false;
     bool hasUpdate = false;
   };

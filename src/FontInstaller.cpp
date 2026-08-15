@@ -16,10 +16,242 @@ namespace {
 
 constexpr char kBackupSuffix[] = ".bak";
 constexpr char kPartialSuffix[] = ".part";
+constexpr char kTransactionBackupSuffix[] = ".txn.bak";
+constexpr char kTransactionNewSuffix[] = ".txn.new";
+constexpr char kInstallingMarker[] = ".crosspoint-installing";
+constexpr char kCommittedMarker[] = ".crosspoint-committed";
+constexpr char kInstalledReceipt[] = ".crosspoint-installed";
+constexpr char kInstalledReceiptTemp[] = ".crosspoint-installed.tmp";
+constexpr uint8_t kTransactionRecordMagic[] = {'C', 'P', 'T', 'X'};
+constexpr size_t kTransactionRecordSize = sizeof(kTransactionRecordMagic) + 1 + sizeof(uint32_t);
+
+enum class TransactionArtifact { None, Partial, Backup, NewFile };
 
 bool hasSuffix(const std::string& value, const char* suffix) {
   const size_t suffixLength = strlen(suffix);
   return value.size() > suffixLength && value.compare(value.size() - suffixLength, suffixLength, suffix) == 0;
+}
+
+bool buildFamilyPath(const char* familyName, char* path, size_t pathSize) {
+  if (!FontInstaller::isValidFamilyName(familyName) || path == nullptr || pathSize == 0) return false;
+  const char* root = SdCardFontRegistry::findFamilyRoot(familyName);
+  if (!root) root = SdCardFontRegistry::defaultWriteRoot();
+  const int pathLength = snprintf(path, pathSize, "%s/%s", root, familyName);
+  return pathLength >= 0 && static_cast<size_t>(pathLength) < pathSize;
+}
+
+bool buildMarkerPath(const char* familyName, const char* markerName, char* path, size_t pathSize) {
+  char familyPath[160];
+  if (!buildFamilyPath(familyName, familyPath, sizeof(familyPath))) return false;
+  const int pathLength = snprintf(path, pathSize, "%s/%s", familyPath, markerName);
+  return pathLength >= 0 && static_cast<size_t>(pathLength) < pathSize;
+}
+
+bool createMarker(const char* path) {
+  HalFile marker;
+  if (!Storage.openFileForWrite("FONT", path, marker)) return false;
+  static constexpr uint8_t kMarkerVersion = 1;
+  const bool written = marker.write(kMarkerVersion) == 1;
+  marker.flush();
+  const bool closed = marker.close();
+  return written && closed && Storage.exists(path);
+}
+
+bool readTransactionRecord(const char* path, uint32_t& fingerprint);
+
+bool writeTransactionRecord(const char* path, uint32_t fingerprint) {
+  uint8_t record[kTransactionRecordSize];
+  memcpy(record, kTransactionRecordMagic, sizeof(kTransactionRecordMagic));
+  record[sizeof(kTransactionRecordMagic)] = 1;
+  const size_t fingerprintOffset = sizeof(kTransactionRecordMagic) + 1;
+  for (size_t i = 0; i < sizeof(fingerprint); ++i) {
+    record[fingerprintOffset + i] = static_cast<uint8_t>(fingerprint >> (i * 8));
+  }
+
+  HalFile file;
+  if (!Storage.openFileForWrite("FONT", path, file)) return false;
+  const bool written = file.write(record, sizeof(record)) == sizeof(record);
+  file.flush();
+  const bool closed = file.close();
+  if (!written || !closed || !Storage.exists(path)) return false;
+
+  uint32_t storedFingerprint = 0;
+  return readTransactionRecord(path, storedFingerprint) && storedFingerprint == fingerprint;
+}
+
+bool readTransactionRecord(const char* path, uint32_t& fingerprint) {
+  if (!Storage.exists(path)) return false;
+  HalFile file;
+  if (!Storage.openFileForRead("FONT", path, file) || file.fileSize() != kTransactionRecordSize) {
+    if (file) file.close();
+    return false;
+  }
+  uint8_t record[kTransactionRecordSize];
+  const bool read = file.read(record, sizeof(record)) == static_cast<int>(sizeof(record));
+  file.close();
+  if (!read || memcmp(record, kTransactionRecordMagic, sizeof(kTransactionRecordMagic)) != 0 ||
+      record[sizeof(kTransactionRecordMagic)] != 1) {
+    return false;
+  }
+
+  fingerprint = 0;
+  const size_t fingerprintOffset = sizeof(kTransactionRecordMagic) + 1;
+  for (size_t i = 0; i < sizeof(fingerprint); ++i) {
+    fingerprint |= static_cast<uint32_t>(record[fingerprintOffset + i]) << (i * 8);
+  }
+  return true;
+}
+
+bool findTransactionArtifact(const char* familyPath, std::string& path, TransactionArtifact& artifact) {
+  HalFile dir = Storage.open(familyPath);
+  if (!dir || !dir.isDirectory()) return false;
+
+  char nameBuffer[128];
+  while (true) {
+    HalFile entry = dir.openNextFile();
+    if (!entry) break;
+    if (entry.isDirectory()) {
+      entry.close();
+      continue;
+    }
+    const size_t nameLength = entry.getName(nameBuffer, sizeof(nameBuffer));
+    entry.close();
+    if (nameLength == 0 || nameLength >= sizeof(nameBuffer)) continue;
+
+    const std::string name(nameBuffer);
+    const char* suffix = nullptr;
+    if (hasSuffix(name, kTransactionBackupSuffix)) {
+      artifact = TransactionArtifact::Backup;
+      suffix = kTransactionBackupSuffix;
+    } else if (hasSuffix(name, kTransactionNewSuffix)) {
+      artifact = TransactionArtifact::NewFile;
+      suffix = kTransactionNewSuffix;
+    } else if (hasSuffix(name, kPartialSuffix)) {
+      artifact = TransactionArtifact::Partial;
+      suffix = kPartialSuffix;
+    } else {
+      continue;
+    }
+
+    const std::string finalName = name.substr(0, name.size() - strlen(suffix));
+    if (!FontInstaller::isValidCpfontFilename(finalName.c_str())) continue;
+    path = std::string(familyPath) + "/" + name;
+    dir.close();
+    return true;
+  }
+  dir.close();
+  artifact = TransactionArtifact::None;
+  return false;
+}
+
+bool hasFamilyTransactionArtifacts(const char* familyPath) {
+  HalFile dir = Storage.open(familyPath);
+  if (!dir || !dir.isDirectory()) return false;
+  char nameBuffer[128];
+  while (true) {
+    HalFile entry = dir.openNextFile();
+    if (!entry) break;
+    if (entry.isDirectory()) {
+      entry.close();
+      continue;
+    }
+    const size_t nameLength = entry.getName(nameBuffer, sizeof(nameBuffer));
+    entry.close();
+    if (nameLength == 0 || nameLength >= sizeof(nameBuffer)) continue;
+    const std::string name(nameBuffer);
+    const char* suffix = hasSuffix(name, kTransactionBackupSuffix) ? kTransactionBackupSuffix
+                         : hasSuffix(name, kTransactionNewSuffix)  ? kTransactionNewSuffix
+                                                                   : nullptr;
+    if (!suffix) continue;
+    const std::string finalName = name.substr(0, name.size() - strlen(suffix));
+    if (FontInstaller::isValidCpfontFilename(finalName.c_str())) {
+      dir.close();
+      return true;
+    }
+  }
+  dir.close();
+  return false;
+}
+
+bool processFamilyTransactionArtifacts(const char* familyPath, bool rollback) {
+  std::string path;
+  TransactionArtifact artifact = TransactionArtifact::None;
+  while (findTransactionArtifact(familyPath, path, artifact)) {
+    const char* suffix = kPartialSuffix;
+    if (artifact == TransactionArtifact::Backup) {
+      suffix = kTransactionBackupSuffix;
+    } else if (artifact == TransactionArtifact::NewFile) {
+      suffix = kTransactionNewSuffix;
+    }
+    const std::string finalPath = path.substr(0, path.size() - strlen(suffix));
+
+    if (artifact == TransactionArtifact::Backup && rollback) {
+      if (Storage.exists(finalPath.c_str()) && !Storage.remove(finalPath.c_str())) {
+        LOG_ERR("FONT", "Failed to remove replacement during family rollback: %s", finalPath.c_str());
+        return false;
+      }
+      if (!Storage.rename(path.c_str(), finalPath.c_str())) {
+        LOG_ERR("FONT", "Failed to restore family backup: %s", path.c_str());
+        return false;
+      }
+      continue;
+    }
+
+    if (artifact == TransactionArtifact::NewFile && rollback && Storage.exists(finalPath.c_str()) &&
+        !Storage.remove(finalPath.c_str())) {
+      LOG_ERR("FONT", "Failed to remove new font during family rollback: %s", finalPath.c_str());
+      return false;
+    }
+    if (Storage.exists(path.c_str()) && !Storage.remove(path.c_str())) {
+      LOG_ERR("FONT", "Failed to remove family transaction file: %s", path.c_str());
+      return false;
+    }
+  }
+  return true;
+}
+
+bool finalizeCommittedFamily(const char* familyName, const char* familyPath, const char* committedPath) {
+  uint32_t fingerprint = 0;
+  if (!readTransactionRecord(committedPath, fingerprint)) {
+    LOG_ERR("FONT", "Invalid committed family transaction record: %s", familyName);
+    return false;
+  }
+
+  char receiptPath[192];
+  char receiptTempPath[192];
+  snprintf(receiptPath, sizeof(receiptPath), "%s/%s", familyPath, kInstalledReceipt);
+  snprintf(receiptTempPath, sizeof(receiptTempPath), "%s/%s", familyPath, kInstalledReceiptTemp);
+  if (Storage.exists(receiptTempPath) && !Storage.remove(receiptTempPath)) return false;
+  if (!writeTransactionRecord(receiptTempPath, fingerprint)) return false;
+  if (Storage.exists(receiptPath) && !Storage.remove(receiptPath)) return false;
+  if (!Storage.rename(receiptTempPath, receiptPath)) return false;
+
+  if (!processFamilyTransactionArtifacts(familyPath, false)) return false;
+  return Storage.remove(committedPath);
+}
+
+bool recoverFamilyTransaction(const char* root, const char* familyName) {
+  char familyPath[160];
+  const int familyPathLength = snprintf(familyPath, sizeof(familyPath), "%s/%s", root, familyName);
+  if (familyPathLength < 0 || static_cast<size_t>(familyPathLength) >= sizeof(familyPath)) return false;
+
+  char installingPath[192];
+  char committedPath[192];
+  snprintf(installingPath, sizeof(installingPath), "%s/%s", familyPath, kInstallingMarker);
+  snprintf(committedPath, sizeof(committedPath), "%s/%s", familyPath, kCommittedMarker);
+  const bool installing = Storage.exists(installingPath);
+  const bool committed = Storage.exists(committedPath);
+
+  if (installing || (!committed && hasFamilyTransactionArtifacts(familyPath))) {
+    if (!processFamilyTransactionArtifacts(familyPath, true)) return false;
+    if (Storage.exists(committedPath) && !Storage.remove(committedPath)) return false;
+    if (Storage.exists(installingPath) && !Storage.remove(installingPath)) return false;
+    LOG_INF("FONT", "Rolled back interrupted family install: %s", familyName);
+  } else if (committed) {
+    if (!finalizeCommittedFamily(familyName, familyPath, committedPath)) return false;
+    LOG_INF("FONT", "Finished committed family cleanup: %s", familyName);
+  }
+  return true;
 }
 
 bool findInterruptedFile(const char* familyPath, std::string& path, bool& isBackup) {
@@ -116,6 +348,10 @@ bool recoverRoot(const char* root) {
 
   bool success = true;
   for (const auto& familyName : familyNames) {
+    if (!recoverFamilyTransaction(root, familyName.c_str())) {
+      success = false;
+      continue;
+    }
     if (!processInterruptedFiles(root, familyName.c_str())) success = false;
   }
   return success;
@@ -177,6 +413,114 @@ bool FontInstaller::recoverInterruptedInstalls() {
   bool success = recoverRoot(SdCardFontRegistry::FONTS_DIR_HIDDEN);
   if (!recoverRoot(SdCardFontRegistry::FONTS_DIR_VISIBLE)) success = false;
   return success;
+}
+
+bool FontInstaller::beginFamilyInstall(const char* familyName, uint32_t fingerprint) {
+  char installingPath[192];
+  char committedPath[192];
+  char receiptTempPath[192];
+  if (!buildMarkerPath(familyName, kInstallingMarker, installingPath, sizeof(installingPath)) ||
+      !buildMarkerPath(familyName, kCommittedMarker, committedPath, sizeof(committedPath)) ||
+      !buildMarkerPath(familyName, kInstalledReceiptTemp, receiptTempPath, sizeof(receiptTempPath))) {
+    return false;
+  }
+  if (Storage.exists(installingPath) || Storage.exists(committedPath)) {
+    LOG_ERR("FONT", "Unrecovered family transaction exists: %s", familyName);
+    return false;
+  }
+  if (Storage.exists(receiptTempPath) && !Storage.remove(receiptTempPath)) return false;
+  if (!writeTransactionRecord(installingPath, fingerprint)) {
+    LOG_ERR("FONT", "Failed to create family transaction marker: %s", familyName);
+    if (Storage.exists(installingPath) && !Storage.remove(installingPath)) {
+      LOG_ERR("FONT", "Failed to remove incomplete family transaction marker: %s", familyName);
+    }
+    return false;
+  }
+  return true;
+}
+
+bool FontInstaller::prepareFontReplacement(const char* finalPath) {
+  if (finalPath == nullptr || finalPath[0] == '\0') return false;
+  const std::string backupPath = std::string(finalPath) + kTransactionBackupSuffix;
+  const std::string newPath = std::string(finalPath) + kTransactionNewSuffix;
+  if (Storage.exists(backupPath.c_str()) || Storage.exists(newPath.c_str())) return false;
+
+  if (Storage.exists(finalPath)) {
+    if (!Storage.rename(finalPath, backupPath.c_str())) {
+      LOG_ERR("FONT", "Failed to preserve font for family rollback: %s", finalPath);
+      return false;
+    }
+    return true;
+  }
+
+  if (!createMarker(newPath.c_str())) {
+    LOG_ERR("FONT", "Failed to record new font for family rollback: %s", finalPath);
+    return false;
+  }
+  return true;
+}
+
+bool FontInstaller::commitFamilyInstall(const char* familyName) {
+  char installingPath[192];
+  char committedPath[192];
+  if (!buildMarkerPath(familyName, kInstallingMarker, installingPath, sizeof(installingPath)) ||
+      !buildMarkerPath(familyName, kCommittedMarker, committedPath, sizeof(committedPath))) {
+    return false;
+  }
+  const bool installing = Storage.exists(installingPath);
+  const bool committed = Storage.exists(committedPath);
+  if (committed && !installing) return true;
+  if (!installing || committed) return false;
+  if (!Storage.rename(installingPath, committedPath)) {
+    // A FAT rename can reach durable storage even when the API reports an IO
+    // error. Treat the observable committed state as authoritative.
+    if (Storage.exists(committedPath) && !Storage.exists(installingPath)) {
+      LOG_INF("FONT", "Family transaction committed despite rename error: %s", familyName);
+      return true;
+    }
+    LOG_ERR("FONT", "Failed to commit family transaction: %s", familyName);
+    return false;
+  }
+  return Storage.exists(committedPath) && !Storage.exists(installingPath);
+}
+
+bool FontInstaller::rollbackFamilyInstall(const char* familyName) {
+  char familyPath[160];
+  char installingPath[192];
+  char committedPath[192];
+  if (!buildFamilyPath(familyName, familyPath, sizeof(familyPath)) ||
+      !buildMarkerPath(familyName, kInstallingMarker, installingPath, sizeof(installingPath)) ||
+      !buildMarkerPath(familyName, kCommittedMarker, committedPath, sizeof(committedPath))) {
+    return false;
+  }
+  if (Storage.exists(committedPath) && !Storage.exists(installingPath)) {
+    LOG_ERR("FONT", "Refusing to roll back committed family transaction: %s", familyName);
+    return false;
+  }
+  bool success = processFamilyTransactionArtifacts(familyPath, true);
+  if (Storage.exists(committedPath) && !Storage.remove(committedPath)) success = false;
+  if (Storage.exists(installingPath) && !Storage.remove(installingPath)) success = false;
+  return success;
+}
+
+bool FontInstaller::cleanupCommittedFamilyInstall(const char* familyName) {
+  char familyPath[160];
+  char installingPath[192];
+  char committedPath[192];
+  if (!buildFamilyPath(familyName, familyPath, sizeof(familyPath)) ||
+      !buildMarkerPath(familyName, kInstallingMarker, installingPath, sizeof(installingPath)) ||
+      !buildMarkerPath(familyName, kCommittedMarker, committedPath, sizeof(committedPath))) {
+    return false;
+  }
+  if (Storage.exists(installingPath) || !Storage.exists(committedPath)) return false;
+  return finalizeCommittedFamily(familyName, familyPath, committedPath);
+}
+
+bool FontInstaller::installedFamilyMatches(const char* familyName, uint32_t fingerprint) {
+  char receiptPath[192];
+  if (!buildMarkerPath(familyName, kInstalledReceipt, receiptPath, sizeof(receiptPath))) return false;
+  uint32_t installedFingerprint = 0;
+  return readTransactionRecord(receiptPath, installedFingerprint) && installedFingerprint == fingerprint;
 }
 
 bool FontInstaller::ensureFamilyDir(const char* familyName) {
