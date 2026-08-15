@@ -382,7 +382,7 @@ void setup() {
     setupDisplayAndFonts(isSilentReboot);
     FontManager::getInstance().scanFonts();
     FontManager::getInstance().loadSettings();
-    activityManager.goToFullScreenMessage("SD card error", EpdFontFamily::BOLD);
+    activityManager.goToFullScreenMessage(I18N.get(StrId::STR_SD_CARD_ERROR), EpdFontFamily::BOLD);
     return;
   }
 
