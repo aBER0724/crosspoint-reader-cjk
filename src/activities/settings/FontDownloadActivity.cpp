@@ -1067,7 +1067,7 @@ void FontDownloadActivity::onDeleteConfirmationResult(const ActivityResult& resu
   if (fontInstaller_.deleteFamily(family.name.c_str()) != FontInstaller::Error::OK) {
     RenderLock lock(*this);
     state_ = ERROR;
-    errorMessage_ = "Failed to delete font";
+    errorMessage_ = tr(STR_FONT_DELETE_FAILED);
   } else {
     sdFontSystem.markRegistryDirty();
     {
