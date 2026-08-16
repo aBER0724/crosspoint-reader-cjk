@@ -273,33 +273,81 @@
       return Array.from(fileList).filter(f => /\.cpfont$/i.test(f.name));
     }
 
+    function normalizedFontName(name) {
+      return name.replace(/ /g, '_');
+    }
+
+    function sortedFontEntries(fileList) {
+      return cpfontFilesOnly(fileList)
+        .map(file => ({ file, name: normalizedFontName(file.name) }))
+        .sort((a, b) => a.name < b.name ? -1 : (a.name > b.name ? 1 : 0));
+    }
+
+    function familyFingerprint(entries) {
+      let hash = 2166136261;
+      const hashByte = value => {
+        hash ^= value;
+        hash = Math.imul(hash, 16777619) >>> 0;
+      };
+      const encoder = new TextEncoder();
+      for (const entry of entries) {
+        for (const value of encoder.encode(entry.name)) hashByte(value);
+        hashByte(0);
+        let size = entry.file.size;
+        for (let i = 0; i < 8; i++) {
+          hashByte(size & 0xff);
+          size = Math.floor(size / 256);
+        }
+        hashByte(0xff);
+      }
+      return hash >>> 0;
+    }
+
     document.getElementById('fontFiles').addEventListener('change', function() {
       const info = document.getElementById('pickedInfo');
-      const files = cpfontFilesOnly(this.files);
-      if (files.length === 0) {
+      const entries = sortedFontEntries(this.files);
+      if (entries.length === 0) {
         info.textContent = 'No .cpfont files found in the selected folder.';
         return;
       }
-      const family = sanitizeFamily(familyFromFilename(files[0].name));
-      info.textContent = files.length + ' file' + (files.length === 1 ? '' : 's') +
+      const family = sanitizeFamily(familyFromFilename(entries[0].name));
+      info.textContent = entries.length + ' file' + (entries.length === 1 ? '' : 's') +
         ' → family "' + family + '"';
     });
 
     document.getElementById('uploadForm').addEventListener('submit', async function(e) {
       e.preventDefault();
       const status = document.getElementById('status');
-      const files = cpfontFilesOnly(document.getElementById('fontFiles').files);
-      if (files.length === 0) {
+      const entries = sortedFontEntries(document.getElementById('fontFiles').files);
+      if (entries.length === 0) {
         status.className = 'status-err';
         status.style.display = 'block';
         status.textContent = 'No .cpfont files selected.';
         return;
       }
+      if (entries.length > 32) {
+        status.className = 'status-err';
+        status.style.display = 'block';
+        status.textContent = 'A font family can contain at most 32 files.';
+        return;
+      }
+      if (entries.some(entry => !/^[A-Za-z0-9_-]+\.cpfont$/i.test(entry.name))) {
+        status.className = 'status-err';
+        status.style.display = 'block';
+        status.textContent = 'Font filenames may only use letters, numbers, hyphens, and underscores.';
+        return;
+      }
+      if (new Set(entries.map(entry => entry.name)).size !== entries.length) {
+        status.className = 'status-err';
+        status.style.display = 'block';
+        status.textContent = 'Font filenames must remain unique after spaces are replaced with underscores.';
+        return;
+      }
 
       // A directory picker may include files from multiple family subfolders.
-      // Reject that up front — otherwise files[0]'s family is silently reused
+      // Reject that up front — otherwise entries[0]'s family is silently reused
       // for every upload, corrupting the install layout.
-      const families = [...new Set(files.map(f => sanitizeFamily(familyFromFilename(f.name))))];
+      const families = [...new Set(entries.map(entry => sanitizeFamily(familyFromFilename(entry.name))))];
       if (families.length !== 1) {
         status.className = 'status-err';
         status.style.display = 'block';
@@ -307,30 +355,46 @@
         return;
       }
       const family = families[0];
+      const fingerprint = familyFingerprint(entries);
+      const session = crypto.getRandomValues(new Uint32Array(1))[0];
 
       status.className = '';
       status.style.display = 'block';
 
       let uploaded = 0;
-      for (const file of files) {
-        status.textContent = 'Uploading ' + (uploaded + 1) + '/' + files.length + ': ' + file.name;
+      for (const entry of entries) {
+        status.textContent = 'Uploading ' + (uploaded + 1) + '/' + entries.length + ': ' + entry.name;
         const formData = new FormData();
         formData.append('family', family);
-        formData.append('file', file, file.name);
-        try {
-          const res = await authFetch('/api/fonts/upload', { method: 'POST', body: formData });
-          const data = await res.json();
-          if (!data.ok) {
+        formData.append('fingerprint', String(fingerprint));
+        formData.append('session', String(session));
+        formData.append('index', String(uploaded));
+        formData.append('total', String(entries.length));
+        formData.append('size', String(entry.file.size));
+        formData.append('file', entry.file, entry.name);
+        let completed = false;
+        for (let attempt = 0; attempt < 2 && !completed; attempt++) {
+          try {
+            const res = await authFetch('/api/fonts/upload', { method: 'POST', body: formData });
+            const data = await res.json();
+            const expectedState = uploaded + 1 === entries.length ? 'committed' : 'staged';
+            if (!res.ok || !data.ok || data.state !== expectedState) {
+              status.className = 'status-err';
+              status.textContent = 'Failed on ' + entry.name + ': ' + (data.error || 'invalid batch response');
+              await loadFonts();
+              return;
+            }
+            completed = true;
+          } catch (err) {
+            if (attempt === 0) {
+              status.textContent = 'Retrying ' + (uploaded + 1) + '/' + entries.length + ': ' + entry.name;
+              continue;
+            }
             status.className = 'status-err';
-            status.textContent = 'Failed on ' + file.name + ': ' + (data.error || 'unknown error');
+            status.textContent = 'Upload error on ' + entry.name + ': ' + err.message;
             await loadFonts();
             return;
           }
-        } catch (err) {
-          status.className = 'status-err';
-          status.textContent = 'Upload error on ' + file.name + ': ' + err.message;
-          await loadFonts();
-          return;
         }
         uploaded++;
       }
