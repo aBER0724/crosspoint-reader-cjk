@@ -59,7 +59,7 @@ void FontPreviewActivity::onEnter() {
   renderer.clearScreen();
   LOG_DBG("FNTPREV", "drawHeader...");
   GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, displayName.c_str(),
-                 "Font preview");
+                 tr(STR_PREVIEW));
 
   const int contentTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing + 20;
   const int previewFontId = (actionMask == ActionMask::UiOnly) ? UI_12_FONT_ID : SETTINGS.getBuiltInReaderFontId();
