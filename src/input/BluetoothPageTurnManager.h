@@ -9,6 +9,7 @@
 class BluetoothPageTurnManager {
  public:
   enum class ConnectionState { Disabled, Idle, Scanning, Connecting, Connected, Error };
+  enum class StatusReason { None, StackUnavailable };
 
   struct ScannedDevice {
     std::string name;
@@ -49,17 +50,17 @@ class BluetoothPageTurnManager {
 
   bool isConnected() const;
   ConnectionState getConnectionState() const;
-  std::string getStatusMessage() const;
+  StatusReason getStatusReason() const;
 
  private:
   BluetoothPageTurnManager() = default;
 
-  void setConnectionState(ConnectionState newState, const std::string& message = "");
+  void setConnectionState(ConnectionState newState, StatusReason reason = StatusReason::None);
   void clearBondedDevice();
 
   BluetoothPageTurnState state;
   ConnectionState connectionState = ConnectionState::Disabled;
-  std::string statusMessage;
+  StatusReason statusReason = StatusReason::None;
 };
 
 #define BLUETOOTH_PAGE_TURN BluetoothPageTurnManager::getInstance()
