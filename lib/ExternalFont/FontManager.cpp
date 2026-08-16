@@ -121,12 +121,17 @@ void FontManager::selectFont(int index) {
     return;
   }
 
+  const bool uiWasSharingReader = isUiSharingReaderFont();
   _selectedIndex = index;
 
   if (index >= 0) {
     loadSelectedFont();
   } else {
     _activeFont.unload();
+  }
+
+  if (uiWasSharingReader && !isUiSharingReaderFont()) {
+    loadSelectedUiFont();
   }
 
   saveSettings();
