@@ -2,10 +2,6 @@
 
 #include "CrossPointSettings.h"
 
-namespace {
-constexpr const char* kStackUnavailable = "Bluetooth stack unavailable in this build";
-}  // namespace
-
 BluetoothPageTurnManager& BluetoothPageTurnManager::getInstance() {
   static BluetoothPageTurnManager instance;
   return instance;
@@ -16,7 +12,7 @@ void BluetoothPageTurnManager::begin() {
     setConnectionState(ConnectionState::Disabled);
     return;
   }
-  setConnectionState(ConnectionState::Idle, kStackUnavailable);
+  setConnectionState(ConnectionState::Idle, StatusReason::StackUnavailable);
 }
 
 void BluetoothPageTurnManager::update() { state.clearFrameEvents(); }
@@ -29,7 +25,7 @@ void BluetoothPageTurnManager::setEnabled(const bool enabled) {
   SETTINGS.bluetoothPageTurnEnabled = enabled ? 1 : 0;
   SETTINGS.saveToFile();
   if (enabled) {
-    setConnectionState(ConnectionState::Idle, kStackUnavailable);
+    setConnectionState(ConnectionState::Idle, StatusReason::StackUnavailable);
   } else {
     setConnectionState(ConnectionState::Disabled);
   }
@@ -42,13 +38,13 @@ bool BluetoothPageTurnManager::startScan() {
     setConnectionState(ConnectionState::Disabled);
     return false;
   }
-  setConnectionState(ConnectionState::Error, kStackUnavailable);
+  setConnectionState(ConnectionState::Error, StatusReason::StackUnavailable);
   return false;
 }
 
 void BluetoothPageTurnManager::stopScan() {
   if (connectionState == ConnectionState::Scanning) {
-    setConnectionState(isEnabled() ? ConnectionState::Idle : ConnectionState::Disabled, kStackUnavailable);
+    setConnectionState(isEnabled() ? ConnectionState::Idle : ConnectionState::Disabled, StatusReason::StackUnavailable);
   }
 }
 
@@ -57,7 +53,7 @@ bool BluetoothPageTurnManager::connectToDevice(const std::string&, const std::st
     setConnectionState(ConnectionState::Disabled);
     return false;
   }
-  setConnectionState(ConnectionState::Error, kStackUnavailable);
+  setConnectionState(ConnectionState::Error, StatusReason::StackUnavailable);
   return false;
 }
 
@@ -70,7 +66,7 @@ bool BluetoothPageTurnManager::connectBondedDevice() {
 
 void BluetoothPageTurnManager::disconnect() {
   if (isEnabled()) {
-    setConnectionState(ConnectionState::Idle, kStackUnavailable);
+    setConnectionState(ConnectionState::Idle, StatusReason::StackUnavailable);
   } else {
     setConnectionState(ConnectionState::Disabled);
   }
@@ -97,11 +93,11 @@ BluetoothPageTurnManager::ConnectionState BluetoothPageTurnManager::getConnectio
   return connectionState;
 }
 
-std::string BluetoothPageTurnManager::getStatusMessage() const { return statusMessage; }
+BluetoothPageTurnManager::StatusReason BluetoothPageTurnManager::getStatusReason() const { return statusReason; }
 
-void BluetoothPageTurnManager::setConnectionState(const ConnectionState newState, const std::string& message) {
+void BluetoothPageTurnManager::setConnectionState(const ConnectionState newState, const StatusReason reason) {
   connectionState = newState;
-  statusMessage = message;
+  statusReason = reason;
 }
 
 void BluetoothPageTurnManager::clearBondedDevice() {
