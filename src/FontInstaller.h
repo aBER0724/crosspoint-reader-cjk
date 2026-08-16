@@ -61,7 +61,7 @@ class FontInstaller {
   /// creates it under SdCardFontRegistry::defaultWriteRoot().
   bool ensureFamilyDir(const char* familyName);
 
-  /// Validate a .cpfont file on disk (check magic bytes).
+  /// Validate a canonical CPFONT v4 file on disk before installation.
   bool validateCpfontFile(const char* path);
 
   /// Build the full SD path for a font file.
@@ -82,7 +82,4 @@ class FontInstaller {
 
  private:
   SdCardFontRegistry& registry_;
-
-  static constexpr const char* CPFONT_MAGIC = "CPFONT\0";
-  static constexpr size_t CPFONT_MAGIC_LEN = 8;
 };
