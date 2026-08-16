@@ -155,7 +155,7 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
         SettingInfo::Enum(StrId::STR_SLEEP_COVER_MODE, &CrossPointSettings::sleepScreenCoverMode,
                           {StrId::STR_FIT, StrId::STR_CROP}, "sleepScreenCoverMode", StrId::STR_CAT_DISPLAY),
         SettingInfo::Enum(StrId::STR_SLEEP_COVER_FILTER, &CrossPointSettings::sleepScreenCoverFilter,
-                          {StrId::STR_NONE_OPT, StrId::STR_FILTER_CONTRAST, StrId::STR_INVERTED},
+                          {StrId::STR_NONE_OPT, StrId::STR_FILTER_CONTRAST, StrId::STR_FILTER_INVERTED},
                           "sleepScreenCoverFilter", StrId::STR_CAT_DISPLAY),
         SettingInfo::Enum(StrId::STR_QUICK_RESUME_TIMEOUT, &CrossPointSettings::quickResumeSleepScreen,
                           {StrId::STR_STATE_OFF, StrId::STR_STATE_ON}, "quickResumeSleepScreen",
@@ -176,7 +176,8 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
         SettingInfo::Enum(StrId::STR_COLOR_MODE, &CrossPointSettings::colorMode, {StrId::STR_LIGHT, StrId::STR_DARK},
                           "colorMode", StrId::STR_CAT_DISPLAY),
         SettingInfo::Enum(StrId::STR_UI_ORIENTATION, &CrossPointSettings::uiOrientation,
-                          {StrId::STR_PORTRAIT, StrId::STR_INVERTED}, "uiOrientation", StrId::STR_CAT_DISPLAY),
+                          {StrId::STR_PORTRAIT, StrId::STR_ORIENTATION_INVERTED}, "uiOrientation",
+                          StrId::STR_CAT_DISPLAY),
 
         // --- Reader ---
         // Built-in font-family entry. Replaced per-call with a registry-aware

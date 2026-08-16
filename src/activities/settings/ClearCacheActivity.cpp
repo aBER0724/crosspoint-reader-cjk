@@ -5,6 +5,8 @@
 #include <I18n.h>
 #include <Logging.h>
 
+#include <cstdio>
+
 #include "MappedInputManager.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
@@ -69,7 +71,9 @@ void ClearCacheActivity::render(RenderLock&&) {
     renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2 - 20, tr(STR_CACHE_CLEARED), true, EpdFontFamily::BOLD);
     std::string resultText = std::to_string(clearedCount) + " " + std::string(tr(STR_ITEMS_REMOVED));
     if (failedCount > 0) {
-      resultText += ", " + std::to_string(failedCount) + " " + std::string(tr(STR_FAILED_LOWER));
+      char failedText[32];
+      snprintf(failedText, sizeof(failedText), tr(STR_FAILED_COUNT_FORMAT), failedCount);
+      resultText += ", " + std::string(failedText);
     }
     renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2 + 10, resultText.c_str());
 
