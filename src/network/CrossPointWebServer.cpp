@@ -43,6 +43,21 @@ constexpr unsigned long MAX_WEB_UPLOAD_MS = 15UL * 60UL * 1000UL;
 constexpr size_t MAX_WEB_LIST_ENTRIES = 1000;
 constexpr uint64_t WEB_STORAGE_RESERVE_BYTES = 8ULL * 1024ULL * 1024ULL;
 
+bool parseUint32Arg(const String& value, uint32_t& result) {
+  if (value.isEmpty()) return false;
+
+  uint32_t parsed = 0;
+  for (size_t i = 0; i < value.length(); ++i) {
+    const char c = value[i];
+    if (c < '0' || c > '9') return false;
+    const uint32_t digit = static_cast<uint32_t>(c - '0');
+    if (parsed > (UINT32_MAX - digit) / 10U) return false;
+    parsed = parsed * 10U + digit;
+  }
+  result = parsed;
+  return true;
+}
+
 // Static pointer for WebSocket callback (WebSocketsServer requires C-style callback)
 CrossPointWebServer* wsInstance = nullptr;
 
@@ -415,6 +430,20 @@ void CrossPointWebServer::abortWsUpload(const char* tag) {
 }
 
 void CrossPointWebServer::stop() {
+  if (fontUpload.transactionActive) {
+    abortFontUploadBatch("Font upload interrupted by server stop");
+  } else if (fontUpload.cleanupPending && !fontUpload.familyName.empty()) {
+    if (FontInstaller::cleanupCommittedFamilyInstall(fontUpload.familyName.c_str())) {
+      fontUpload.cleanupPending = false;
+    }
+  } else if (fontUpload.file.isOpen()) {
+    fontUpload.file.close();
+    if (!fontUpload.tempPath.empty() && Storage.exists(fontUpload.tempPath.c_str())) {
+      Storage.remove(fontUpload.tempPath.c_str());
+    }
+    fontUpload.file = FsFile();
+  }
+
   if (!running || !server) {
     LOG_DBG("WEB", "stop() called but already stopped (running=%d, server=%p)", running, server.get());
     if (watchdogTaskRegistered) {
@@ -483,6 +512,19 @@ void CrossPointWebServer::handleClient() {
   if (!server) {
     LOG_DBG("WEB", "WARNING: handleClient called with null server!");
     return;
+  }
+
+  if (fontUpload.transactionActive && millis() - fontUpload.lastActivityAt >= FontUploadState::BATCH_IDLE_TIMEOUT_MS) {
+    LOG_ERR("WEB", "Font upload family batch timed out: %s", fontUpload.familyName.c_str());
+    abortFontUploadBatch("Font upload batch timed out");
+  }
+  if (fontUpload.cleanupPending && !fontUpload.familyName.empty() &&
+      millis() - fontUpload.lastCleanupAttemptAt >= FontUploadState::CLEANUP_RETRY_INTERVAL_MS) {
+    fontUpload.lastCleanupAttemptAt = millis();
+    if (FontInstaller::cleanupCommittedFamilyInstall(fontUpload.familyName.c_str())) {
+      fontUpload.cleanupPending = false;
+      LOG_INF("WEB", "Finished deferred font family cleanup: %s", fontUpload.familyName.c_str());
+    }
   }
 
   // Print debug every 10 seconds to confirm handleClient is being called
@@ -2301,38 +2343,58 @@ void CrossPointWebServer::handleFontUploadData() {
 
   // Reject unauthenticated upload chunks early, matching regular upload auth.
   if (!isAdminAuthorized()) {
-    if (upload.status == UPLOAD_FILE_START) {
-      fontUpload.valid = false;
-      fontUpload.finalPath.clear();
-      fontUpload.tempPath.clear();
-      fontUpload.backupPath.clear();
-    }
     return;
   }
 
   switch (upload.status) {
     case UPLOAD_FILE_START: {
       resetTaskWatchdogIfSubscribed();
-      if (fontUpload.file.isOpen()) fontUpload.file.close();
-      if (!fontUpload.tempPath.empty() && Storage.exists(fontUpload.tempPath.c_str())) {
-        Storage.remove(fontUpload.tempPath.c_str());
+      if (fontUpload.requestValid || fontUpload.file.isOpen()) {
+        LOG_ERR("WEB", "Replacing an incomplete font upload request");
+        abortFontUploadBatch("Font upload request was replaced before completion");
       }
 
-      String family = server->arg("family");
-      fontUpload.file = FsFile();
-      fontUpload.familyName.clear();
-      fontUpload.finalPath.clear();
-      fontUpload.tempPath.clear();
-      fontUpload.backupPath.clear();
-      fontUpload.valid = false;
-      fontUpload.magicChecked = false;
-      fontUpload.bytesWritten = 0;
-      fontUpload.magic.fill(0);
-      fontUpload.magicBytes = 0;
-      fontUpload.bufferPos = 0;
+      if (fontUpload.cleanupPending && !fontUpload.familyName.empty()) {
+        fontUpload.lastCleanupAttemptAt = millis();
+        if (!FontInstaller::cleanupCommittedFamilyInstall(fontUpload.familyName.c_str())) {
+          resetFontUploadRequest();
+          fontUpload.errorMessage = "Previous font family cleanup is still pending";
+          LOG_ERR("WEB", "Cannot start font upload while committed cleanup is pending: %s",
+                  fontUpload.familyName.c_str());
+          break;
+        }
+        fontUpload.cleanupPending = false;
+      }
+      resetFontUploadRequest();
+
+      const String family = server->arg("family");
+      const String fingerprintArg = server->arg("fingerprint");
+      const String sessionArg = server->arg("session");
+      const String indexArg = server->arg("index");
+      const String totalArg = server->arg("total");
+      const String fileSizeArg = server->arg("size");
+      uint32_t fingerprint = 0;
+      uint32_t sessionId = 0;
+      uint32_t parsedIndex = 0;
+      uint32_t parsedTotal = 0;
+      uint32_t parsedFileSize = 0;
 
       if (!FontInstaller::isValidFamilyName(family.c_str())) {
         LOG_ERR("WEB", "Invalid font family name: %s", family.c_str());
+        abortFontUploadBatch("Invalid font family name");
+        break;
+      }
+      if (!parseUint32Arg(fingerprintArg, fingerprint) || !parseUint32Arg(sessionArg, sessionId) ||
+          !parseUint32Arg(indexArg, parsedIndex) || !parseUint32Arg(totalArg, parsedTotal) ||
+          !parseUint32Arg(fileSizeArg, parsedFileSize) || parsedTotal == 0 ||
+          parsedTotal > FontUploadState::MAX_FILES_PER_FAMILY || parsedIndex >= parsedTotal) {
+        LOG_ERR("WEB", "Invalid font family batch metadata");
+        abortFontUploadBatch("Invalid font family batch metadata");
+        break;
+      }
+      if (parsedFileSize < fontUpload.magic.size() || parsedFileSize > FontUploadState::MAX_FILE_SIZE) {
+        LOG_ERR("WEB", "Invalid font upload size: %lu", static_cast<unsigned long>(parsedFileSize));
+        abortFontUploadBatch("Invalid font upload size");
         break;
       }
 
@@ -2340,61 +2402,142 @@ void CrossPointWebServer::handleFontUploadData() {
       filename.replace(' ', '_');
       if (!FontInstaller::isValidCpfontFilename(filename.c_str())) {
         LOG_ERR("WEB", "Invalid font filename: %s", filename.c_str());
+        abortFontUploadBatch("Invalid font filename");
         break;
       }
 
-      fontUpload.familyName = family.c_str();
+      const size_t currentIndex = static_cast<size_t>(parsedIndex);
+      const size_t totalFiles = static_cast<size_t>(parsedTotal);
+      const size_t expectedFileSize = static_cast<size_t>(parsedFileSize);
+
+      const bool matchingBatch = fontUpload.familyName == family.c_str() && fontUpload.fingerprint == fingerprint &&
+                                 fontUpload.sessionId == sessionId && fontUpload.totalFiles == totalFiles;
+      const bool duplicatePreviousFile =
+          matchingBatch && fontUpload.nextIndex > 0 && currentIndex + 1 == fontUpload.nextIndex &&
+          fontUpload.lastCompletedFilename == filename.c_str() && fontUpload.lastCompletedFileSize == expectedFileSize;
+      if (duplicatePreviousFile && millis() - fontUpload.lastActivityAt <= FontUploadState::DUPLICATE_RETRY_WINDOW_MS &&
+          (fontUpload.transactionActive || fontUpload.nextIndex == fontUpload.totalFiles)) {
+        fontUpload.currentFilename = filename.c_str();
+        fontUpload.currentIndex = currentIndex;
+        fontUpload.expectedFileSize = expectedFileSize;
+        fontUpload.duplicateRequest = true;
+        fontUpload.duplicateCommitted = !fontUpload.transactionActive && fontUpload.nextIndex == fontUpload.totalFiles;
+        fontUpload.requestValid = true;
+        fontUpload.lastActivityAt = millis();
+        LOG_INF("WEB", "Accepting duplicate font upload request: %zu/%zu %s", currentIndex + 1, totalFiles,
+                filename.c_str());
+        break;
+      }
+
+      if (fontUpload.transactionActive && currentIndex == 0) {
+        LOG_INF("WEB", "Restarting font family upload batch: %s", fontUpload.familyName.c_str());
+        abortFontUploadBatch("Restarting font upload batch");
+        resetFontUploadRequest();
+      }
+
+      if (fontUpload.transactionActive &&
+          (fontUpload.familyName != family.c_str() || fontUpload.fingerprint != fingerprint ||
+           fontUpload.sessionId != sessionId || fontUpload.totalFiles != totalFiles ||
+           fontUpload.nextIndex != currentIndex)) {
+        LOG_ERR("WEB", "Font family upload batch metadata or order mismatch");
+        abortFontUploadBatch("Font upload batch metadata or order mismatch");
+        break;
+      }
+      if (!fontUpload.transactionActive && currentIndex != 0) {
+        LOG_ERR("WEB", "Font family upload batch must start at index zero");
+        abortFontUploadBatch("Font upload batch must start at index zero");
+        break;
+      }
 
       FontInstaller installer(sdFontSystem.registry());
-      if (!installer.ensureFamilyDir(family.c_str())) {
-        LOG_ERR("WEB", "Failed to create font family dir");
-        break;
-      }
-
       char path[160];
       if (!FontInstaller::buildFontPath(family.c_str(), filename.c_str(), path, sizeof(path))) {
         LOG_ERR("WEB", "Invalid or oversized font upload path");
+        abortFontUploadBatch("Invalid or oversized font upload path");
         break;
       }
       fontUpload.finalPath = path;
       fontUpload.tempPath = fontUpload.finalPath + ".part";
-      fontUpload.backupPath = fontUpload.finalPath + ".bak";
 
       if (Storage.exists(fontUpload.tempPath.c_str()) && !Storage.remove(fontUpload.tempPath.c_str())) {
         LOG_ERR("WEB", "Failed to remove stale font upload: %s", fontUpload.tempPath.c_str());
+        abortFontUploadBatch("Failed to remove stale font upload");
         break;
       }
-      if (Storage.exists(fontUpload.backupPath.c_str())) {
+      const std::string legacyBackupPath = fontUpload.finalPath + ".bak";
+      if (Storage.exists(legacyBackupPath.c_str())) {
         if (Storage.exists(fontUpload.finalPath.c_str())) {
-          if (!Storage.remove(fontUpload.backupPath.c_str())) {
-            LOG_ERR("WEB", "Failed to remove stale font backup: %s", fontUpload.backupPath.c_str());
+          if (!Storage.remove(legacyBackupPath.c_str())) {
+            LOG_ERR("WEB", "Failed to remove stale font backup: %s", legacyBackupPath.c_str());
+            abortFontUploadBatch("Failed to remove stale font backup");
             break;
           }
-        } else if (!Storage.rename(fontUpload.backupPath.c_str(), fontUpload.finalPath.c_str())) {
+        } else if (!Storage.rename(legacyBackupPath.c_str(), fontUpload.finalPath.c_str())) {
           LOG_ERR("WEB", "Failed to restore interrupted font upload: %s", fontUpload.finalPath.c_str());
+          abortFontUploadBatch("Failed to restore interrupted font upload");
           break;
         }
       }
 
-      if (!Storage.openFileForWrite("WEB", fontUpload.tempPath.c_str(), fontUpload.file)) {
-        LOG_ERR("WEB", "Failed to open font upload for write: %s", fontUpload.tempPath.c_str());
+      if (!fontUpload.transactionActive) {
+        if (!installer.ensureFamilyDir(family.c_str())) {
+          LOG_ERR("WEB", "Failed to create font family dir");
+          abortFontUploadBatch("Failed to create font family directory");
+          break;
+        }
+        if (!FontInstaller::beginFamilyInstall(family.c_str(), fingerprint)) {
+          LOG_ERR("WEB", "Failed to begin font family transaction: %s", family.c_str());
+          abortFontUploadBatch("Failed to begin font family transaction");
+          break;
+        }
+        fontUpload.familyName = family.c_str();
+        fontUpload.fingerprint = fingerprint;
+        fontUpload.sessionId = sessionId;
+        fontUpload.nextIndex = 0;
+        fontUpload.totalFiles = totalFiles;
+        fontUpload.transactionActive = true;
+        fontUpload.lastCompletedFilename.clear();
+        fontUpload.lastCompletedFileSize = 0;
+      }
+
+      if (!storageHasSpaceForUpload(expectedFileSize)) {
+        LOG_ERR("WEB", "Not enough free space for font upload: %lu bytes",
+                static_cast<unsigned long>(expectedFileSize));
+        abortFontUploadBatch("Not enough free space for font upload");
         break;
       }
 
-      fontUpload.valid = true;
-      LOG_DBG("WEB", "Font upload started: %s -> %s", filename.c_str(), fontUpload.tempPath.c_str());
+      if (!Storage.openFileForWrite("WEB", fontUpload.tempPath.c_str(), fontUpload.file)) {
+        LOG_ERR("WEB", "Failed to open font upload for write: %s", fontUpload.tempPath.c_str());
+        abortFontUploadBatch("Failed to open font upload for writing");
+        break;
+      }
+
+      fontUpload.currentFilename = filename.c_str();
+      fontUpload.currentIndex = currentIndex;
+      fontUpload.expectedFileSize = expectedFileSize;
+      fontUpload.requestValid = true;
+      fontUpload.lastActivityAt = millis();
+      LOG_DBG("WEB", "Font upload started: %zu/%zu %s -> %s", currentIndex + 1, totalFiles, filename.c_str(),
+              fontUpload.tempPath.c_str());
       break;
     }
 
     case UPLOAD_FILE_WRITE: {
-      if (!fontUpload.valid) break;
+      if (!fontUpload.requestValid) break;
       resetTaskWatchdogIfSubscribed();
+      fontUpload.lastActivityAt = millis();
 
       const size_t bufferedTotal = fontUpload.bytesWritten + fontUpload.bufferPos;
-      if (bufferedTotal > FontUploadState::MAX_FILE_SIZE ||
-          upload.currentSize > FontUploadState::MAX_FILE_SIZE - bufferedTotal) {
-        LOG_ERR("WEB", "Font upload exceeds maximum size");
-        fontUpload.valid = false;
+      if (bufferedTotal > fontUpload.expectedFileSize ||
+          upload.currentSize > fontUpload.expectedFileSize - bufferedTotal) {
+        LOG_ERR("WEB", "Font upload exceeds declared size");
+        abortFontUploadBatch("Font upload exceeds declared size");
+        break;
+      }
+      if (!fontUpload.duplicateRequest && !storageHasSpaceForUpload(fontUpload.bufferPos + upload.currentSize)) {
+        LOG_ERR("WEB", "Font upload exhausted the storage reserve");
+        abortFontUploadBatch("Not enough free space for font upload");
         break;
       }
 
@@ -2409,15 +2552,20 @@ void CrossPointWebServer::handleFontUploadData() {
           fontUpload.magicChecked = true;
           if (memcmp(fontUpload.magic.data(), "CPFONT\0\0", fontUpload.magic.size()) != 0) {
             LOG_ERR("WEB", "Invalid .cpfont magic bytes");
-            fontUpload.valid = false;
+            abortFontUploadBatch("Invalid .cpfont magic bytes");
             break;
           }
         }
       }
 
+      if (fontUpload.duplicateRequest) {
+        fontUpload.bytesWritten += upload.currentSize;
+        break;
+      }
+
       size_t remaining = upload.currentSize;
       const uint8_t* src = upload.buf;
-      while (remaining > 0 && fontUpload.valid) {
+      while (remaining > 0 && fontUpload.requestValid) {
         const size_t space = FontUploadState::BUFFER_SIZE - fontUpload.bufferPos;
         const size_t chunk = remaining < space ? remaining : space;
         memcpy(fontUpload.buffer.data() + fontUpload.bufferPos, src, chunk);
@@ -2432,7 +2580,7 @@ void CrossPointWebServer::handleFontUploadData() {
           fontUpload.bufferPos = 0;
           if (written != pending) {
             LOG_ERR("WEB", "Failed to write font upload: %zu/%zu bytes", written, pending);
-            fontUpload.valid = false;
+            abortFontUploadBatch("Failed to write font upload");
             break;
           }
           resetTaskWatchdogIfSubscribed();
@@ -2442,83 +2590,193 @@ void CrossPointWebServer::handleFontUploadData() {
     }
 
     case UPLOAD_FILE_END: {
-      if (fontUpload.valid && fontUpload.bufferPos > 0) {
+      if (!fontUpload.requestValid) break;
+      fontUpload.lastActivityAt = millis();
+      if (fontUpload.duplicateRequest) {
+        if (!fontUpload.magicChecked || fontUpload.bytesWritten != fontUpload.expectedFileSize) {
+          LOG_ERR("WEB", "Duplicate font upload does not match declared size or format");
+          abortFontUploadBatch("Duplicate font upload does not match declared size or format");
+          break;
+        }
+        fontUpload.requestValid = false;
+        fontUpload.requestSucceeded = true;
+        fontUpload.requestCommitted = fontUpload.duplicateCommitted;
+        LOG_INF("WEB", "Duplicate font upload request verified: %zu/%zu %s", fontUpload.currentIndex + 1,
+                fontUpload.totalFiles, fontUpload.currentFilename.c_str());
+        break;
+      }
+      if (fontUpload.bufferPos > 0) {
         const size_t pending = fontUpload.bufferPos;
         const size_t written = fontUpload.file.write(fontUpload.buffer.data(), pending);
         fontUpload.bytesWritten += written;
         fontUpload.bufferPos = 0;
         if (written != pending) {
           LOG_ERR("WEB", "Failed to flush font upload: %zu/%zu bytes", written, pending);
-          fontUpload.valid = false;
+          abortFontUploadBatch("Failed to flush font upload");
+          break;
         }
       }
       if (!fontUpload.magicChecked || fontUpload.bytesWritten < fontUpload.magic.size()) {
         LOG_ERR("WEB", "Font upload is shorter than the .cpfont header");
-        fontUpload.valid = false;
+        abortFontUploadBatch("Font upload is shorter than the .cpfont header");
+        break;
       }
-      if (fontUpload.file.isOpen()) fontUpload.file.close();
+      if (fontUpload.bytesWritten != fontUpload.expectedFileSize) {
+        LOG_ERR("WEB", "Font upload size mismatch: %zu/%zu bytes", fontUpload.bytesWritten,
+                fontUpload.expectedFileSize);
+        abortFontUploadBatch("Font upload size does not match declared size");
+        break;
+      }
+      fontUpload.file.flush();
+      if (!fontUpload.file.close()) {
+        LOG_ERR("WEB", "Failed to close font upload: %s", fontUpload.tempPath.c_str());
+        abortFontUploadBatch("Failed to close font upload");
+        break;
+      }
+      fontUpload.file = FsFile();
 
       FontInstaller installer(sdFontSystem.registry());
-      if (fontUpload.valid && !installer.validateCpfontFile(fontUpload.tempPath.c_str())) {
+      if (!installer.validateCpfontFile(fontUpload.tempPath.c_str())) {
         LOG_ERR("WEB", "Uploaded .cpfont failed validation: %s", fontUpload.tempPath.c_str());
-        fontUpload.valid = false;
+        abortFontUploadBatch("Uploaded .cpfont failed validation");
+        break;
       }
-
-      bool backupCreated = false;
-      if (fontUpload.valid && Storage.exists(fontUpload.finalPath.c_str())) {
-        if (Storage.exists(fontUpload.backupPath.c_str()) && !Storage.remove(fontUpload.backupPath.c_str())) {
-          LOG_ERR("WEB", "Failed to clear font backup: %s", fontUpload.backupPath.c_str());
-          fontUpload.valid = false;
-        } else if (!Storage.rename(fontUpload.finalPath.c_str(), fontUpload.backupPath.c_str())) {
-          LOG_ERR("WEB", "Failed to back up existing font: %s", fontUpload.finalPath.c_str());
-          fontUpload.valid = false;
-        } else {
-          backupCreated = true;
-        }
+      if (!FontInstaller::prepareFontReplacement(fontUpload.finalPath.c_str())) {
+        LOG_ERR("WEB", "Failed to prepare font replacement: %s", fontUpload.finalPath.c_str());
+        abortFontUploadBatch("Failed to prepare font replacement");
+        break;
       }
-
-      if (fontUpload.valid && !Storage.rename(fontUpload.tempPath.c_str(), fontUpload.finalPath.c_str())) {
+      if (!Storage.rename(fontUpload.tempPath.c_str(), fontUpload.finalPath.c_str())) {
         LOG_ERR("WEB", "Failed to install uploaded font: %s", fontUpload.finalPath.c_str());
-        fontUpload.valid = false;
-        if (backupCreated && !Storage.rename(fontUpload.backupPath.c_str(), fontUpload.finalPath.c_str())) {
-          LOG_ERR("WEB", "Failed to restore font backup: %s", fontUpload.backupPath.c_str());
+        abortFontUploadBatch("Failed to install uploaded font");
+        break;
+      }
+
+      fontUpload.requestValid = false;
+      fontUpload.requestSucceeded = true;
+      fontUpload.lastCompletedFilename = fontUpload.currentFilename;
+      fontUpload.lastCompletedFileSize = fontUpload.expectedFileSize;
+      fontUpload.nextIndex = fontUpload.currentIndex + 1;
+      if (fontUpload.nextIndex == fontUpload.totalFiles) {
+        if (!FontInstaller::commitFamilyInstall(fontUpload.familyName.c_str())) {
+          LOG_ERR("WEB", "Failed to commit font family transaction: %s", fontUpload.familyName.c_str());
+          abortFontUploadBatch("Failed to commit font family transaction");
+          break;
+        }
+
+        fontUpload.transactionActive = false;
+        fontUpload.requestCommitted = true;
+        fontUpload.cleanupPending = true;
+        fontUpload.lastCleanupAttemptAt = millis();
+        if (FontInstaller::cleanupCommittedFamilyInstall(fontUpload.familyName.c_str())) {
+          fontUpload.cleanupPending = false;
+        } else {
+          LOG_ERR("WEB", "Committed font family cleanup deferred until recovery: %s", fontUpload.familyName.c_str());
         }
       }
 
-      if (fontUpload.valid && backupCreated && Storage.exists(fontUpload.backupPath.c_str()) &&
-          !Storage.remove(fontUpload.backupPath.c_str())) {
-        LOG_ERR("WEB", "Failed to remove old font backup: %s", fontUpload.backupPath.c_str());
-      }
-      if (!fontUpload.valid && !fontUpload.tempPath.empty() && Storage.exists(fontUpload.tempPath.c_str())) {
-        Storage.remove(fontUpload.tempPath.c_str());
-      }
-
-      LOG_DBG("WEB", "Font upload end: valid=%d, %zu bytes", fontUpload.valid, fontUpload.bytesWritten);
+      LOG_DBG("WEB", "Font upload end: %zu/%zu, %zu bytes, committed=%d", fontUpload.nextIndex, fontUpload.totalFiles,
+              fontUpload.bytesWritten, fontUpload.requestCommitted);
       break;
     }
 
     case UPLOAD_FILE_ABORTED: {
-      if (fontUpload.file.isOpen()) fontUpload.file.close();
-      if (!fontUpload.tempPath.empty() && Storage.exists(fontUpload.tempPath.c_str())) {
-        Storage.remove(fontUpload.tempPath.c_str());
-      }
-      fontUpload.valid = false;
       LOG_DBG("WEB", "Font upload aborted");
+      if (fontUpload.requestValid || fontUpload.transactionActive) {
+        abortFontUploadBatch("Font upload aborted");
+      } else if (fontUpload.errorMessage.empty()) {
+        fontUpload.errorMessage = "Font upload aborted";
+      }
       break;
     }
   }
 }
+
+void CrossPointWebServer::resetFontUploadRequest() {
+  if (fontUpload.file.isOpen()) fontUpload.file.close();
+  fontUpload.file = FsFile();
+  fontUpload.finalPath.clear();
+  fontUpload.tempPath.clear();
+  fontUpload.errorMessage.clear();
+  fontUpload.currentFilename.clear();
+  fontUpload.currentIndex = 0;
+  fontUpload.expectedFileSize = 0;
+  fontUpload.requestValid = false;
+  fontUpload.requestSucceeded = false;
+  fontUpload.requestCommitted = false;
+  fontUpload.duplicateRequest = false;
+  fontUpload.duplicateCommitted = false;
+  fontUpload.magicChecked = false;
+  fontUpload.bytesWritten = 0;
+  fontUpload.magic.fill(0);
+  fontUpload.magicBytes = 0;
+  fontUpload.bufferPos = 0;
+}
+
+void CrossPointWebServer::abortFontUploadBatch(const char* errorMessage) {
+  if (fontUpload.file.isOpen()) fontUpload.file.close();
+  fontUpload.file = FsFile();
+  if (!fontUpload.tempPath.empty() && Storage.exists(fontUpload.tempPath.c_str()) &&
+      !Storage.remove(fontUpload.tempPath.c_str())) {
+    LOG_ERR("WEB", "Failed to remove incomplete font upload: %s", fontUpload.tempPath.c_str());
+  }
+
+  if (fontUpload.transactionActive && !fontUpload.familyName.empty() &&
+      !FontInstaller::rollbackFamilyInstall(fontUpload.familyName.c_str())) {
+    LOG_ERR("WEB", "Font family rollback deferred until recovery: %s", fontUpload.familyName.c_str());
+  }
+
+  fontUpload.familyName.clear();
+  fontUpload.finalPath.clear();
+  fontUpload.tempPath.clear();
+  fontUpload.errorMessage = errorMessage == nullptr ? "Font upload failed" : errorMessage;
+  fontUpload.currentFilename.clear();
+  fontUpload.lastCompletedFilename.clear();
+  fontUpload.fingerprint = 0;
+  fontUpload.sessionId = 0;
+  fontUpload.currentIndex = 0;
+  fontUpload.nextIndex = 0;
+  fontUpload.totalFiles = 0;
+  fontUpload.expectedFileSize = 0;
+  fontUpload.lastCompletedFileSize = 0;
+  fontUpload.transactionActive = false;
+  fontUpload.requestValid = false;
+  fontUpload.requestSucceeded = false;
+  fontUpload.requestCommitted = false;
+  fontUpload.cleanupPending = false;
+  fontUpload.duplicateRequest = false;
+  fontUpload.duplicateCommitted = false;
+  fontUpload.magicChecked = false;
+  fontUpload.bytesWritten = 0;
+  fontUpload.magic.fill(0);
+  fontUpload.magicBytes = 0;
+  fontUpload.lastActivityAt = 0;
+  fontUpload.lastCleanupAttemptAt = 0;
+  fontUpload.bufferPos = 0;
+}
+
 void CrossPointWebServer::handleFontUpload() {
   if (!requireAdminAuth()) {
     return;
   }
 
-  if (fontUpload.valid) {
-    sdFontSystem.markRegistryDirty();
-    server->send(200, "application/json", "{\"ok\":true}");
-    LOG_DBG("WEB", "Font upload complete: %s", fontUpload.finalPath.c_str());
+  JsonDocument response;
+  if (fontUpload.requestSucceeded) {
+    response["ok"] = true;
+    response["state"] = fontUpload.requestCommitted ? "committed" : "staged";
+    if (fontUpload.requestCommitted) {
+      sdFontSystem.markRegistryDirty();
+      LOG_DBG("WEB", "Font family upload committed: %s", fontUpload.familyName.c_str());
+    }
+    String json;
+    serializeJson(response, json);
+    server->send(200, "application/json", json);
   } else {
-    server->send(400, "application/json", "{\"error\":\"Invalid .cpfont file\"}");
+    response["ok"] = false;
+    response["error"] = fontUpload.errorMessage.empty() ? "Font upload failed" : fontUpload.errorMessage;
+    String json;
+    serializeJson(response, json);
+    server->send(400, "application/json", json);
   }
 }
 
