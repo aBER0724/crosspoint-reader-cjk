@@ -464,7 +464,7 @@ bool SdCardFont::buildMiniKernMatrix(PerStyle& s, const uint32_t* codepoints, ui
     return false;
   }
 
-  for (uint8_t newL = 1; newL <= numLeft; newL++) {
+  for (uint16_t newL = 1; newL <= numLeft; newL++) {
     if (cancelled()) return false;
     const uint8_t oldL = newToOldLeft[newL];
     const uint32_t rowFileOff = s.kernMatrixFileOffset + (oldL - 1u) * s.header.kernRightClassCount;
@@ -480,7 +480,7 @@ bool SdCardFont::buildMiniKernMatrix(PerStyle& s, const uint32_t* codepoints, ui
       return false;
     }
     int8_t* miniRow = s.miniKernMatrix + (newL - 1u) * numRight;
-    for (uint8_t newR = 1; newR <= numRight; newR++) {
+    for (uint16_t newR = 1; newR <= numRight; newR++) {
       miniRow[newR - 1] = rowBuf[newToOldRight[newR] - 1u];
     }
   }

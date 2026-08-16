@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 
+#include "CpfontValidator.h"
 #include "CrossPointSettings.h"
 
 FontInstaller::FontInstaller(SdCardFontRegistry& registry) : registry_(registry) {}
@@ -564,21 +565,16 @@ bool FontInstaller::validateCpfontFile(const char* path) {
     return false;
   }
 
-  uint8_t magic[CPFONT_MAGIC_LEN];
-  size_t bytesRead = file.read(magic, CPFONT_MAGIC_LEN);
+  const auto readAt = [](void* context, size_t offset, void* destination, size_t length) -> int {
+    auto* file = static_cast<HalFile*>(context);
+    if (!file->seekSet(offset)) return -1;
+    return file->read(destination, length);
+  };
+  const CpfontValidator::Reader reader{&file, file.fileSize(), readAt};
+  const bool valid = CpfontValidator::validateV4(reader);
   file.close();
-
-  if (bytesRead < CPFONT_MAGIC_LEN) {
-    LOG_ERR("FONT", "File too small: %s (%zu bytes)", path, bytesRead);
-    return false;
-  }
-
-  if (memcmp(magic, "CPFONT\0\0", CPFONT_MAGIC_LEN) != 0) {
-    LOG_ERR("FONT", "Bad magic in: %s", path);
-    return false;
-  }
-
-  return true;
+  if (!valid) LOG_ERR("FONT", "Invalid CPFONT v4 structure: %s", path);
+  return valid;
 }
 
 bool FontInstaller::buildFontPath(const char* family, const char* filename, char* outBuf, size_t outBufSize) {
