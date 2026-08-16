@@ -39,6 +39,7 @@ class TextSettingsActivity final : public Activity {
   void applyFamily(int listIndex);
   void applyFamilyToTarget(int listIndex, FontTarget target);
   void applySize(int listIndex);
+  int findCurrentFontIndex(const char* sdFontFamilyName, uint8_t fontFamily, int legacyIndex) const;
   void rebuildSizeEntries();
   bool hasFixedExternalSize() const;
   std::string fontRoleText(int listIndex) const;
@@ -70,9 +71,12 @@ class TextSettingsActivity final : public Activity {
   int selectedIndex() const;
 
   struct FontEntry {
+    enum class Source : uint8_t { Builtin, Legacy, SdFamily };
+
     std::string name;
-    bool isBuiltin;
-    uint8_t settingIndex;
+    Source source;
+    int sourceIndex;
+    uint8_t pointSize;
   };
 
   struct SizeEntry {
