@@ -126,14 +126,14 @@ void BmpViewerActivity::onEnter() {
   if (isBmp) {
     HalFile file;
     if (!Storage.openFileForRead("BMP", filePath, file)) {
-      renderErrorScreen(renderer, labels, "Could not open file");
+      renderErrorScreen(renderer, labels, tr(STR_FILE_OPEN_FAILED));
       return;
     }
 
     Bitmap bitmap(file, true);
     if (bitmap.parseHeaders() != BmpReaderError::Ok) {
       file.close();
-      renderErrorScreen(renderer, labels, "Invalid BMP file");
+      renderErrorScreen(renderer, labels, tr(STR_INVALID_BMP_FILE));
       return;
     }
 
@@ -143,7 +143,7 @@ void BmpViewerActivity::onEnter() {
     int height = 0;
     if (!calculatePlacement(bitmap.getWidth(), bitmap.getHeight(), pageWidth, pageHeight, x, y, width, height)) {
       file.close();
-      renderErrorScreen(renderer, labels, "Invalid image size");
+      renderErrorScreen(renderer, labels, tr(STR_INVALID_IMAGE_SIZE));
       return;
     }
 
@@ -165,13 +165,13 @@ void BmpViewerActivity::onEnter() {
 
   ImageToFramebufferDecoder* decoder = ImageDecoderFactory::getDecoder(filePath);
   if (!decoder) {
-    renderErrorScreen(renderer, labels, "Unsupported image format");
+    renderErrorScreen(renderer, labels, tr(STR_UNSUPPORTED_IMAGE_FORMAT));
     return;
   }
 
   ImageDimensions dimensions = {0, 0};
   if (!decoder->getDimensions(filePath, dimensions)) {
-    renderErrorScreen(renderer, labels, "Could not open file");
+    renderErrorScreen(renderer, labels, tr(STR_FILE_OPEN_FAILED));
     return;
   }
 
@@ -180,7 +180,7 @@ void BmpViewerActivity::onEnter() {
   int width = 0;
   int height = 0;
   if (!calculatePlacement(dimensions.width, dimensions.height, pageWidth, pageHeight, x, y, width, height)) {
-    renderErrorScreen(renderer, labels, "Invalid image size");
+    renderErrorScreen(renderer, labels, tr(STR_INVALID_IMAGE_SIZE));
     return;
   }
 
@@ -201,7 +201,7 @@ void BmpViewerActivity::onEnter() {
   const bool success = decoder->decodeToFramebuffer(filePath, renderer, config);
   renderer.endImageRender();
   if (!success) {
-    renderErrorScreen(renderer, labels, "Could not open file");
+    renderErrorScreen(renderer, labels, tr(STR_FILE_OPEN_FAILED));
     return;
   }
 

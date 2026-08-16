@@ -204,11 +204,12 @@ def generate_font_header(font_path, pixel_size, output_path, chars_text=None):
     # Generate header file
     bytes_per_row = (pixel_size + 7) // 8
     bytes_per_char = bytes_per_row * pixel_size
+    font_name = Path(font_path).stem
 
-    with open(output_path, 'w') as f:
+    with open(output_path, 'w', encoding='utf-8', newline='\n') as f:
         f.write(f'''/**
  * Auto-generated CJK UI font data (optimized - UI characters only)
- * Font: 思源黑体-Medium
+ * Font: {font_name}
  * Size: {pt_size}pt
  * Dimensions: {pixel_size}x{pixel_size}
  * Characters: {len(chars)}
