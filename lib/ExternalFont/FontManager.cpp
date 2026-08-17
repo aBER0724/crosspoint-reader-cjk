@@ -398,6 +398,15 @@ void FontManager::setUiGlyphCacheSuspended(bool suspended) {
   _uiGlyphCacheSuspended = suspended;
   if (suspended && !isUiSharingReaderFont()) {
     _activeUiFont.releaseGlyphCache();
+    // Entering reader: pre-allocate the reader glyph cache while the heap is
+    // cleanest (UI cache just freed). Mirrors the exit branch. Without this,
+    // the cache is allocated lazily on the first getGlyph() during render,
+    // where heap fragmentation can make the ~36KB contiguous new[] fail once
+    // and set the sticky _glyphCacheAllocationFailed flag -- ensureGlyphCache()
+    // then bails before the releaseGlyphCache() that would clear it, bricking
+    // the reader font for the whole session (blank/missing CJK, slow fallback).
+    _activeFont.releaseGlyphCache();
+    _activeFont.prepareGlyphCache();
   } else if (!suspended && !isUiSharingReaderFont()) {
     // Release the reader bitmap cache before UI drawing resumes so the
     // independent UI font can immediately claim one contiguous cache block
