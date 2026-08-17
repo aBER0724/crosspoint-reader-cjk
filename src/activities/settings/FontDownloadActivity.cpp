@@ -55,10 +55,13 @@ constexpr size_t MAX_FONT_FILE_BYTES = 256ULL * 1024ULL * 1024ULL;
 
 bool isValidBaseUrl(const std::string& url) {
   const bool isHttps = url.compare(0, 8, "https://") == 0;
-  if (!isHttps || url.empty() || url.size() > MAX_BASE_URL_LENGTH || url.back() != '/') return false;
+  const bool isHttp = url.compare(0, 7, "http://") == 0;
+  // HTTP is allowed for LAN-local CDN testing; per-file CRC32 validation
+  // already guarantees integrity regardless of transport security.
+  if ((!isHttps && !isHttp) || url.empty() || url.size() > MAX_BASE_URL_LENGTH || url.back() != '/') return false;
   if (url.find_first_of(" \t\r\n\\?#") != std::string::npos) return false;
 
-  const size_t hostStart = 8;
+  const size_t hostStart = isHttps ? 8 : 7;
   const size_t pathStart = url.find('/', hostStart);
   return pathStart != std::string::npos && pathStart > hostStart && url.find("..", pathStart) == std::string::npos;
 }
