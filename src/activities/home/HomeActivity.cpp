@@ -430,9 +430,8 @@ void HomeActivity::render(RenderLock&& lock) {
     if (deferRecentCoverDraw) {
       coverBooks = recentBooks;
       for (RecentBook& book : coverBooks) {
+        // Keep metadata visible on the first frame while avoiding cover bitmap SD I/O.
         book.coverBmpPath.clear();
-        book.title.clear();
-        book.author.clear();
       }
       booksForCover = &coverBooks;
     }
