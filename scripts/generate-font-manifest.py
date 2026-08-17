@@ -45,7 +45,11 @@ STYLE_NAMES = {0: "regular", 1: "bold", 2: "italic", 3: "bolditalic"}
 
 # Family descriptions can be loaded from the sd-fonts.yaml config
 # (via --descriptions-from) or fall back to the family name.
-FAMILY_DESCRIPTIONS: dict[str, str] = {}
+FAMILY_DESCRIPTIONS: dict[str, str] = {
+    "NotoSansJP": "Japanese sans-serif (kanji + kana)",
+    "NotoSansSC": "Simplified Chinese sans-serif + Japanese kana",
+    "NotoSansTC": "Traditional Chinese sans-serif + Japanese kana",
+}
 
 
 def load_descriptions_from_yaml(yaml_path: Path) -> dict[str, str]:
