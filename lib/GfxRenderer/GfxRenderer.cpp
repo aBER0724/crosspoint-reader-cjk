@@ -2143,6 +2143,17 @@ void GfxRenderer::displayBuffer(const HalDisplay::RefreshMode refreshMode) const
     return;
   }
 
+  // A partial update cannot supersede a deferred full frame: the panel may
+  // still contain an older activity outside the requested window. The current
+  // framebuffer already contains that full frame plus the latest partial
+  // changes, so submit it as a complete refresh using the deferred mode.
+  const bool hasPartialUpdateRequest = partialW_ > 0 && partialH_ > 0;
+  HalDisplay::RefreshMode effectiveRefreshMode = refreshMode;
+  if (deferredRefreshPending_ && hasPartialUpdateRequest) {
+    partialX_ = partialY_ = partialW_ = partialH_ = 0;
+    effectiveRefreshMode = deferredRefreshMode_;
+  }
+
   // This call is about to submit the current framebuffer, superseding any
   // older frame that had been deferred while the panel was busy.
   deferredRefreshPending_ = false;
@@ -2151,7 +2162,7 @@ void GfxRenderer::displayBuffer(const HalDisplay::RefreshMode refreshMode) const
   if (hasPartialUpdate) {
     PhysicalRect physicalWindow;
     const bool hasPhysicalWindow =
-        refreshMode == HalDisplay::FAST_REFRESH &&
+        effectiveRefreshMode == HalDisplay::FAST_REFRESH &&
         logicalRectToPhysicalWindow(orientation, partialX_, partialY_, partialW_, partialH_, getScreenWidth(),
                                     getScreenHeight(), panelWidth, panelHeight, &physicalWindow);
 #if defined(SSD1677_PROBE_DEBUG) && SSD1677_PROBE_DEBUG
@@ -2171,12 +2182,13 @@ void GfxRenderer::displayBuffer(const HalDisplay::RefreshMode refreshMode) const
     }
   }
 
-  if (darkMode && (refreshMode == HalDisplay::FAST_REFRESH || refreshMode == HalDisplay::HALF_REFRESH)) {
+  if (darkMode &&
+      (effectiveRefreshMode == HalDisplay::FAST_REFRESH || effectiveRefreshMode == HalDisplay::HALF_REFRESH)) {
     display.displayBuffer(HalDisplay::DARK_REDRIVE, fadingFix);
     return;
   }
 
-  display.displayBuffer(refreshMode, fadingFix);
+  display.displayBuffer(effectiveRefreshMode, fadingFix);
 }
 
 void GfxRenderer::displayBufferAsync(const HalDisplay::RefreshMode refreshMode) const {
