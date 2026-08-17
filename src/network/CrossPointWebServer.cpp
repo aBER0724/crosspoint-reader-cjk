@@ -1652,23 +1652,76 @@ void CrossPointWebServer::handlePostSettings() {
   int applied = 0;
   bool fontsScanned = false;
 
-  if (doc["uiFontFamily"].is<JsonVariant>()) {
-    const int val = doc["uiFontFamily"].as<int>();
+  const bool hasUiFontRequest = doc["uiFontFamily"].is<JsonVariant>();
+  bool hasReaderFontRequest = false;
+  const SettingInfo* readerFontSetting = nullptr;
+  for (const auto& s : settings) {
+    if (isReaderFontFamilySetting(s) && doc[s.key].is<JsonVariant>()) {
+      hasReaderFontRequest = true;
+      readerFontSetting = &s;
+      break;
+    }
+  }
+
+  if (hasUiFontRequest || hasReaderFontRequest) {
     if (!fontsScanned) {
       FontMgr.scanFonts();
       fontsScanned = true;
     }
 
-    if (val == 0) {
-      FontMgr.selectUiFont(-1);
-      applied++;
-    } else {
-      const int externalIndex = val - 1;
-      const FontInfo* info = FontMgr.getFontInfo(externalIndex);
-      if (info && ExternalFont::canFitGlyph(info->width, info->height)) {
-        FontMgr.selectUiFont(externalIndex);
+    const int oldReaderIndex = FontMgr.getSelectedIndex();
+    const int oldUiIndex = FontMgr.getUiSelectedIndex();
+    int requestedReaderIndex = (oldReaderIndex < 0 || FontMgr.getFontInfo(oldReaderIndex)) ? oldReaderIndex : -1;
+    int requestedUiIndex = (oldUiIndex < 0 || FontMgr.getFontInfo(oldUiIndex)) ? oldUiIndex : -1;
+    int requestedBuiltinReaderFamily = -1;
+    bool fontRequestValid = true;
+
+    if (hasUiFontRequest) {
+      const int val = doc["uiFontFamily"].as<int>();
+      if (val == 0) {
+        requestedUiIndex = -1;
+      } else {
+        const int externalIndex = val - 1;
+        const FontInfo* info = FontMgr.getFontInfo(externalIndex);
+        if (!info || !ExternalFont::canFitGlyph(info->width, info->height)) {
+          fontRequestValid = false;
+        } else {
+          requestedUiIndex = externalIndex;
+        }
+      }
+    }
+
+    if (hasReaderFontRequest) {
+      const int val = doc[readerFontSetting->key].as<int>();
+      const int builtinCount = static_cast<int>(readerFontSetting->enumValues.size());
+      if (val >= 0 && val < builtinCount) {
+        requestedReaderIndex = -1;
+        requestedBuiltinReaderFamily = val;
+      } else {
+        const int externalIndex = val - builtinCount;
+        const FontInfo* info = FontMgr.getFontInfo(externalIndex);
+        if (!info || !ExternalFont::canFitGlyph(info->width, info->height)) {
+          fontRequestValid = false;
+        } else {
+          requestedReaderIndex = externalIndex;
+        }
+      }
+    }
+
+    if (fontRequestValid && FontMgr.selectFonts(requestedReaderIndex, requestedUiIndex)) {
+      if (hasReaderFontRequest) {
+        SETTINGS.sdFontFamilyName[0] = '\0';
+        if (requestedBuiltinReaderFamily >= 0) {
+          SETTINGS.fontFamily = static_cast<uint8_t>(requestedBuiltinReaderFamily);
+        }
         applied++;
       }
+      if (hasUiFontRequest) {
+        SETTINGS.sdUiFontFamilyName[0] = '\0';
+        applied++;
+      }
+    } else if (hasReaderFontRequest || hasUiFontRequest) {
+      LOG_ERR("WEB", "Font setting transaction failed; keeping previous Reader/UI selection");
     }
   }
 
@@ -1697,27 +1750,8 @@ void CrossPointWebServer::handlePostSettings() {
       case SettingType::ENUM: {
         const int val = doc[s.key].as<int>();
         if (isReaderFontFamilySetting(s)) {
-          if (!fontsScanned) {
-            FontMgr.scanFonts();
-            fontsScanned = true;
-          }
-
-          const int builtinCount = static_cast<int>(s.enumValues.size());
-          if (val >= 0 && val < builtinCount) {
-            if (s.valuePtr) {
-              SETTINGS.*(s.valuePtr) = static_cast<uint8_t>(val);
-            }
-            // Switch to built-in family selected in web UI.
-            FontMgr.selectFont(-1);
-            applied++;
-          } else {
-            const int externalIndex = val - builtinCount;
-            const FontInfo* info = FontMgr.getFontInfo(externalIndex);
-            if (info && ExternalFont::canFitGlyph(info->width, info->height)) {
-              FontMgr.selectFont(externalIndex);
-              applied++;
-            }
-          }
+          // Reader font requests are applied above together with the optional
+          // UI font request, so a two-slot update cannot partially apply.
           break;
         }
 

@@ -160,9 +160,10 @@ bool FontPreviewActivity::isPreviewFontSelectable() const {
 }
 
 void FontPreviewActivity::installPreviewFont() {
+  previewFontIndex = findFontIndex();
   originalReaderFontIndex = FontMgr.getSelectedIndex();
   originalUiFontIndex = FontMgr.getUiSelectedIndex();
-  previewFontIndex = findFontIndex();
+  originalSelectionCaptured = true;
 
   if (!isPreviewFontSelectable()) {
     LOG_DBG("FNTPREV", "Preview font not selectable: %s", filePath.c_str());
@@ -179,8 +180,14 @@ void FontPreviewActivity::installPreviewFont() {
 }
 
 void FontPreviewActivity::restorePreviewFont() {
+  if (!originalSelectionCaptured) {
+    return;
+  }
+
+  if (!FontMgr.restoreFontSelection(originalReaderFontIndex, originalUiFontIndex)) {
+    LOG_ERR("FNTPREV", "Failed to restore original font selection after preview");
+  }
   if (previewUsesReaderSlot || previewUsesUiSlot) {
-    FontMgr.restoreFontSelection(originalReaderFontIndex, originalUiFontIndex);
     renderer.setReaderFallbackFontId(SETTINGS.getBuiltInReaderFontId());
   }
 }
@@ -191,8 +198,16 @@ void FontPreviewActivity::applyReaderFont() {
     return;
   }
 
-  FontMgr.restoreFontSelection(originalReaderFontIndex, originalUiFontIndex);
-  FontMgr.selectFont(previewFontIndex);
+  if (!originalSelectionCaptured || !FontMgr.restoreFontSelection(originalReaderFontIndex, originalUiFontIndex)) {
+    LOG_ERR("FNTPREV", "Failed to restore original font selection before reader apply");
+    return;
+  }
+  if (!FontMgr.selectFont(previewFontIndex)) {
+    LOG_DBG("FNTPREV", "Reader font selection failed: %s", filePath.c_str());
+    return;
+  }
+  SETTINGS.sdFontFamilyName[0] = '\0';
+  SETTINGS.saveToFile();
   renderer.setReaderFallbackFontId(SETTINGS.getBuiltInReaderFontId());
   closePreview(true);
 }
@@ -203,8 +218,16 @@ void FontPreviewActivity::applyUiFont() {
     return;
   }
 
-  FontMgr.restoreFontSelection(originalReaderFontIndex, originalUiFontIndex);
-  FontMgr.selectUiFont(previewFontIndex);
+  if (!originalSelectionCaptured || !FontMgr.restoreFontSelection(originalReaderFontIndex, originalUiFontIndex)) {
+    LOG_ERR("FNTPREV", "Failed to restore original font selection before UI apply");
+    return;
+  }
+  if (!FontMgr.selectUiFont(previewFontIndex)) {
+    LOG_DBG("FNTPREV", "UI font selection failed: %s", filePath.c_str());
+    return;
+  }
+  SETTINGS.sdUiFontFamilyName[0] = '\0';
+  SETTINGS.saveToFile();
   renderer.setReaderFallbackFontId(SETTINGS.getBuiltInReaderFontId());
   closePreview(true);
 }
@@ -215,9 +238,20 @@ void FontPreviewActivity::applyReaderAndUiFont() {
     return;
   }
 
-  FontMgr.restoreFontSelection(originalReaderFontIndex, originalUiFontIndex);
-  FontMgr.selectFont(previewFontIndex);
-  FontMgr.selectUiFont(previewFontIndex);
+  if (!originalSelectionCaptured || !FontMgr.restoreFontSelection(originalReaderFontIndex, originalUiFontIndex)) {
+    LOG_ERR("FNTPREV", "Failed to restore original font selection before Reader/UI apply");
+    return;
+  }
+  if (!FontMgr.selectFonts(previewFontIndex, previewFontIndex)) {
+    LOG_DBG("FNTPREV", "Reader/UI font selection failed: %s", filePath.c_str());
+    if (!FontMgr.restoreFontSelection(originalReaderFontIndex, originalUiFontIndex)) {
+      LOG_ERR("FNTPREV", "Failed to restore original Reader/UI font selection");
+    }
+    return;
+  }
+  SETTINGS.sdFontFamilyName[0] = '\0';
+  SETTINGS.sdUiFontFamilyName[0] = '\0';
+  SETTINGS.saveToFile();
   renderer.setReaderFallbackFontId(SETTINGS.getBuiltInReaderFontId());
   closePreview(true);
 }
