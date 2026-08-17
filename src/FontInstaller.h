@@ -4,6 +4,8 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <string>
+#include <vector>
 
 /// Shared utility for font installation (device download + browser upload).
 /// Handles directory creation, file validation, deletion, and registry refresh.
@@ -42,6 +44,10 @@ class FontInstaller {
   /// Preserve the current file for rollback, or record that the replacement
   /// is a newly installed file when no current file exists.
   static bool prepareFontReplacement(const char* finalPath);
+
+  /// Preserve installed .cpfont files omitted by the new manifest so they are
+  /// restored on rollback and removed only after the family commit.
+  static bool prepareFamilyPrune(const char* familyName, const std::vector<std::string>& retainedFilenames);
 
   /// Atomically switch a family transaction from rollback to committed state.
   static bool commitFamilyInstall(const char* familyName);

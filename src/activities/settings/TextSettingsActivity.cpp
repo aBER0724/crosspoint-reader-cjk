@@ -76,7 +76,11 @@ void TextSettingsActivity::onEnter() {
        SETTINGS.sdUiFontFamilyName[0] != '\0')) {
     focusedFamilyIndex =
         findCurrentFontIndex(SETTINGS.sdUiFontFamilyName, SETTINGS.fontFamily, fontManager.getUiSelectedIndex());
+    previewTarget_ = FontTarget::Ui;
+  } else {
+    previewTarget_ = FontTarget::Reader;
   }
+  currentFamilyIndex_ = focusedFamilyIndex;
   std::fill(std::begin(selectedIndex_), std::end(selectedIndex_), 1);  // default to the first list row
   selectedIndex_[static_cast<int>(Tab::Family)] = focusedFamilyIndex + 1;
   rebuildSizeEntries();
@@ -209,7 +213,7 @@ void TextSettingsActivity::render(RenderLock&&) {
                              ? sizes_[currentSizeIndex_].name.c_str()
                              : "";
   textsettings::renderPreview(renderer, previewLayout_, metrics_.previewPadding, metrics_.verticalSpacing,
-                              geo.previewTop, previewHeight, familyName, sizeName);
+                              geo.previewTop, previewHeight, previewFontId(), familyName, sizeName);
 
   const bool onTabBar = selectedIndex() == 0;
   std::vector<TabInfo> tabs;
@@ -301,6 +305,16 @@ void TextSettingsActivity::rebuildSizeEntries() {
   const FontEntry* currentFont = currentFamilyIndex_ >= 0 && currentFamilyIndex_ < static_cast<int>(fonts_.size())
                                      ? &fonts_[currentFamilyIndex_]
                                      : nullptr;
+  if (previewTarget_ == FontTarget::Ui) {
+    if (currentFont && currentFont->source == FontEntry::Source::Legacy) {
+      sizes_.push_back({std::to_string(currentFont->pointSize) + " pt", currentFont->pointSize});
+    } else {
+      sizes_.push_back({"12 pt", 12});
+    }
+    selectedIndex_[static_cast<int>(Tab::Size)] = 1;
+    return;
+  }
+
   if (currentFont && currentFont->source == FontEntry::Source::Legacy) {
     sizes_.push_back({std::to_string(currentFont->pointSize) + " pt", currentFont->pointSize});
   }
@@ -355,7 +369,12 @@ int TextSettingsActivity::findCurrentFontIndex(const char* sdFontFamilyName, con
 
 bool TextSettingsActivity::hasFixedExternalSize() const {
   if (currentFamilyIndex_ < 0 || currentFamilyIndex_ >= static_cast<int>(fonts_.size())) return false;
-  return fonts_[currentFamilyIndex_].source != FontEntry::Source::Builtin && sizes_.size() == 1;
+  return previewTarget_ == FontTarget::Ui ||
+         (fonts_[currentFamilyIndex_].source != FontEntry::Source::Builtin && sizes_.size() == 1);
+}
+
+int TextSettingsActivity::previewFontId() const {
+  return previewTarget_ == FontTarget::Ui ? UI_12_FONT_ID : SETTINGS.getReaderFontId();
 }
 
 void TextSettingsActivity::applyFamily(int listIndex) {
@@ -452,8 +471,8 @@ void TextSettingsActivity::applyFamilyToTarget(int listIndex, FontTarget target)
 
   sdFontSystem.ensureLoaded(renderer);
   SETTINGS.saveToFile();
-  currentFamilyIndex_ =
-      findCurrentFontIndex(SETTINGS.sdFontFamilyName, SETTINGS.fontFamily, fontManager.getSelectedIndex());
+  currentFamilyIndex_ = listIndex;
+  previewTarget_ = target == FontTarget::Ui ? FontTarget::Ui : FontTarget::Reader;
   rebuildSizeEntries();
 }
 
