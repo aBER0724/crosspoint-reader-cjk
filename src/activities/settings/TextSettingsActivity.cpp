@@ -399,6 +399,9 @@ void TextSettingsActivity::applyFamilyToTarget(int listIndex, FontTarget target)
   FontManager& fontManager = FontManager::getInstance();
 
   if (font.source == FontEntry::Source::Builtin) {
+    if (!fontManager.clearSelections(targetsReader, targetsUi)) {
+      return;
+    }
     if (target == FontTarget::Reader || target == FontTarget::Both) {
       SETTINGS.fontFamily = static_cast<uint8_t>(font.sourceIndex);
       SETTINGS.sdFontFamilyName[0] = '\0';
@@ -406,17 +409,25 @@ void TextSettingsActivity::applyFamilyToTarget(int listIndex, FontTarget target)
     if (target == FontTarget::Ui || target == FontTarget::Both) {
       SETTINGS.sdUiFontFamilyName[0] = '\0';
     }
-    fontManager.clearSelections(targetsReader, targetsUi);
   } else if (font.source == FontEntry::Source::Legacy) {
     const FontInfo* info = fontManager.getFontInfo(font.sourceIndex);
     if (!info || !ExternalFont::canFitGlyph(info->width, info->height)) return;
+    bool applied = false;
+    if (target == FontTarget::Both) {
+      applied = fontManager.selectFonts(font.sourceIndex, font.sourceIndex);
+    } else if (targetsReader) {
+      applied = fontManager.selectFont(font.sourceIndex);
+    } else if (targetsUi) {
+      applied = fontManager.selectUiFont(font.sourceIndex);
+    }
+    if (!applied) {
+      return;
+    }
     if (targetsReader) {
       SETTINGS.sdFontFamilyName[0] = '\0';
-      fontManager.selectFont(font.sourceIndex);
     }
     if (targetsUi) {
       SETTINGS.sdUiFontFamilyName[0] = '\0';
-      fontManager.selectUiFont(font.sourceIndex);
     }
   } else if (registry_) {
     const int sdIndex = font.sourceIndex;
@@ -424,6 +435,9 @@ void TextSettingsActivity::applyFamilyToTarget(int listIndex, FontTarget target)
     if (sdIndex < 0 || sdIndex >= static_cast<int>(families.size())) return;
 
     const std::string& familyName = families[sdIndex].name;
+    if (!fontManager.clearSelections(targetsReader, targetsUi)) {
+      return;
+    }
     if (target == FontTarget::Reader || target == FontTarget::Both) {
       strncpy(SETTINGS.sdFontFamilyName, familyName.c_str(), sizeof(SETTINGS.sdFontFamilyName) - 1);
       SETTINGS.sdFontFamilyName[sizeof(SETTINGS.sdFontFamilyName) - 1] = '\0';
@@ -432,7 +446,6 @@ void TextSettingsActivity::applyFamilyToTarget(int listIndex, FontTarget target)
       strncpy(SETTINGS.sdUiFontFamilyName, familyName.c_str(), sizeof(SETTINGS.sdUiFontFamilyName) - 1);
       SETTINGS.sdUiFontFamilyName[sizeof(SETTINGS.sdUiFontFamilyName) - 1] = '\0';
     }
-    fontManager.clearSelections(targetsReader, targetsUi);
   } else {
     return;
   }

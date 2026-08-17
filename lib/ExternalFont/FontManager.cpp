@@ -21,8 +21,6 @@ FontManager& FontManager::getInstance() {
 }
 
 void FontManager::scanFonts() {
-  _fontCount = 0;
-
   HalFile dir = Storage.open(FONTS_DIR, O_RDONLY);
   if (!dir) {
     LOG_ERR("FONT_MGR", "Cannot open fonts directory: %s", FONTS_DIR);
@@ -35,6 +33,16 @@ void FontManager::scanFonts() {
     return;
   }
 
+  char selectedReaderFilename[sizeof(FontInfo::filename)] = {};
+  char selectedUiFilename[sizeof(FontInfo::filename)] = {};
+  if (_selectedIndex >= 0 && _selectedIndex < _fontCount) {
+    strncpy(selectedReaderFilename, _fonts[_selectedIndex].filename, sizeof(selectedReaderFilename) - 1);
+  }
+  if (_selectedUiIndex >= 0 && _selectedUiIndex < _fontCount) {
+    strncpy(selectedUiFilename, _fonts[_selectedUiIndex].filename, sizeof(selectedUiFilename) - 1);
+  }
+
+  _fontCount = 0;
   HalFile entry;
   while (_fontCount < MAX_FONTS && (entry = dir.openNextFile())) {
     if (entry.isDirectory()) {
@@ -67,6 +75,22 @@ void FontManager::scanFonts() {
   }
 
   dir.close();
+
+  const int oldReaderIndex = _selectedIndex;
+  const int oldUiIndex = _selectedUiIndex;
+  _selectedIndex = selectedReaderFilename[0] == '\0' ? -1 : findFontIndex(selectedReaderFilename);
+  _selectedUiIndex = selectedUiFilename[0] == '\0' ? -1 : findFontIndex(selectedUiFilename);
+
+  if (_selectedIndex < 0) {
+    unloadReaderFont();
+  }
+  if (_selectedUiIndex < 0 || isUiSharingReaderFont()) {
+    unloadUiFont();
+  }
+
+  if (_selectedIndex != oldReaderIndex || _selectedUiIndex != oldUiIndex) {
+    saveSettings();
+  }
   LOG_INF("FONT_MGR", "Scan complete: %d fonts found", _fontCount);
 }
 
@@ -77,8 +101,30 @@ const FontInfo* FontManager::getFontInfo(int index) const {
   return &_fonts[index];
 }
 
-bool FontManager::loadSelectedFont() {
+int FontManager::findFontIndex(const char* filename) const {
+  if (!filename || filename[0] == '\0') {
+    return -1;
+  }
+  for (int i = 0; i < _fontCount; ++i) {
+    if (strcmp(filename, _fonts[i].filename) == 0) {
+      return i;
+    }
+  }
+  return -1;
+}
+
+void FontManager::unloadReaderFont() {
   _activeFont.unload();
+  _activeFontFilename[0] = '\0';
+}
+
+void FontManager::unloadUiFont() {
+  _activeUiFont.unload();
+  _activeUiFontFilename[0] = '\0';
+}
+
+bool FontManager::loadSelectedFont() {
+  unloadReaderFont();
 
   if (_selectedIndex < 0 || _selectedIndex >= _fontCount) {
     return false;
@@ -88,131 +134,224 @@ bool FontManager::loadSelectedFont() {
   snprintf(filepath, sizeof(filepath), "%s/%s", FONTS_DIR, _fonts[_selectedIndex].filename);
 
   const bool loaded = _activeFont.load(filepath);
+  if (loaded) {
+    strncpy(_activeFontFilename, _fonts[_selectedIndex].filename, sizeof(_activeFontFilename) - 1);
+    _activeFontFilename[sizeof(_activeFontFilename) - 1] = '\0';
+  }
   if (isUiSharingReaderFont()) {
-    _activeUiFont.unload();
+    unloadUiFont();
   }
   return loaded;
 }
 
 bool FontManager::loadSelectedUiFont() {
   if (_selectedUiIndex < 0 || _selectedUiIndex >= _fontCount) {
-    _activeUiFont.unload();
+    unloadUiFont();
     return false;
   }
 
   if (isUiSharingReaderFont()) {
-    _activeUiFont.unload();
-    if (!_activeFont.isLoaded()) {
+    unloadUiFont();
+    if (!isReaderSelectionReady(_selectedIndex)) {
       return loadSelectedFont();
     }
     return true;
   }
 
-  _activeUiFont.unload();
+  unloadUiFont();
 
   char filepath[80];
   snprintf(filepath, sizeof(filepath), "%s/%s", FONTS_DIR, _fonts[_selectedUiIndex].filename);
 
-  return _activeUiFont.load(filepath);
+  const bool loaded = _activeUiFont.load(filepath);
+  if (loaded) {
+    strncpy(_activeUiFontFilename, _fonts[_selectedUiIndex].filename, sizeof(_activeUiFontFilename) - 1);
+    _activeUiFontFilename[sizeof(_activeUiFontFilename) - 1] = '\0';
+  }
+  return loaded;
 }
 
-void FontManager::selectFont(int index) {
-  if (index == _selectedIndex) {
-    return;
+bool FontManager::isReaderSelectionReady(const int index) const {
+  if (index < 0) {
+    return !_activeFont.isLoaded();
   }
-
-  const bool uiWasSharingReader = isUiSharingReaderFont();
-  _selectedIndex = index;
-
-  if (index >= 0) {
-    loadSelectedFont();
-  } else {
-    _activeFont.unload();
-  }
-
-  if (uiWasSharingReader && !isUiSharingReaderFont()) {
-    loadSelectedUiFont();
-  }
-
-  saveSettings();
+  return isValidSelectionIndex(index) && _activeFont.isLoaded() &&
+         strcmp(_activeFontFilename, _fonts[index].filename) == 0;
 }
 
-void FontManager::selectUiFont(int index) {
-  if (index == _selectedUiIndex) {
-    return;
+bool FontManager::isUiSelectionReady(const int readerIndex, const int uiIndex) const {
+  if (uiIndex < 0) {
+    return !_activeUiFont.isLoaded();
   }
-
-  _selectedUiIndex = index;
-
-  if (index >= 0) {
-    loadSelectedUiFont();
-  } else {
-    _activeUiFont.unload();
+  if (!isValidSelectionIndex(uiIndex)) {
+    return false;
   }
-
-  saveSettings();
+  if (readerIndex == uiIndex) {
+    return isReaderSelectionReady(readerIndex) && !_activeUiFont.isLoaded();
+  }
+  return _activeUiFont.isLoaded() && strcmp(_activeUiFontFilename, _fonts[uiIndex].filename) == 0;
 }
 
-void FontManager::clearSelections(const bool reader, const bool ui) {
-  if ((!reader || _selectedIndex < 0) && (!ui || _selectedUiIndex < 0)) {
-    return;
+bool FontManager::applyFontSelection(const int readerIndex, const int uiIndex) {
+  if (!isValidSelectionIndex(readerIndex) || !isValidSelectionIndex(uiIndex)) {
+    return false;
   }
 
-  if (reader) _selectedIndex = -1;
-  if (ui) _selectedUiIndex = -1;
-
-  if (_selectedIndex >= 0) {
-    loadSelectedFont();
-  } else {
-    _activeFont.unload();
-  }
-
-  if (_selectedUiIndex >= 0) {
-    loadSelectedUiFont();
-  } else {
-    _activeUiFont.unload();
-  }
-
-  saveSettings();
-}
-
-bool FontManager::previewFont(int index) {
-  _selectedIndex = index;
-
-  if (index >= 0) {
-    return loadSelectedFont();
-  }
-
-  _activeFont.unload();
-  return true;
-}
-
-bool FontManager::previewUiFont(int index) {
-  _selectedUiIndex = index;
-
-  if (index >= 0) {
-    return loadSelectedUiFont();
-  }
-
-  _activeUiFont.unload();
-  return true;
-}
-
-void FontManager::restoreFontSelection(int readerIndex, int uiIndex) {
   _selectedIndex = readerIndex;
   _selectedUiIndex = uiIndex;
 
   if (_selectedIndex >= 0) {
-    loadSelectedFont();
+    if (!isReaderSelectionReady(_selectedIndex) && !loadSelectedFont()) {
+      return false;
+    }
   } else {
-    _activeFont.unload();
+    unloadReaderFont();
   }
 
   if (_selectedUiIndex >= 0) {
-    loadSelectedUiFont();
+    if (!isUiSelectionReady(_selectedIndex, _selectedUiIndex) && !loadSelectedUiFont()) {
+      return false;
+    }
   } else {
-    _activeUiFont.unload();
+    unloadUiFont();
   }
+
+  return true;
+}
+
+bool FontManager::restoreAvailableSelection(const int readerIndex, const int uiIndex) {
+  const bool readerIndexValid = isValidSelectionIndex(readerIndex);
+  const bool uiIndexValid = isValidSelectionIndex(uiIndex);
+  const int validReaderIndex = readerIndexValid ? readerIndex : -1;
+  const int validUiIndex = uiIndexValid ? uiIndex : -1;
+
+  if (readerIndexValid && uiIndexValid && applyFontSelection(readerIndex, uiIndex)) {
+    return true;
+  }
+
+  // A failed apply can leave the requested indices installed before one of
+  // the font loads fails. Rebuild from a known state, preserving the Reader
+  // slot first because it is required for book content.
+  useBuiltinFonts();
+  bool readerAvailable = true;
+  if (validReaderIndex >= 0 && !applyFontSelection(validReaderIndex, -1)) {
+    useBuiltinFonts();
+    readerAvailable = false;
+  }
+
+  if (validUiIndex >= 0 && readerAvailable) {
+    if (applyFontSelection(validReaderIndex, validUiIndex)) {
+      return readerIndexValid && uiIndexValid;
+    }
+
+    // Loading the UI slot may have failed after the Reader slot succeeded.
+    // Restore a coherent Reader-only state before trying any UI-only fallback.
+    if (applyFontSelection(validReaderIndex, -1)) {
+      return false;
+    }
+    useBuiltinFonts();
+    readerAvailable = false;
+  }
+
+  if (validUiIndex >= 0 && !readerAvailable && applyFontSelection(-1, validUiIndex)) {
+    return readerIndexValid && readerIndex == -1 && uiIndexValid;
+  }
+
+  if (readerAvailable) {
+    return readerIndexValid && uiIndexValid && uiIndex == -1;
+  }
+
+  useBuiltinFonts();
+  return false;
+}
+
+void FontManager::useBuiltinFonts() {
+  _selectedIndex = -1;
+  _selectedUiIndex = -1;
+  unloadReaderFont();
+  unloadUiFont();
+}
+
+bool FontManager::selectFonts(const int readerIndex, const int uiIndex) {
+  if (!isValidSelectionIndex(readerIndex) || !isValidSelectionIndex(uiIndex)) {
+    LOG_ERR("FONT_MGR", "Invalid font selection: reader=%d, UI=%d", readerIndex, uiIndex);
+    return false;
+  }
+
+  const int oldReaderIndex = _selectedIndex;
+  const int oldUiIndex = _selectedUiIndex;
+  if (readerIndex == oldReaderIndex && uiIndex == oldUiIndex && isReaderSelectionReady(readerIndex) &&
+      isUiSelectionReady(readerIndex, uiIndex)) {
+    return true;
+  }
+
+  if (applyFontSelection(readerIndex, uiIndex)) {
+    saveSettings();
+    return true;
+  }
+
+  LOG_ERR("FONT_MGR", "Failed to load font selection: reader=%d, UI=%d; restoring previous selection", readerIndex,
+          uiIndex);
+  if (!restoreAvailableSelection(oldReaderIndex, oldUiIndex)) {
+    LOG_ERR("FONT_MGR", "Previous font selection was only partially recoverable");
+    saveSettings();
+  }
+  return false;
+}
+
+bool FontManager::selectFont(const int index) {
+  const int uiIndex = isValidSelectionIndex(_selectedUiIndex) ? _selectedUiIndex : -1;
+  return selectFonts(index, uiIndex);
+}
+
+bool FontManager::selectUiFont(const int index) {
+  const int readerIndex = isValidSelectionIndex(_selectedIndex) ? _selectedIndex : -1;
+  return selectFonts(readerIndex, index);
+}
+
+bool FontManager::clearSelections(const bool reader, const bool ui) {
+  if (!reader && !ui) {
+    return true;
+  }
+
+  const int readerIndex = reader ? -1 : (isValidSelectionIndex(_selectedIndex) ? _selectedIndex : -1);
+  const int uiIndex = ui ? -1 : (isValidSelectionIndex(_selectedUiIndex) ? _selectedUiIndex : -1);
+  return selectFonts(readerIndex, uiIndex);
+}
+
+bool FontManager::previewFont(int index) {
+  const int oldReaderIndex = _selectedIndex;
+  const int oldUiIndex = _selectedUiIndex;
+  if (applyFontSelection(index, oldUiIndex)) {
+    return true;
+  }
+  if (!restoreAvailableSelection(oldReaderIndex, oldUiIndex)) {
+    saveSettings();
+  }
+  return false;
+}
+
+bool FontManager::previewUiFont(int index) {
+  const int oldReaderIndex = _selectedIndex;
+  const int oldUiIndex = _selectedUiIndex;
+  if (applyFontSelection(oldReaderIndex, index)) {
+    return true;
+  }
+  if (!restoreAvailableSelection(oldReaderIndex, oldUiIndex)) {
+    saveSettings();
+  }
+  return false;
+}
+
+bool FontManager::restoreFontSelection(int readerIndex, int uiIndex) {
+  if (restoreAvailableSelection(readerIndex, uiIndex)) {
+    return true;
+  }
+
+  LOG_ERR("FONT_MGR", "Requested font selection was only partially recoverable: reader=%d, UI=%d", readerIndex,
+          uiIndex);
+  saveSettings();
+  return false;
 }
 
 ExternalFont* FontManager::getActiveFont() {
@@ -294,26 +433,27 @@ void FontManager::writeFontChoice(HalFile& file, const int index) const {
   }
 }
 
-void FontManager::readFontChoice(HalFile& file, const char* label, int& outIndex, bool (FontManager::*loader)()) {
+bool FontManager::readFontChoice(HalFile& file, const char* label, int& outIndex) {
+  outIndex = -1;
   int savedIndex = -1;
   serialization::readPod(file, savedIndex);
 
   std::string savedFilename;
   serialization::readString(file, savedFilename);
 
-  if (savedIndex < 0 || savedFilename.empty()) {
-    return;
+  if (savedFilename.empty()) {
+    return savedIndex != -1;
   }
 
   for (int i = 0; i < _fontCount; i++) {
     if (savedFilename == _fonts[i].filename) {
       outIndex = i;
-      (this->*loader)();
-      LOG_INF("FONT_MGR", "Restored %s font: %s", label, savedFilename.c_str());
-      return;
+      LOG_INF("FONT_MGR", "Found saved %s font: %s", label, savedFilename.c_str());
+      return savedIndex != i;
     }
   }
   LOG_ERR("FONT_MGR", "Saved %s font not found: %s", label, savedFilename.c_str());
+  return true;
 }
 
 void FontManager::saveSettings() {
@@ -349,12 +489,23 @@ void FontManager::loadSettings() {
     return;
   }
 
-  readFontChoice(file, "reader", _selectedIndex, &FontManager::loadSelectedFont);
+  int requestedReaderIndex = -1;
+  int requestedUiIndex = -1;
+  bool settingsChanged = readFontChoice(file, "reader", requestedReaderIndex);
 
   // UI font slot (version 2+).
   if (version >= 2) {
-    readFontChoice(file, "UI", _selectedUiIndex, &FontManager::loadSelectedUiFont);
+    settingsChanged = readFontChoice(file, "UI", requestedUiIndex) || settingsChanged;
   }
 
   file.close();
+
+  if (!restoreAvailableSelection(requestedReaderIndex, requestedUiIndex)) {
+    LOG_ERR("FONT_MGR", "Saved font selection was only partially recoverable");
+    settingsChanged = true;
+  }
+
+  if (settingsChanged) {
+    saveSettings();
+  }
 }
