@@ -129,6 +129,28 @@ CASES = [
         ],
     },
     {
+        "name": "FontDownloadActivity frees glyph caches before starting WiFi",
+        "path": ROOT / "src" / "activities" / "settings" / "FontDownloadActivity.cpp",
+        "required": [
+            'FontManager::getInstance().releaseGlyphCaches();',
+            'if (auto* cache = renderer.getFontCacheManager()) {',
+            'if (!WiFi.mode(WIFI_STA)) {',
+            'errorMessage_ = tr(STR_WIFI_CONN_FAILED);',
+            'wifiStarted_ = true;',
+            'if (wifiStarted_) {\n    // WiFi deinitialization leaves the ESP32-C3 heap too fragmented',
+            'silentRestart();',
+        ],
+        "forbidden": [
+            'WiFi.mode(WIFI_STA);\n  startActivityForResult(std::make_unique<WifiSelectionActivity>',
+        ],
+        "ordered_required": [
+            'FontManager::getInstance().releaseGlyphCaches();',
+            'if (!WiFi.mode(WIFI_STA)) {',
+            'wifiStarted_ = true;',
+            'startActivityForResult(std::make_unique<WifiSelectionActivity>',
+        ],
+    },
+    {
         "name": "BaseTheme button hints force BW render mode",
         "path": ROOT / "src" / "components" / "themes" / "BaseTheme.cpp",
         "required": [
@@ -341,6 +363,19 @@ CASES = [
             'writeWindowRam(bus, CMD_WRITE_RAM_RED, fb, x, y, w, h, /*invert=*/false);',
         ],
         "forbidden": ["windowBuffer", "previousWindow"],
+    },
+    {
+        "name": "FreeInkDisplay window refresh preserves the async full-frame baseline",
+        "path": ROOT / "freeink-sdk" / "libs" / "display" / "FreeInkDisplay" / "src" / "FreeInkDisplay.cpp",
+        "required": [
+            "_driver->displayWindow(_bus, frameBuffer, _shadowValid ? _asyncShadow : nullptr, x, y, w, h, turnOffScreen);",
+            "syncWindowToActive(_asyncShadow, frameBuffer, displayWidthBytes, x, y, w, h);",
+            "if (_shadowValid && _asyncShadow != nullptr) _driver->seedPreviousFrame(_bus, _asyncShadow);",
+            "Move its displayed-frame baseline into controller RAM first",
+        ],
+        "forbidden": [
+            "_driver->displayWindow(_bus, frameBuffer, nullptr, x, y, w, h, turnOffScreen);",
+        ],
     },
     {
         "name": "ReaderUtils still owns dark-mode reader redrive",
