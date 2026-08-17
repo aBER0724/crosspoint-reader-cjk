@@ -59,7 +59,7 @@ void relayout(PreviewLayout& layout, const GfxRenderer& renderer, int fontId, in
 }  // namespace
 
 void renderPreview(const GfxRenderer& renderer, PreviewLayout& layout, int previewPadding, int labelGap, int top,
-                   int height, const char* familyName, const char* sizeName) {
+                   int height, int fontId, const char* familyName, const char* sizeName) {
   const int left = previewPadding;
   const int width = renderer.getScreenWidth() - (previewPadding * 2);
   if (width <= 0 || height <= 0) return;
@@ -72,7 +72,6 @@ void renderPreview(const GfxRenderer& renderer, PreviewLayout& layout, int previ
   const int labelY = top + height - previewPadding - labelH;
   renderer.drawText(UI_10_FONT_ID, left, labelY, labelBuf);
 
-  const int fontId = SETTINGS.getReaderFontId();
   if (fontId == 0) return;
 
   const int lineH = renderer.getTextHeight(fontId);

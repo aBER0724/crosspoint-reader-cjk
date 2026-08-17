@@ -1002,6 +1002,18 @@ void FontDownloadActivity::downloadFamily(ManifestFamily& family) {
     currentFileIndex_++;
   }
 
+  std::vector<std::string> retainedFilenames;
+  retainedFilenames.reserve(family.files.size());
+  for (const auto& file : family.files) retainedFilenames.push_back(file.name);
+  if (!fontInstaller_.prepareFamilyPrune(family.name.c_str(), retainedFilenames)) {
+    failTransaction(tr(STR_FONT_REPLACEMENT_FAILED), false);
+    return;
+  }
+  if (pollDownloadCancellation()) {
+    failTransaction("", true);
+    return;
+  }
+
   if (!fontInstaller_.commitFamilyInstall(family.name.c_str())) {
     failTransaction(tr(STR_FONT_REPLACEMENT_FAILED), false);
     return;

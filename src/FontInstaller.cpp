@@ -461,6 +461,46 @@ bool FontInstaller::prepareFontReplacement(const char* finalPath) {
   return true;
 }
 
+bool FontInstaller::prepareFamilyPrune(const char* familyName, const std::vector<std::string>& retainedFilenames) {
+  char familyPath[160];
+  if (!buildFamilyPath(familyName, familyPath, sizeof(familyPath))) return false;
+
+  HalFile dir = Storage.open(familyPath);
+  if (!dir || !dir.isDirectory()) return false;
+
+  std::vector<std::string> obsoletePaths;
+  char nameBuffer[128];
+  while (true) {
+    HalFile entry = dir.openNextFile();
+    if (!entry) break;
+    if (entry.isDirectory()) {
+      entry.close();
+      continue;
+    }
+    const size_t nameLength = entry.getName(nameBuffer, sizeof(nameBuffer));
+    entry.close();
+    if (nameLength == 0 || nameLength >= sizeof(nameBuffer) || !isValidCpfontFilename(nameBuffer)) continue;
+
+    bool retained = false;
+    for (const auto& filename : retainedFilenames) {
+      if (filename == nameBuffer) {
+        retained = true;
+        break;
+      }
+    }
+    if (!retained) obsoletePaths.push_back(std::string(familyPath) + "/" + nameBuffer);
+  }
+  dir.close();
+
+  for (const auto& path : obsoletePaths) {
+    if (!prepareFontReplacement(path.c_str())) {
+      LOG_ERR("FONT", "Failed to preserve obsolete font for family rollback: %s", path.c_str());
+      return false;
+    }
+  }
+  return true;
+}
+
 bool FontInstaller::commitFamilyInstall(const char* familyName) {
   char installingPath[192];
   char committedPath[192];

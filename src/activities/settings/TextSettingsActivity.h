@@ -42,6 +42,7 @@ class TextSettingsActivity final : public Activity {
   int findCurrentFontIndex(const char* sdFontFamilyName, uint8_t fontFamily, int legacyIndex) const;
   void rebuildSizeEntries();
   bool hasFixedExternalSize() const;
+  int previewFontId() const;
   std::string fontRoleText(int listIndex) const;
   void confirmLayoutRow(int row);
   void confirmStyleRow(int row);
@@ -96,6 +97,7 @@ class TextSettingsActivity final : public Activity {
       {};  // per-Tab nav position (0 = tab bar, 1..N = row); set in onEnter
   int currentFamilyIndex_ = 0;
   int currentSizeIndex_ = 0;
+  FontTarget previewTarget_ = FontTarget::Reader;
 
   ThemeMetrics metrics_ = {};
   int afterHeader = 0;
