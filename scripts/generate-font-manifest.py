@@ -174,7 +174,7 @@ def build_manifest(
             description = family_name
 
         file_entries = []
-        for filepath in sorted(files, key=lambda p: p.name):
+        for filepath in sorted(files, key=lambda p: int(parse_filename(p.name)[1]) if parse_filename(p.name) else 999):
             file_entries.append(
                 {
                     "name": filepath.name,
