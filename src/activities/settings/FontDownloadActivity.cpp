@@ -20,6 +20,7 @@
 
 #include "MappedInputManager.h"
 #include "SdCardFontSystem.h"
+#include "SilentRestart.h"
 #include "activities/network/WifiSelectionActivity.h"
 #include "activities/util/ConfirmationActivity.h"
 #include "components/UITheme.h"
@@ -77,7 +78,29 @@ FontDownloadActivity::FontDownloadActivity(GfxRenderer& renderer, MappedInputMan
 void FontDownloadActivity::onEnter() {
   Activity::onEnter();
   removePreviewTemporaryFiles();
-  WiFi.mode(WIFI_STA);
+
+  // The independent UI font normally keeps a large contiguous glyph cache.
+  // Release it before the WiFi stack allocates its NVS and driver state; doing
+  // this after WiFi.mode() is too late on X4 and can make WiFi initialization
+  // fail with a null internal handle.
+  {
+    RenderLock lock(*this);
+    LOG_DBG("FONT", "Heap before WiFi cache release: free=%d max=%d", ESP.getFreeHeap(), ESP.getMaxAllocHeap());
+    FontManager::getInstance().releaseGlyphCaches();
+    if (auto* cache = renderer.getFontCacheManager()) {
+      cache->clearCache();
+    }
+    LOG_DBG("FONT", "Heap before WiFi startup: free=%d max=%d", ESP.getFreeHeap(), ESP.getMaxAllocHeap());
+  }
+
+  if (!WiFi.mode(WIFI_STA)) {
+    LOG_ERR("FONT", "Failed to initialize WiFi for font manager");
+    errorMessage_ = tr(STR_WIFI_CONN_FAILED);
+    state_ = ERROR;
+    requestUpdate();
+    return;
+  }
+  wifiStarted_ = true;
   startActivityForResult(std::make_unique<WifiSelectionActivity>(renderer, mappedInput),
                          [this](const ActivityResult& result) { onWifiSelectionComplete(!result.isCancelled); });
 }
@@ -87,11 +110,17 @@ void FontDownloadActivity::onExit() {
   // ActivityManager invokes onExit() while holding the rendering mutex.
   closePreview();
 
-  if (WiFi.getMode() != WIFI_MODE_NULL) {
+  if (wifiStarted_ && WiFi.getMode() != WIFI_MODE_NULL) {
     WiFi.disconnect(false);
     delay(30);
-    WiFi.mode(WIFI_OFF);
-    delay(30);
+  }
+
+  FontManager::getInstance().releaseGlyphCaches();
+  if (wifiStarted_) {
+    // WiFi deinitialization leaves the ESP32-C3 heap too fragmented for the
+    // contiguous UI glyph and Home cover buffers. The existing silent restart
+    // path preserves the panel, skips the splash, and returns to a clean Home.
+    silentRestart();
   }
 }
 

@@ -99,6 +99,7 @@ class FontDownloadActivity : public Activity {
   std::string errorMessage_;
   bool cancelRequested_ = false;
   bool lowMemoryDownload_ = false;
+  bool wifiStarted_ = false;
   int lastProgressPercent_ = -1;
   int downloadProgressBarY_ = 0;
 
