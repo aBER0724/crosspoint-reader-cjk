@@ -56,6 +56,42 @@ families:
     styles:
       regular: {url: "https://raw.githubusercontent.com/google/fonts/main/ofl/notosansjp/NotoSansJP%5Bwght%5D.ttf", variable: {wght: 400}}
 
+  - name: NotoSerifSC
+    description: "Simplified Chinese Song-style serif with Japanese kana"
+    intervals: latin-ext,cjk
+    sizes: [8, 10, 12, 14, 16, 18]
+    styles:
+      regular: {url: "https://raw.githubusercontent.com/google/fonts/main/ofl/notoserifsc/NotoSerifSC%5Bwght%5D.ttf", variable: {wght: 400}}
+
+  - name: NotoSerifTC
+    description: "Traditional Chinese Ming-style serif with Japanese kana"
+    intervals: latin-ext,cjk
+    sizes: [8, 10, 12, 14, 16, 18]
+    styles:
+      regular: {url: "https://raw.githubusercontent.com/google/fonts/main/ofl/notoseriftc/NotoSerifTC%5Bwght%5D.ttf", variable: {wght: 400}}
+
+  - name: NotoSerifJP
+    description: "Japanese Mincho-style serif with kanji and kana"
+    intervals: latin-ext,cjk
+    sizes: [8, 10, 12, 14, 16, 18]
+    styles:
+      regular: {url: "https://raw.githubusercontent.com/google/fonts/main/ofl/notoserifjp/NotoSerifJP%5Bwght%5D.ttf", variable: {wght: 400}}
+
+  - name: WenKaiCJK
+    description: "Readable CJK handwriting-style typeface derived from LXGW WenKai"
+    intervals: latin-ext,cjk
+    sizes: [8, 10, 12, 14, 16, 18]
+    force_autohint: true
+    styles:
+      regular: {url: "https://raw.githubusercontent.com/lxgw/LxgwWenKai/main/fonts/TTF/LXGWWenKai-Regular.ttf"}
+
+  - name: ChironGoRoundTC
+    description: "Traditional Chinese rounded sans-serif with Japanese kana"
+    intervals: latin-ext,cjk
+    sizes: [8, 10, 12, 14, 16, 18]
+    styles:
+      regular: {url: "https://raw.githubusercontent.com/chiron-fonts/chiron-go-round-tc/release/STATIC_OTF/ChironGoRoundTC-400R.otf"}
+
   # 鈹€鈹€ Serif 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
   - name: Literata

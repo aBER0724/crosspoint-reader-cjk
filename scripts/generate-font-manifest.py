@@ -46,9 +46,14 @@ STYLE_NAMES = {0: "regular", 1: "bold", 2: "italic", 3: "bolditalic"}
 # Family descriptions can be loaded from the sd-fonts.yaml config
 # (via --descriptions-from) or fall back to the family name.
 FAMILY_DESCRIPTIONS: dict[str, str] = {
+    "ChironGoRoundTC": "Traditional Chinese rounded sans-serif with Japanese kana",
+    "WenKaiCJK": "Readable CJK handwriting-style typeface derived from LXGW WenKai",
     "NotoSansJP": "Japanese sans-serif (kanji + kana)",
     "NotoSansSC": "Simplified Chinese sans-serif + Japanese kana",
     "NotoSansTC": "Traditional Chinese sans-serif + Japanese kana",
+    "NotoSerifJP": "Japanese Mincho-style serif with kanji and kana",
+    "NotoSerifSC": "Simplified Chinese Song-style serif with Japanese kana",
+    "NotoSerifTC": "Traditional Chinese Ming-style serif with Japanese kana",
 }
 
 
