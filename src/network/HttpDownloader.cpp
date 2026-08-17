@@ -8,6 +8,8 @@
 #include <functional>
 #include <string>
 
+#include "util/TaskWatchdog.h"
+
 #if defined(FREEINK_NET_WOLFSSL)
 #include <SecureHttpClient.h>
 
@@ -80,9 +82,11 @@ HttpDownloader::DownloadError runGetWolf(const std::string& startUrl, const std:
     }
 
     LOG_DBG("HTTP", "wolfSSL GET: %s", url.c_str());
+    resetTaskWatchdogIfSubscribed();
     const int status = http.GET(
         [&http, &sink](const uint8_t* data, size_t len) {
           if (http.getStatus() != 200) return true;
+          resetTaskWatchdogIfSubscribed();
           if (sink.total == 0 && http.hasContentLength()) sink.total = http.getContentLength();
           if (exceedsLimit(sink, len)) return false;
           if (!sink.write(data, len)) return false;
@@ -91,6 +95,7 @@ HttpDownloader::DownloadError runGetWolf(const std::string& startUrl, const std:
           return true;
         },
         [&sink]() { return isCancelled(sink); });
+    resetTaskWatchdogIfSubscribed();
 
     if (http.aborted()) return HttpDownloader::ABORTED;
     if (status < 0) {
@@ -170,7 +175,9 @@ HttpDownloader::DownloadError runGet(const std::string& url, const std::string& 
     esp_http_client_cleanup(client);
     return HttpDownloader::HTTP_ERROR;
   }
+  resetTaskWatchdogIfSubscribed();
   int64_t contentLength = esp_http_client_fetch_headers(client);
+  resetTaskWatchdogIfSubscribed();
   int status = esp_http_client_get_status_code(client);
   for (int hop = 0; isRedirect(status) && hop < MAX_REDIRECTS; ++hop) {
     if (esp_http_client_set_redirection(client) != ESP_OK) break;
@@ -181,7 +188,9 @@ HttpDownloader::DownloadError runGet(const std::string& url, const std::string& 
       esp_http_client_cleanup(client);
       return HttpDownloader::HTTP_ERROR;
     }
+    resetTaskWatchdogIfSubscribed();
     contentLength = esp_http_client_fetch_headers(client);
+    resetTaskWatchdogIfSubscribed();
     status = esp_http_client_get_status_code(client);
   }
 
@@ -208,6 +217,7 @@ HttpDownloader::DownloadError runGet(const std::string& url, const std::string& 
   }
 
   while (true) {
+    resetTaskWatchdogIfSubscribed();
     if (isCancelled(sink)) {
       esp_http_client_cleanup(client);
       return HttpDownloader::ABORTED;
@@ -230,6 +240,7 @@ HttpDownloader::DownloadError runGet(const std::string& url, const std::string& 
     }
     sink.downloaded += read;
     if (sink.progress && sink.total > 0) sink.progress(sink.downloaded, sink.total);
+    yield();
   }
 
   const bool complete = esp_http_client_is_complete_data_received(client);

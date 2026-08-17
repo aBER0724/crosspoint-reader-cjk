@@ -7,6 +7,7 @@
 #include <HalStorage.h>
 #include <I18n.h>
 #include <Logging.h>
+#include <Memory.h>
 #include <WiFi.h>
 #include <esp_rom_crc.h>
 
@@ -24,6 +25,7 @@
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "network/HttpDownloader.h"
+#include "util/TaskWatchdog.h"
 
 namespace {
 constexpr size_t MAX_MANIFEST_BYTES = 32 * 1024;
@@ -541,22 +543,28 @@ bool FontDownloadActivity::computeFileCrc32(const char* path, uint32_t& outCrc) 
   if (!Storage.openFileForRead("FONT", path, f)) {
     return false;
   }
-  constexpr size_t BUF_SIZE = 128;
-  uint8_t buf[BUF_SIZE];
+  constexpr size_t BUF_SIZE = 4 * 1024;
+  auto buf = makeUniqueNoThrow<uint8_t[]>(BUF_SIZE);
+  if (!buf) {
+    LOG_ERR("FONT", "Unable to allocate CRC buffer");
+    return false;
+  }
   uint32_t crc = 0;
   const size_t fileSize = f.fileSize();
   size_t bytesRead = 0;
   while (bytesRead < fileSize) {
-    if ((bytesRead & 0xFFFF) == 0 && pollDownloadCancellation()) {
-      return false;
+    if ((bytesRead & 0xFFFF) == 0) {
+      yield();
+      resetTaskWatchdogIfSubscribed();
+      if (pollDownloadCancellation()) return false;
     }
     const size_t remaining = fileSize - bytesRead;
-    const int n = f.read(buf, remaining < BUF_SIZE ? remaining : BUF_SIZE);
+    const int n = f.read(buf.get(), remaining < BUF_SIZE ? remaining : BUF_SIZE);
     if (n <= 0) {
       LOG_ERR("FONT", "Read failed during CRC check: %s", path);
       return false;
     }
-    crc = esp_rom_crc32_le(crc, buf, static_cast<uint32_t>(n));
+    crc = esp_rom_crc32_le(crc, buf.get(), static_cast<uint32_t>(n));
     bytesRead += static_cast<size_t>(n);
   }
   outCrc = crc;
