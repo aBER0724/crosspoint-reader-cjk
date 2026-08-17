@@ -194,6 +194,6 @@ const char* ButtonRemapActivity::getHardwareName(const uint8_t buttonIndex) cons
     case CrossPointSettings::FRONT_HW_RIGHT:
       return tr(STR_HW_RIGHT_LABEL);
     default:
-      return "Unknown";
+      return tr(STR_UNASSIGNED);
   }
 }
