@@ -98,6 +98,9 @@ void HomeActivity::loadNextRecentCover([[maybe_unused]] int coverHeight) {
   recentsLoaded = true;
   recentsLoading = false;
   if (redrawRequired) {
+    // The deferred first frame stores a placeholder baseline. Do not restore it
+    // while rebuilding the strip with the real cover bitmaps.
+    freeCoverBuffer();
     coverRendered = false;
     fullRedrawRequired = true;
     requestUpdate();
@@ -435,9 +438,16 @@ void HomeActivity::render(RenderLock&& lock) {
       }
       booksForCover = &coverBooks;
     }
-    GUI.drawRecentBookCover(renderer, Rect{0, metrics.homeTopPadding, pageWidth, metrics.homeCoverTileHeight},
-                            *booksForCover, selectorIndex, coverRendered, coverBufferStored, bufferRestored,
-                            std::bind(&HomeActivity::storeCoverBuffer, this), [&lock]() { return lock.isStale(); });
+    GUI.drawRecentBookCover(
+        renderer, Rect{0, metrics.homeTopPadding, pageWidth, metrics.homeCoverTileHeight}, *booksForCover,
+        selectorIndex, coverRendered, coverBufferStored, bufferRestored,
+        [this, &lock]() {
+          if (lock.isStale() || !storeCoverBuffer()) return false;
+          if (!lock.isStale()) return true;
+          freeCoverBuffer();
+          return false;
+        },
+        [&lock]() { return lock.isStale(); });
 #if defined(SSD1677_PROBE_DEBUG) && SSD1677_PROBE_DEBUG
 
     afterCover = millis();
