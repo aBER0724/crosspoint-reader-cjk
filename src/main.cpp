@@ -18,6 +18,7 @@
 #include <WiFi.h>
 #include <builtinFonts/all.h>
 
+#include <algorithm>
 #include <cstring>
 
 #include "CrossPointSettings.h"
@@ -581,11 +582,28 @@ void loop() {
       String cmd = line.substring(4);
       cmd.trim();
       if (cmd == "SCREENSHOT") {
+        constexpr size_t SCREENSHOT_CHUNK_SIZE = 128;
+        HalPowerManager::Lock powerLock;
         const uint32_t bufferSize = display.getBufferSize();
+#if LOG_SERIAL_HAS_TX_TIMEOUT
+        logSerial.setTxTimeoutMs(2000);
+#endif
         logSerial.printf("SCREENSHOT_START:%d\n", bufferSize);
         uint8_t* buf = display.getFrameBuffer();
-        logSerial.write(buf, bufferSize);
+        size_t bytesWritten = 0;
+        while (bytesWritten < bufferSize) {
+          const size_t bytesRemaining = bufferSize - bytesWritten;
+          const size_t chunkSize = std::min(SCREENSHOT_CHUNK_SIZE, bytesRemaining);
+          const size_t written = logSerial.write(buf + bytesWritten, chunkSize);
+          bytesWritten += written;
+          yield();
+        }
+        logSerial.flush();
         logSerial.printf("SCREENSHOT_END\n");
+        logSerial.flush();
+#if LOG_SERIAL_HAS_TX_TIMEOUT
+        logSerial.setTxTimeoutMs(1);
+#endif
 #ifdef ENABLE_SERIAL_INPUT_TEST
       } else {
         handleSerialTestInputCommand(cmd);
