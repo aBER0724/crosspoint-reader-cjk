@@ -240,6 +240,11 @@ void GfxRenderer::ensureSdCardFontReady(int fontId, const std::vector<std::strin
   }
 }
 
+void GfxRenderer::resetSdCardFontAdvances(const int fontId) const {
+  const auto it = sdCardFonts_.find(fontId);
+  if (it != sdCardFonts_.end()) it->second->clearPersistentCache();
+}
+
 void GfxRenderer::begin() {
   frameBuffer = display.getFrameBuffer();
   if (!frameBuffer) {

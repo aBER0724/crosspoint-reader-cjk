@@ -519,6 +519,13 @@ void ParsedText::layoutAndExtractLines(const GfxRenderer& renderer, const int fo
   // (advanceX only, no bitmaps) for all unique codepoints in this paragraph so
   // that calculateWordWidths() can measure text without on-demand SD I/O.
   if (renderer.isSdCardFont(fontId)) {
+    // The bounded advance table is paragraph-local for SD fonts. A Chinese
+    // chapter can contain thousands of distinct ideographs; accumulating the
+    // whole chapter fills the 768-entry table and makes later paragraphs fall
+    // back to one random SD read per glyph. Resetting advances here preserves
+    // the page bitmap prewarm while keeping every paragraph on the batched
+    // metadata path.
+    renderer.resetSdCardFontAdvances(fontId);
     // Style mask: only ask the SD font to load advances for styles actually
     // used in this paragraph. Style index is the low two bits (regular/bold/
     // italic/bold-italic); the underline bit is irrelevant to advance metrics.

@@ -24,7 +24,7 @@ There are three ways to install fonts:
 ### Option 3: Manual SD card copy
 
 1. Download font files from the
-   [crosspoint-fonts repository](https://github.com/crosspoint-reader/crosspoint-fonts)
+   [CJK font repository](https://github.com/aBER0724/crosspoint-fonts)
 2. Copy font family folders to one of two locations on your SD card:
 
    - `/.fonts/` — hidden directory (preferred; keeps the SD root tidy
@@ -100,16 +100,24 @@ What this means in practice:
 
 ## Available Pre-Built Fonts
 
-The current list of pre-built fonts is maintained in the
-[crosspoint-fonts repository](https://github.com/crosspoint-reader/crosspoint-fonts).
-That repository is the public CDN/release store; the firmware repository keeps
-the source catalog and build tooling in `lib/EpdFont/scripts/`.
+The current CJK list is maintained in the
+[CJK font repository](https://github.com/aBER0724/crosspoint-fonts).
+That independent repository is the reproducible build source and Release CDN;
+generated binaries are not stored in this firmware repository. Its Actions
+workflow validates SHA-256-locked upstream sources, builds the six physical
+sizes, generates manifest schema v2, and publishes the `sd-fonts-m2-b4`
+Release.
 
-The catalog is defined in `lib/EpdFont/scripts/sd-fonts.yaml`. Source font
-downloads are cached under `downloaded_fonts/`, variable-font instances under
-`instanced_fonts/`, and generated `.cpfont` families under `output/`. These
-directories are local build artifacts and are not used by the firmware at
-runtime. Published `.cpfont` files are installed on the device under
+The firmware also remains compatible with manually uploaded `.cpfont` files.
+The legacy upstream Latin catalog is hosted separately by the original
+CrossPoint project and is not mixed into this CJK Release.
+
+The original catalog definition remains in
+`lib/EpdFont/scripts/sd-fonts.yaml` for firmware-side development and migration.
+Source downloads are cached under `downloaded_fonts/`, variable-font instances
+under `instanced_fonts/`, and generated `.cpfont` families under `output/`.
+These directories are local build artifacts and are not used by the firmware
+at runtime. Published `.cpfont` files are installed on the device under
 `/.fonts/<Family>/` (preferred) or `/fonts/<Family>/`.
 
 New CJK sources are selected from their upstream projects and pinned to a

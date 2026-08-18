@@ -1660,11 +1660,13 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
     }
   }
 
-  // SD-card glyphs benefit from a sequential prewarm pass. It doubles page
-  // layout work, so reserve it for idle redraws; interactive renders load
-  // missing glyphs on demand and remain responsive to follow-up input.
+  // SD-card glyphs benefit from a sequential prewarm pass. Interactive
+  // SD-font page turns still batch-prewarm: otherwise CJK pages fall through
+  // to the eight-slot overflow ring and perform one random SD read per glyph,
+  // which turns a page change into several seconds of blocking I/O. The scan
+  // and prewarm are cancellation-aware, so follow-up input can supersede them.
   std::optional<FontCacheManager::PrewarmScope> prewarmScope;
-  if (!interactiveRender && renderer.isSdCardFont(fontId)) {
+  if (renderer.isSdCardFont(fontId)) {
     if (auto* fcm = renderer.getFontCacheManager()) {
       prewarmScope.emplace(fcm->createPrewarmScope());
       if (!page->render(renderer, fontId, orientedMarginLeft, orientedMarginTop, &cancellation)) {

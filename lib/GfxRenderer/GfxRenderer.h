@@ -229,6 +229,9 @@ class GfxRenderer {
   void ensureSdCardFontReady(int fontId, const char* utf8Text, uint8_t styleMask = 0x0F) const;
   void ensureSdCardFontReady(int fontId, const std::vector<std::string>& words, bool includeHyphen,
                              uint8_t styleMask = 0x0F) const;
+  // Reset only the advance-only layout table for an SD font. Page bitmap
+  // prewarm data is preserved. Safe to call for non-SD fonts (no-op).
+  void resetSdCardFontAdvances(int fontId) const;
 
   // Orientation control (affects logical width/height and coordinate
   // transforms)
