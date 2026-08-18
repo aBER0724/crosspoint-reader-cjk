@@ -23,6 +23,7 @@ class SdCardFont;
 
 #include "Bitmap.h"
 #include "ExternalFontHelpers.h"
+#include "TextFallbackScale.h"
 
 // Forward declaration for external font support
 class ExternalFont;
@@ -133,12 +134,20 @@ class GfxRenderer {
     ExternalFont* font = nullptr;
     const uint8_t* bitmap = nullptr;
     ExternalGlyphMetrics metrics{};
+    ExternalGlyphMetrics sourceMetrics{};
+    TextFallbackScale scale{};
     int advance = 0;
+    int sourceAdvance = 0;
+    int ascender = 0;
+    int sourceAscender = 0;
     int baselineOffset = 0;
+    int sourceBaselineOffset = 0;
     int cellClipWidth = -1;
+    int sourceCellClipWidth = -1;
   };
 
-  bool resolveTextFallback(int fontId, uint32_t cp, bool loadBitmap, TextFallbackGlyph* out) const;
+  bool resolveTextFallback(int fontId, const EpdFontFamily& fontFamily, EpdFontFamily::Style style, uint32_t cp,
+                           bool loadBitmap, TextFallbackGlyph* out) const;
   void renderTextFallback(const TextFallbackGlyph& fallback, uint32_t cp, int* x, int baselineY, bool pixelState,
                           bool halfScale) const;
   void renderTextFallbackRotated90CW(const TextFallbackGlyph& fallback, uint32_t cp, int cursorX, int cursorY,
