@@ -472,6 +472,12 @@ void HomeActivity::render(RenderLock&& lock) {
     GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
   }
   if (lock.isStale()) {
+    // Rendering may already have cleared or partially rebuilt the shared framebuffer.
+    // The next request must not treat that unfinished image as a valid baseline for
+    // a menu/cover window update, or stale boot/reader pixels can reach the panel.
+    fullRedrawRequired = true;
+    freeCoverBuffer();
+    coverRendered = false;
     return;
   }
 
