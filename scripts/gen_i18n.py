@@ -22,9 +22,10 @@ Example:
     python gen_i18n.py lib/I18n/translations lib/I18n/
 """
 
-import sys
+import argparse
 import os
 import re
+import sys
 from pathlib import Path
 from typing import List, Dict, Tuple
 
@@ -698,14 +699,10 @@ def main(translations_dir=None, output_dir=None, language_filter=None) -> None:
     default_translations_dir = "lib/I18n/translations"
     default_output_dir = "lib/I18n/"
 
-    if translations_dir is None or output_dir is None:
-        if len(sys.argv) == 3:
-            translations_dir = sys.argv[1]
-            output_dir = sys.argv[2]
-        else:
-            # Default for no arguments or weird arguments (e.g. SCons)
-            translations_dir = default_translations_dir
-            output_dir = default_output_dir
+    if translations_dir is None:
+        translations_dir = default_translations_dir
+    if output_dir is None:
+        output_dir = default_output_dir
 
     # Check for I18N_LANGUAGES env var if no filter provided
     if language_filter is None:
@@ -748,8 +745,26 @@ def main(translations_dir=None, output_dir=None, language_filter=None) -> None:
         sys.exit(1)
 
 
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(description="Generate I18n C++ files from per-language YAML translations.")
+    parser.add_argument(
+        "translations_dir",
+        nargs="?",
+        default="lib/I18n/translations",
+        help="directory containing per-language YAML files",
+    )
+    parser.add_argument(
+        "output_dir",
+        nargs="?",
+        default="lib/I18n",
+        help="directory for generated I18n C++ files",
+    )
+    return parser.parse_args(argv)
+
+
 if __name__ == "__main__":
-    main()
+    args = parse_args()
+    main(args.translations_dir, args.output_dir)
 else:
     try:
         Import("env")
