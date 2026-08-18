@@ -347,8 +347,26 @@ void TextSettingsActivity::rebuildSizeEntries() {
   }
 
   if (sdFamily) {
-    const SdCardFontFileInfo* currentFile = sdFamily->findClosestReaderSize(SETTINGS.fontSize);
-    if (currentFile) sizes_.push_back({std::to_string(currentFile->pointSize) + " pt", SETTINGS.fontSize});
+    // SD fonts are never scaled. Expose only the distinct physical reader
+    // files that the four persisted size slots resolve to. A complete CJK
+    // pack therefore offers 12/14/16/18 pt while a partial one-file install
+    // remains a read-only size. The 8/10 pt files stay reserved for UI slots
+    // when the family also provides the standard reader sizes.
+    std::vector<uint8_t> addedPointSizes;
+    addedPointSizes.reserve(CrossPointSettings::FONT_SIZE_COUNT);
+    const SdCardFontFileInfo* selectedFile = sdFamily->findClosestReaderSize(SETTINGS.fontSize);
+    for (uint8_t sizeIndex = 0; sizeIndex < CrossPointSettings::FONT_SIZE_COUNT; ++sizeIndex) {
+      const SdCardFontFileInfo* file = sdFamily->findClosestReaderSize(sizeIndex);
+      if (!file ||
+          std::find(addedPointSizes.begin(), addedPointSizes.end(), file->pointSize) != addedPointSizes.end()) {
+        continue;
+      }
+      if (selectedFile && file->pointSize == selectedFile->pointSize) {
+        currentSizeIndex_ = static_cast<int>(sizes_.size());
+      }
+      sizes_.push_back({std::to_string(file->pointSize) + " pt", sizeIndex});
+      addedPointSizes.push_back(file->pointSize);
+    }
   }
 
   if (sizes_.empty()) {
