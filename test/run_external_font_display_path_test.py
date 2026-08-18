@@ -210,6 +210,45 @@ CASES = [
         ],
     },
     {
+        "name": "SettingsActivity exposes one unified text settings entry",
+        "path": ROOT / "src" / "activities" / "settings" / "SettingsActivity.cpp",
+        "required": [
+            "if (setting.inTextSettings) continue;",
+            "SettingInfo::Action(StrId::STR_TEXT_SETTINGS, SettingAction::TextSettings)",
+            "std::make_unique<TextSettingsActivity>(renderer, mappedInput, &sdFontSystem.registry(),",
+        ],
+        "forbidden": [
+            "readerSettings.push_back(SettingInfo::Action(StrId::STR_EXT_READER_FONT",
+            "displaySettings.push_back(SettingInfo::Action(StrId::STR_EXT_UI_FONT",
+        ],
+    },
+    {
+        "name": "TextSettingsActivity keeps prebuilt CJK sizes fixed and visible",
+        "path": ROOT / "src" / "activities" / "settings" / "TextSettingsActivity.cpp",
+        "required": [
+            'sizes_.push_back({uiPointSizeLabel(families[sdIndex]), 12});',
+            "const SdCardFontFileInfo* currentFile = sdFamily->findClosestReaderSize(SETTINGS.fontSize);",
+            'sizes_.push_back({std::to_string(currentFile->pointSize) + " pt", SETTINGS.fontSize});',
+            "return previewTarget_ == FontTarget::Ui ||",
+            "if (hasFixedExternalSize() || listIndex < 0 || listIndex >= static_cast<int>(sizes_.size())) return;",
+        ],
+        "forbidden": [],
+    },
+    {
+        "name": "TextSettingsActivity preserves reader layout and style controls",
+        "path": ROOT / "src" / "activities" / "settings" / "TextSettingsActivity.cpp",
+        "required": [
+            "case LayoutRow::LineSpacing:",
+            "case LayoutRow::FirstLineIndent:",
+            "SETTINGS.firstLineIndent = !SETTINGS.firstLineIndent;",
+            "case StyleRow::FocusReading:",
+            "case StyleRow::Hyphenation:",
+            "case StyleRow::EmbeddedStyle:",
+            "case StyleRow::AntiAliasing:",
+        ],
+        "forbidden": [],
+    },
+    {
         "name": "BaseTheme button hints force BW render mode",
         "path": ROOT / "src" / "components" / "themes" / "BaseTheme.cpp",
         "required": [
