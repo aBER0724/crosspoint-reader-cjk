@@ -102,6 +102,21 @@ What this means in practice:
 
 The current list of pre-built fonts is maintained in the
 [crosspoint-fonts repository](https://github.com/crosspoint-reader/crosspoint-fonts).
+That repository is the public CDN/release store; the firmware repository keeps
+the source catalog and build tooling in `lib/EpdFont/scripts/`.
+
+The catalog is defined in `lib/EpdFont/scripts/sd-fonts.yaml`. Source font
+downloads are cached under `downloaded_fonts/`, variable-font instances under
+`instanced_fonts/`, and generated `.cpfont` families under `output/`. These
+directories are local build artifacts and are not used by the firmware at
+runtime. Published `.cpfont` files are installed on the device under
+`/.fonts/<Family>/` (preferred) or `/fonts/<Family>/`.
+
+New CJK sources are selected from their upstream projects and pinned to a
+release or commit. A catalog such as
+[jaywcjlove/free-font](https://github.com/jaywcjlove/free-font) can be used for
+discovery, but a font is only added after its upstream redistribution license
+has been checked.
 
 ## Converting Custom Fonts
 

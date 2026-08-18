@@ -30,7 +30,7 @@
 
 namespace {
 constexpr size_t MAX_MANIFEST_BYTES = 32 * 1024;
-constexpr size_t MAX_MANIFEST_FAMILIES = 32;
+constexpr size_t MAX_MANIFEST_FAMILIES = 48;
 constexpr size_t MAX_FILES_PER_FAMILY = 32;
 constexpr uint64_t STORAGE_RESERVE_BYTES = 8ULL * 1024ULL * 1024ULL;
 constexpr const char* PREVIEW_TMP_PATH = "/.font_preview.cpfont";
