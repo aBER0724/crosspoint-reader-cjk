@@ -407,7 +407,6 @@ void TextSettingsActivity::applyFamily(int listIndex) {
   if (font.source == FontEntry::Source::Builtin) {
     isReader = fontManager.getSelectedIndex() < 0 && SETTINGS.sdFontFamilyName[0] == '\0' &&
                SETTINGS.fontFamily == font.sourceIndex;
-    isUi = isReader && fontManager.getUiSelectedIndex() < 0 && SETTINGS.sdUiFontFamilyName[0] == '\0';
   } else if (font.source == FontEntry::Source::Legacy) {
     isReader = fontManager.getSelectedIndex() == font.sourceIndex;
     isUi = fontManager.getUiSelectedIndex() == font.sourceIndex;
@@ -425,7 +424,9 @@ void TextSettingsActivity::applyFamily(int listIndex) {
                                 ? static_cast<int>(FontTarget::Both)
                                 : (isUi ? static_cast<int>(FontTarget::Ui) : static_cast<int>(FontTarget::Reader));
   int targetCount = static_cast<int>(std::size(FONT_TARGET_IDS));
-  if (font.source == FontEntry::Source::SdFamily && registry_) {
+  if (font.source == FontEntry::Source::Builtin) {
+    targetCount = 1;
+  } else if (font.source == FontEntry::Source::SdFamily && registry_) {
     const auto& families = registry_->getFamilies();
     if (font.sourceIndex < 0 || font.sourceIndex >= static_cast<int>(families.size())) return;
     if (!hasUiPointSize(families[font.sourceIndex])) targetCount = 1;
@@ -440,6 +441,8 @@ void TextSettingsActivity::applyFamilyToTarget(int listIndex, FontTarget target)
 
   RenderLock lock;
   const auto& font = fonts_[listIndex];
+  if (font.source == FontEntry::Source::Builtin && target != FontTarget::Reader) return;
+
   const bool targetsReader = target == FontTarget::Reader || target == FontTarget::Both;
   const bool targetsUi = target == FontTarget::Ui || target == FontTarget::Both;
   FontManager& fontManager = FontManager::getInstance();
@@ -514,9 +517,7 @@ std::string TextSettingsActivity::fontRoleText(int listIndex) const {
     const bool isReader = fontManager.getSelectedIndex() < 0 && SETTINGS.sdFontFamilyName[0] == '\0' &&
                           SETTINGS.fontFamily == font.sourceIndex;
     if (!isReader) return "";
-
-    const bool isUi = fontManager.getUiSelectedIndex() < 0 && SETTINGS.sdUiFontFamilyName[0] == '\0';
-    return isUi ? tr(STR_READER_AND_UI) : tr(STR_EXT_READER_FONT);
+    return tr(STR_EXT_READER_FONT);
   }
 
   if (font.source == FontEntry::Source::Legacy) {
