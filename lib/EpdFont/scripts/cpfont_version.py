@@ -12,4 +12,4 @@
 CPFONT_VERSION = 4
 
 # JSON manifest schema version. Bump when the manifest shape changes.
-FONTS_MANIFEST_VERSION = 1
+FONTS_MANIFEST_VERSION = 2

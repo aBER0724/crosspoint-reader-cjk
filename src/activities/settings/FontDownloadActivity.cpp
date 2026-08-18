@@ -9,7 +9,7 @@
 #include <Logging.h>
 #include <Memory.h>
 #include <WiFi.h>
-#include <esp_rom_crc.h>
+#include <mbedtls/sha256.h>
 
 #include <algorithm>
 #include <cstdio>
@@ -52,11 +52,38 @@ constexpr size_t MAX_BASE_URL_LENGTH = 256;
 constexpr size_t MAX_DESCRIPTION_LENGTH = 160;
 constexpr size_t MAX_STYLE_NAME_LENGTH = 32;
 constexpr size_t MAX_FONT_FILE_BYTES = 256ULL * 1024ULL * 1024ULL;
+constexpr size_t SHA256_BYTES = 32;
+
+bool parseSha256(const char* text, std::array<uint8_t, SHA256_BYTES>& outHash) {
+  if (!text || strlen(text) != SHA256_BYTES * 2) return false;
+
+  const auto hexNibble = [](const char value) -> int {
+    if (value >= '0' && value <= '9') return value - '0';
+    if (value >= 'a' && value <= 'f') return value - 'a' + 10;
+    return -1;
+  };
+  for (size_t i = 0; i < outHash.size(); ++i) {
+    const int high = hexNibble(text[i * 2]);
+    const int low = hexNibble(text[i * 2 + 1]);
+    if (high < 0 || low < 0) return false;
+    outHash[i] = static_cast<uint8_t>((high << 4) | low);
+  }
+  return true;
+}
+
+uint32_t fingerprintBytes(const void* data, const size_t size, uint32_t fingerprint = 2166136261U) {
+  const auto* bytes = static_cast<const uint8_t*>(data);
+  for (size_t i = 0; i < size; ++i) {
+    fingerprint ^= bytes[i];
+    fingerprint *= 16777619U;
+  }
+  return fingerprint;
+}
 
 bool isValidBaseUrl(const std::string& url) {
   const bool isHttps = url.compare(0, 8, "https://") == 0;
   const bool isHttp = url.compare(0, 7, "http://") == 0;
-  // HTTP is allowed for LAN-local CDN testing; per-file CRC32 validation
+  // HTTP is allowed for LAN-local CDN testing; per-file SHA-256 validation
   // already guarantees integrity regardless of transport security.
   if ((!isHttps && !isHttp) || url.empty() || url.size() > MAX_BASE_URL_LENGTH || url.back() != '/') return false;
   if (url.find_first_of(" \t\r\n\\?#") != std::string::npos) return false;
@@ -355,7 +382,7 @@ bool FontDownloadActivity::fetchAndParseManifest() {
         return false;
       }
       JsonObject fileObj = fileValue.as<JsonObject>();
-      if (!fileObj["name"].is<const char*>() || !fileObj["size"].is<size_t>() || !fileObj["crc32"].is<uint32_t>()) {
+      if (!fileObj["name"].is<const char*>() || !fileObj["size"].is<size_t>() || !fileObj["sha256"].is<const char*>()) {
         errorMessage_ = tr(STR_FONT_MANIFEST_INVALID);
         return false;
       }
@@ -363,7 +390,14 @@ bool FontDownloadActivity::fetchAndParseManifest() {
       ManifestFile file;
       file.name = fileObj["name"].as<const char*>();
       file.size = fileObj["size"].as<size_t>();
-      file.crc32 = fileObj["crc32"].as<uint32_t>();
+      if (!parseSha256(fileObj["sha256"].as<const char*>(), file.sha256)) {
+        LOG_ERR("FONT", "Invalid SHA-256 in manifest: %s", file.name.c_str());
+        errorMessage_ = tr(STR_FONT_MANIFEST_INVALID);
+        return false;
+      }
+      file.fingerprint = fingerprintBytes(file.name.data(), file.name.size());
+      file.fingerprint = fingerprintBytes(&file.size, sizeof(file.size), file.fingerprint);
+      file.fingerprint = fingerprintBytes(file.sha256.data(), file.sha256.size(), file.fingerprint);
       if (!parsePointSize(file.name.c_str(), family.name.c_str(), file.pointSize)) {
         LOG_ERR("FONT", "Font filename does not match family/size convention: %s", file.name.c_str());
         errorMessage_ = tr(STR_FONT_MANIFEST_INVALID);
@@ -404,17 +438,10 @@ bool FontDownloadActivity::fetchAndParseManifest() {
     }
 
     uint32_t fingerprint = 2166136261U;
-    const auto hashBytes = [&fingerprint](const void* data, size_t size) {
-      const auto* bytes = static_cast<const uint8_t*>(data);
-      for (size_t i = 0; i < size; ++i) {
-        fingerprint ^= bytes[i];
-        fingerprint *= 16777619U;
-      }
-    };
     for (const auto& file : family.files) {
-      hashBytes(file.name.data(), file.name.size());
-      hashBytes(&file.size, sizeof(file.size));
-      hashBytes(&file.crc32, sizeof(file.crc32));
+      fingerprint = fingerprintBytes(file.name.data(), file.name.size(), fingerprint);
+      fingerprint = fingerprintBytes(&file.size, sizeof(file.size), fingerprint);
+      fingerprint = fingerprintBytes(file.sha256.data(), file.sha256.size(), fingerprint);
     }
     family.fingerprint = fingerprint;
     refreshFamilyState(family);
@@ -571,8 +598,7 @@ void FontDownloadActivity::removePreviewTemporaryFiles() {
   }
 }
 
-// Standard CRC32 matching zlib/Python zlib.crc32().
-bool FontDownloadActivity::computeFileCrc32(const char* path, uint32_t& outCrc) {
+bool FontDownloadActivity::computeFileSha256(const char* path, std::array<uint8_t, SHA256_BYTES>& outHash) {
   HalFile f;
   if (!Storage.openFileForRead("FONT", path, f)) {
     return false;
@@ -580,29 +606,53 @@ bool FontDownloadActivity::computeFileCrc32(const char* path, uint32_t& outCrc) 
   constexpr size_t BUF_SIZE = 4 * 1024;
   auto buf = makeUniqueNoThrow<uint8_t[]>(BUF_SIZE);
   if (!buf) {
-    LOG_ERR("FONT", "Unable to allocate CRC buffer");
+    LOG_ERR("FONT", "Unable to allocate SHA-256 buffer");
+    f.close();
     return false;
   }
-  uint32_t crc = 0;
+
+  mbedtls_sha256_context context;
+  mbedtls_sha256_init(&context);
+  if (mbedtls_sha256_starts(&context, 0) != 0) {
+    LOG_ERR("FONT", "Unable to initialize SHA-256");
+    mbedtls_sha256_free(&context);
+    f.close();
+    return false;
+  }
+
   const size_t fileSize = f.fileSize();
   size_t bytesRead = 0;
   while (bytesRead < fileSize) {
     if ((bytesRead & 0xFFFF) == 0) {
       yield();
       resetTaskWatchdogIfSubscribed();
-      if (pollDownloadCancellation()) return false;
+      if (pollDownloadCancellation()) {
+        mbedtls_sha256_free(&context);
+        f.close();
+        return false;
+      }
     }
     const size_t remaining = fileSize - bytesRead;
     const int n = f.read(buf.get(), remaining < BUF_SIZE ? remaining : BUF_SIZE);
     if (n <= 0) {
-      LOG_ERR("FONT", "Read failed during CRC check: %s", path);
+      LOG_ERR("FONT", "Read failed during SHA-256 check: %s", path);
+      mbedtls_sha256_free(&context);
+      f.close();
       return false;
     }
-    crc = esp_rom_crc32_le(crc, buf.get(), static_cast<uint32_t>(n));
+    if (mbedtls_sha256_update(&context, buf.get(), static_cast<size_t>(n)) != 0) {
+      LOG_ERR("FONT", "SHA-256 update failed: %s", path);
+      mbedtls_sha256_free(&context);
+      f.close();
+      return false;
+    }
     bytesRead += static_cast<size_t>(n);
   }
-  outCrc = crc;
-  return true;
+  const bool success = mbedtls_sha256_finish(&context, outHash.data()) == 0;
+  mbedtls_sha256_free(&context);
+  f.close();
+  if (!success) LOG_ERR("FONT", "SHA-256 finalization failed: %s", path);
+  return success;
 }
 void FontDownloadActivity::closePreview() {
   if (previewFontId_ != 0) {
@@ -711,8 +761,8 @@ void FontDownloadActivity::downloadPreview(int familyIndex, int fileIndex) {
     return;
   }
 
-  uint32_t actualCrc = 0;
-  if (!computeFileCrc32(PREVIEW_NEXT_PATH, actualCrc)) {
+  std::array<uint8_t, SHA256_BYTES> actualSha256{};
+  if (!computeFileSha256(PREVIEW_NEXT_PATH, actualSha256)) {
     if (cancelRequested_) {
       failPreview("", true);
       requestUpdateAndWait();
@@ -722,7 +772,7 @@ void FontDownloadActivity::downloadPreview(int familyIndex, int fileIndex) {
     requestUpdateAndWait();
     return;
   }
-  if (actualCrc != file.crc32) {
+  if (actualSha256 != file.sha256) {
     failPreview(tr(STR_FONT_CHECKSUM_MISMATCH), false);
     requestUpdateAndWait();
     return;
@@ -882,7 +932,7 @@ void FontDownloadActivity::downloadFamily(ManifestFamily& family, int fileIndex,
     return;
   }
 
-  const uint32_t transactionFingerprint = completeFamily ? family.fingerprint : family.files[fileIndex].crc32;
+  const uint32_t transactionFingerprint = completeFamily ? family.fingerprint : family.files[fileIndex].fingerprint;
   if (!fontInstaller_.beginFamilyInstall(family.name.c_str(), transactionFingerprint, completeFamily)) {
     RenderLock lock(*this);
     state_ = ERROR;
@@ -990,18 +1040,18 @@ void FontDownloadActivity::downloadFamily(ManifestFamily& family, int fileIndex,
         return;
       }
 
-      uint32_t actualCrc = 0;
-      if (!computeFileCrc32(partPath.c_str(), actualCrc)) {
+      std::array<uint8_t, SHA256_BYTES> actualSha256{};
+      if (!computeFileSha256(partPath.c_str(), actualSha256)) {
         if (cancelRequested_) {
           failTransaction("", true);
           return;
         }
-        LOG_ERR("FONT", "Failed to open file for CRC check: %s", partPath.c_str());
+        LOG_ERR("FONT", "Failed to calculate SHA-256: %s", partPath.c_str());
         failTransaction(std::string(tr(STR_FONT_CHECKSUM_FAILED)) + ": " + file.name, false);
         return;
       }
-      if (actualCrc != file.crc32) {
-        LOG_ERR("FONT", "CRC32 mismatch for %s: got %08x expected %08x", file.name.c_str(), actualCrc, file.crc32);
+      if (actualSha256 != file.sha256) {
+        LOG_ERR("FONT", "SHA-256 mismatch for %s", file.name.c_str());
         failTransaction(std::string(tr(STR_FONT_CHECKSUM_MISMATCH)) + ": " + file.name, false);
         return;
       }
@@ -1009,7 +1059,7 @@ void FontDownloadActivity::downloadFamily(ManifestFamily& family, int fileIndex,
         failTransaction("", true);
         return;
       }
-      LOG_DBG("FONT", "Downloaded %s (size=%zu crc32=%08x)", file.name.c_str(), file.size, actualCrc);
+      LOG_DBG("FONT", "Downloaded %s (size=%zu SHA-256 verified)", file.name.c_str(), file.size);
 
       if (!fontInstaller_.validateCpfontFile(partPath.c_str())) {
         LOG_ERR("FONT", "Invalid .cpfont: %s", partPath.c_str());
