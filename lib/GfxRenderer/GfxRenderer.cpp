@@ -717,13 +717,36 @@ void GfxRenderer::drawPixel(const int x, const int y, const bool state) const {
   }
 }
 
-bool GfxRenderer::resolveTextFallback(const int fontId, const uint32_t cp, const bool loadBitmap,
+bool GfxRenderer::resolveTextFallback(const int fontId, const EpdFontFamily& fontFamily,
+                                      const EpdFontFamily::Style style, const uint32_t cp, const bool loadBitmap,
                                       TextFallbackGlyph* out) const {
   if (!out) return false;
   *out = TextFallbackGlyph{};
 
   FontManager& fm = FontManager::getInstance();
   const bool isCjk = isCjkCodepoint(cp);
+  const EpdFontData* targetData = fontFamily.getData(style);
+  const int targetAscender = targetData ? targetData->ascender : 0;
+  const int targetLineHeight = targetData ? targetData->advanceY : 0;
+
+  const auto applyScale = [&](const int sourceScaleHeight, const int sourceAscender, const int sourceLineHeight) {
+    out->sourceMetrics = out->metrics;
+    out->sourceAdvance = out->advance;
+    out->sourceAscender = sourceAscender;
+    out->sourceBaselineOffset = out->baselineOffset;
+    out->sourceCellClipWidth = out->cellClipWidth;
+    out->scale = makeTextFallbackScale(targetAscender, targetLineHeight, sourceScaleHeight, sourceLineHeight);
+    out->metrics.width = scaleTextFallbackExtent(out->sourceMetrics.width, out->scale);
+    out->metrics.height = scaleTextFallbackExtent(out->sourceMetrics.height, out->scale);
+    out->metrics.advanceX = scaleTextFallbackExtent(out->sourceMetrics.advanceX, out->scale);
+    out->metrics.left = scaleTextFallbackMetric(out->sourceMetrics.left, out->scale);
+    out->metrics.top = scaleTextFallbackMetric(out->sourceMetrics.top, out->scale);
+    out->advance = scaleTextFallbackExtent(out->sourceAdvance, out->scale);
+    out->ascender = scaleTextFallbackExtent(sourceAscender, out->scale);
+    out->baselineOffset = scaleTextFallbackMetric(out->sourceBaselineOffset, out->scale);
+    out->cellClipWidth =
+        out->sourceCellClipWidth > 0 ? scaleTextFallbackExtent(out->sourceCellClipWidth, out->scale) : -1;
+  };
 
   enum class MetricsMode { Reader, Ui, ReaderAsUi };
   const auto tryExternal = [&](ExternalFont* extFont, const MetricsMode mode, const int baselineOffset,
@@ -769,6 +792,8 @@ bool GfxRenderer::resolveTextFallback(const int fontId, const uint32_t cp, const
     out->advance = advance;
     out->baselineOffset = baselineOffset;
     out->cellClipWidth = cellClipWidth;
+    applyScale(extFont->getCharHeight(), getExternalFontAscenderForRendering(*extFont),
+               getExternalFontLineHeightForRendering(*extFont));
     return true;
   };
 
@@ -780,6 +805,7 @@ bool GfxRenderer::resolveTextFallback(const int fontId, const uint32_t cp, const
     out->metrics.height = CjkUiFont20::CJK_UI_FONT_HEIGHT;
     out->metrics.advanceX = out->advance;
     out->metrics.top = CjkUiFont20::CJK_UI_FONT_HEIGHT - CJK_UI_FONT_DESCENT;
+    applyScale(CjkUiFont20::CJK_UI_FONT_HEIGHT, out->metrics.top, CjkUiFont20::CJK_UI_FONT_HEIGHT);
     return out->advance > 0;
   };
 
@@ -807,7 +833,7 @@ bool GfxRenderer::resolveTextFallback(const int fontId, const uint32_t cp, const
 
 void GfxRenderer::renderTextFallback(const TextFallbackGlyph& fallback, const uint32_t cp, int* x, const int baselineY,
                                      const bool pixelState, const bool halfScale) const {
-  if (!halfScale) {
+  if (!halfScale && fallback.scale.numerator == fallback.scale.denominator) {
     if (fallback.kind == TextFallbackGlyph::Kind::External) {
       renderExternalGlyph(fallback.bitmap, fallback.font, x, baselineY + fallback.baselineOffset, pixelState,
                           fallback.metrics, fallback.advance, fallback.cellClipWidth);
@@ -817,92 +843,71 @@ void GfxRenderer::renderTextFallback(const TextFallbackGlyph& fallback, const ui
     return;
   }
 
-  if (fallback.kind == TextFallbackGlyph::Kind::External) {
-    if (!fallback.bitmap || !fallback.font) return;
+  const bool builtin = fallback.kind == TextFallbackGlyph::Kind::BuiltinCjk;
+  const uint8_t* bitmap = builtin ? CjkUiFont20::getCjkUiGlyph(cp) : fallback.bitmap;
+  if (!bitmap || (!builtin && !fallback.font)) return;
 
-    const int srcWidth = fallback.metrics.width > 0 ? fallback.metrics.width : fallback.font->getCharWidth();
-    const int srcHeight = fallback.metrics.height > 0 ? fallback.metrics.height : fallback.font->getCharHeight();
-    const int bytesPerRow = (srcWidth + 7) / 8;
-    const int drawX = *x + fallback.metrics.left / 2;
-    const int drawY = baselineY + fallback.baselineOffset / 2 - fallback.metrics.top / 2;
-    const int dstWidth = (srcWidth + 1) / 2;
-    const int dstHeight = (srcHeight + 1) / 2;
-    const int scaledCellClipWidth =
-        fallback.cellClipWidth > 0 ? (fallback.cellClipWidth + 1) / 2 : fallback.cellClipWidth;
+  const int srcWidth = fallback.sourceMetrics.width > 0
+                           ? fallback.sourceMetrics.width
+                           : (builtin ? CjkUiFont20::CJK_UI_FONT_WIDTH : fallback.font->getCharWidth());
+  const int srcHeight = fallback.sourceMetrics.height > 0
+                            ? fallback.sourceMetrics.height
+                            : (builtin ? CjkUiFont20::CJK_UI_FONT_HEIGHT : fallback.font->getCharHeight());
+  const int bytesPerRow = (srcWidth + 7) / 8;
+  const TextFallbackScale scale = composeHalfScale(fallback.scale, halfScale);
+  const int drawX = *x + scaleTextFallbackMetric(fallback.sourceMetrics.left, scale);
+  const int drawY = baselineY + scaleTextFallbackMetric(fallback.sourceBaselineOffset, scale) -
+                    scaleTextFallbackMetric(fallback.sourceMetrics.top, scale);
+  const int dstWidth = scaleTextFallbackExtent(srcWidth, scale);
+  const int dstHeight = scaleTextFallbackExtent(srcHeight, scale);
+  const int scaledCellClipWidth = fallback.sourceCellClipWidth > 0
+                                      ? scaleTextFallbackExtent(fallback.sourceCellClipWidth, scale)
+                                      : fallback.sourceCellClipWidth;
 
-    for (int dstY = 0; dstY < dstHeight; dstY++) {
-      const int screenY = drawY + dstY;
-      if (screenY < 0 || screenY >= getScreenHeight()) continue;
+  for (int dstY = 0; dstY < dstHeight; dstY++) {
+    const int screenY = drawY + dstY;
+    if (screenY < 0 || screenY >= getScreenHeight()) continue;
+    const int srcY0 = textFallbackSourceStart(dstY, scale);
+    const int srcY1 = textFallbackSourceEnd(dstY, srcHeight, scale);
 
-      for (int dstX = 0; dstX < dstWidth; dstX++) {
-        const int screenX = drawX + dstX;
-        if (screenX < 0 || screenX >= getScreenWidth()) continue;
-        if (scaledCellClipWidth > 0 && (screenX < *x || screenX >= *x + scaledCellClipWidth)) continue;
+    for (int dstX = 0; dstX < dstWidth; dstX++) {
+      const int screenX = drawX + dstX;
+      if (screenX < 0 || screenX >= getScreenWidth()) continue;
+      if (scaledCellClipWidth > 0 && (screenX < *x || screenX >= *x + scaledCellClipWidth)) continue;
 
-        const int srcX = dstX * 2;
-        const int srcY = dstY * 2;
-        bool hasInk = false;
-        for (int sampleY = 0; sampleY < 2 && srcY + sampleY < srcHeight; sampleY++) {
-          for (int sampleX = 0; sampleX < 2 && srcX + sampleX < srcWidth; sampleX++) {
-            const int pixelX = srcX + sampleX;
-            const int byteIndex = (srcY + sampleY) * bytesPerRow + pixelX / 8;
-            const int bitIndex = 7 - pixelX % 8;
-            if ((fallback.bitmap[byteIndex] >> bitIndex) & 1) hasInk = true;
+      const int srcX0 = textFallbackSourceStart(dstX, scale);
+      const int srcX1 = textFallbackSourceEnd(dstX, srcWidth, scale);
+      bool hasInk = false;
+      for (int srcY = srcY0; srcY < srcY1 && !hasInk; srcY++) {
+        for (int srcX = srcX0; srcX < srcX1; srcX++) {
+          const int byteIndex = srcY * bytesPerRow + srcX / 8;
+          const int bitIndex = 7 - srcX % 8;
+          const uint8_t byte = builtin ? pgm_read_byte(&bitmap[byteIndex]) : bitmap[byteIndex];
+          if ((byte >> bitIndex) & 1) {
+            hasInk = true;
+            break;
           }
         }
-        if (hasInk) drawPixel(screenX, screenY, pixelState);
       }
+      if (hasInk) drawPixel(screenX, screenY, pixelState);
     }
-    *x += std::max(1, (fallback.advance + 1) / 2);
-  } else if (fallback.kind == TextFallbackGlyph::Kind::BuiltinCjk) {
-    const uint8_t* bitmap = CjkUiFont20::getCjkUiGlyph(cp);
-    const int srcWidth = CjkUiFont20::CJK_UI_FONT_WIDTH;
-    const int srcHeight = CjkUiFont20::CJK_UI_FONT_HEIGHT;
-    const int bytesPerRow = CjkUiFont20::CJK_UI_FONT_BYTES_PER_ROW;
-    if (!bitmap || fallback.advance <= 0) return;
-
-    const int drawY = baselineY - (srcHeight - CJK_UI_FONT_DESCENT) / 2;
-    const int dstWidth = (srcWidth + 1) / 2;
-    const int dstHeight = (srcHeight + 1) / 2;
-    for (int dstY = 0; dstY < dstHeight; dstY++) {
-      const int screenY = drawY + dstY;
-      if (screenY < 0 || screenY >= getScreenHeight()) continue;
-
-      for (int dstX = 0; dstX < dstWidth; dstX++) {
-        const int screenX = *x + dstX;
-        if (screenX < 0 || screenX >= getScreenWidth()) continue;
-
-        const int srcX = dstX * 2;
-        const int srcY = dstY * 2;
-        bool hasInk = false;
-        for (int sampleY = 0; sampleY < 2 && srcY + sampleY < srcHeight; sampleY++) {
-          for (int sampleX = 0; sampleX < 2 && srcX + sampleX < srcWidth; sampleX++) {
-            const int pixelX = srcX + sampleX;
-            const int byteIndex = (srcY + sampleY) * bytesPerRow + pixelX / 8;
-            const int bitIndex = 7 - pixelX % 8;
-            if ((pgm_read_byte(&bitmap[byteIndex]) >> bitIndex) & 1) hasInk = true;
-          }
-        }
-        if (hasInk) drawPixel(screenX, screenY, pixelState);
-      }
-    }
-    *x += std::max(1, (fallback.advance + 1) / 2);
   }
+  *x += scalePositiveTextAdvance(fallback.advance, halfScale);
 }
 
 void GfxRenderer::renderTextFallbackRotated90CW(const TextFallbackGlyph& fallback, const uint32_t cp, const int cursorX,
                                                 const int cursorY, const bool pixelState, const bool halfScale) const {
-  const int scale = halfScale ? 2 : 1;
   const auto renderBitmap = [&](const uint8_t* bitmap, const int srcWidth, const int srcHeight, const int bytesPerRow,
                                 const int ascender, const int top, const int left, const int cellClipWidth,
                                 const bool progmemBitmap) {
     if (!bitmap || srcWidth <= 0 || srcHeight <= 0) return;
 
-    const int dstWidth = (srcWidth + scale - 1) / scale;
-    const int dstHeight = (srcHeight + scale - 1) / scale;
-    const int outerBase = cursorX + ascender / scale - top / scale;
-    const int innerBase = cursorY - left / scale;
-    const int scaledCellClipWidth = cellClipWidth > 0 ? (cellClipWidth + scale - 1) / scale : cellClipWidth;
+    const TextFallbackScale scale = composeHalfScale(fallback.scale, halfScale);
+    const int dstWidth = scaleTextFallbackExtent(srcWidth, scale);
+    const int dstHeight = scaleTextFallbackExtent(srcHeight, scale);
+    const int outerBase = cursorX + scaleTextFallbackMetric(ascender, scale) - scaleTextFallbackMetric(top, scale);
+    const int innerBase = cursorY - scaleTextFallbackMetric(left, scale);
+    const int scaledCellClipWidth = cellClipWidth > 0 ? scaleTextFallbackExtent(cellClipWidth, scale) : cellClipWidth;
     if (!glyphIntersectsStrip(outerBase, innerBase - (dstWidth - 1), outerBase + dstHeight - 1, innerBase)) return;
 
     for (int dstY = 0; dstY < dstHeight; dstY++) {
@@ -914,16 +919,20 @@ void GfxRenderer::renderTextFallbackRotated90CW(const TextFallbackGlyph& fallbac
         if (screenY < 0 || screenY >= getScreenHeight()) continue;
         if (scaledCellClipWidth > 0 && (screenY > cursorY || screenY <= cursorY - scaledCellClipWidth)) continue;
 
-        const int srcX = dstX * scale;
-        const int srcY = dstY * scale;
+        const int srcX0 = textFallbackSourceStart(dstX, scale);
+        const int srcX1 = textFallbackSourceEnd(dstX, srcWidth, scale);
+        const int srcY0 = textFallbackSourceStart(dstY, scale);
+        const int srcY1 = textFallbackSourceEnd(dstY, srcHeight, scale);
         bool hasInk = false;
-        for (int sampleY = 0; sampleY < scale && srcY + sampleY < srcHeight; sampleY++) {
-          for (int sampleX = 0; sampleX < scale && srcX + sampleX < srcWidth; sampleX++) {
-            const int pixelX = srcX + sampleX;
-            const int byteIndex = (srcY + sampleY) * bytesPerRow + pixelX / 8;
-            const int bitIndex = 7 - pixelX % 8;
+        for (int srcY = srcY0; srcY < srcY1 && !hasInk; srcY++) {
+          for (int srcX = srcX0; srcX < srcX1; srcX++) {
+            const int byteIndex = srcY * bytesPerRow + srcX / 8;
+            const int bitIndex = 7 - srcX % 8;
             const uint8_t byte = progmemBitmap ? pgm_read_byte(&bitmap[byteIndex]) : bitmap[byteIndex];
-            if ((byte >> bitIndex) & 1) hasInk = true;
+            if ((byte >> bitIndex) & 1) {
+              hasInk = true;
+              break;
+            }
           }
         }
         if (hasInk) drawPixel(screenX, screenY, pixelState);
@@ -933,11 +942,13 @@ void GfxRenderer::renderTextFallbackRotated90CW(const TextFallbackGlyph& fallbac
 
   if (fallback.kind == TextFallbackGlyph::Kind::External) {
     if (!fallback.font) return;
-    const int srcWidth = fallback.metrics.width > 0 ? fallback.metrics.width : fallback.font->getCharWidth();
-    const int srcHeight = fallback.metrics.height > 0 ? fallback.metrics.height : fallback.font->getCharHeight();
+    const int srcWidth =
+        fallback.sourceMetrics.width > 0 ? fallback.sourceMetrics.width : fallback.font->getCharWidth();
+    const int srcHeight =
+        fallback.sourceMetrics.height > 0 ? fallback.sourceMetrics.height : fallback.font->getCharHeight();
     renderBitmap(fallback.bitmap, srcWidth, srcHeight, (srcWidth + 7) / 8,
-                 getExternalFontAscenderForRendering(*fallback.font) + fallback.baselineOffset, fallback.metrics.top,
-                 fallback.metrics.left, fallback.cellClipWidth, false);
+                 fallback.sourceAscender + fallback.sourceBaselineOffset, fallback.sourceMetrics.top,
+                 fallback.sourceMetrics.left, fallback.sourceCellClipWidth, false);
   } else if (fallback.kind == TextFallbackGlyph::Kind::BuiltinCjk) {
     const uint8_t* bitmap = CjkUiFont20::getCjkUiGlyph(cp);
     const int srcWidth = CjkUiFont20::CJK_UI_FONT_WIDTH;
@@ -994,7 +1005,8 @@ int GfxRenderer::measureTextAdvance(const int resolvedFontId, const EpdFontFamil
     const bool hasExactEpdGlyph = fontFamily.hasCodepoint(cp, style);
     const EpdGlyph* glyph = hasExactEpdGlyph ? fontFamily.getGlyph(cp, style) : nullptr;
     TextFallbackGlyph fallback;
-    const bool hasFallback = !hasExactEpdGlyph && resolveTextFallback(resolvedFontId, cp, false, &fallback);
+    const bool hasFallback =
+        !hasExactEpdGlyph && resolveTextFallback(resolvedFontId, fontFamily, style, cp, false, &fallback);
     if (!glyph && !hasFallback) glyph = fontFamily.getGlyph(cp, style);
 
     if (prevCp != 0) {
@@ -1139,7 +1151,7 @@ bool GfxRenderer::drawText(const int fontId, const int x, const int y, const cha
     const bool hasExactEpdGlyph = font.hasCodepoint(cp, style);
     const EpdGlyph* glyph = hasExactEpdGlyph ? font.getGlyph(cp, style) : nullptr;
     TextFallbackGlyph fallback;
-    const bool hasFallback = !hasExactEpdGlyph && resolveTextFallback(resolvedFontId, cp, true, &fallback);
+    const bool hasFallback = !hasExactEpdGlyph && resolveTextFallback(resolvedFontId, font, style, cp, true, &fallback);
     if (!glyph && !hasFallback) glyph = font.getGlyph(cp, style);
 
     // Kerning belongs to one EPD font. Do not carry it across an external or
@@ -2757,7 +2769,7 @@ void GfxRenderer::drawTextRotated90CW(const int fontId, const int x, const int y
     const bool hasExactEpdGlyph = font.hasCodepoint(cp, style);
     const EpdGlyph* glyph = hasExactEpdGlyph ? font.getGlyph(cp, style) : nullptr;
     TextFallbackGlyph fallback;
-    const bool hasFallback = !hasExactEpdGlyph && resolveTextFallback(resolvedFontId, cp, true, &fallback);
+    const bool hasFallback = !hasExactEpdGlyph && resolveTextFallback(resolvedFontId, font, style, cp, true, &fallback);
     if (!glyph && !hasFallback) glyph = font.getGlyph(cp, style);
 
     if (prevCp != 0) {
@@ -2776,7 +2788,7 @@ void GfxRenderer::drawTextRotated90CW(const int fontId, const int x, const int y
       if (fallback.kind == TextFallbackGlyph::Kind::External && fallback.font) {
         const EpdFontData* fontData = font.getData(style);
         const int epdAscender = fontData ? fontData->ascender : 0;
-        const int fallbackAscender = getExternalFontAscenderForRendering(*fallback.font) + fallback.baselineOffset;
+        const int fallbackAscender = fallback.ascender + fallback.baselineOffset;
         fallbackTop = epdAscender / scale - fallbackAscender / scale + fallback.metrics.top / scale;
       } else if (fallback.kind == TextFallbackGlyph::Kind::BuiltinCjk) {
         const EpdFontData* fontData = font.getData(style);
