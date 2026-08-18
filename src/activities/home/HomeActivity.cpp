@@ -325,6 +325,7 @@ void HomeActivity::render(RenderLock&& lock) {
   const auto pageWidth = renderer.getScreenWidth();
   const auto pageHeight = renderer.getScreenHeight();
   const Rect menuRect = getMenuRect(metrics, pageWidth, pageHeight);
+  const int renderedSelectorIndex = selectorIndex;
 #if defined(SSD1677_PROBE_DEBUG) && SSD1677_PROBE_DEBUG
   const unsigned long renderStart = millis();
   unsigned long afterClear = renderStart;
@@ -352,15 +353,16 @@ void HomeActivity::render(RenderLock&& lock) {
   addMenuItem(tr(STR_FILE_TRANSFER), Transfer);
   addMenuItem(tr(STR_SETTINGS_TITLE), Settings);
 
-  const bool menuOnlyPartialUpdate = canUseMenuOnlyPartialUpdate(lastRenderedSelectorIndex, selectorIndex);
-  bool coverOnlyPartialUpdate = canUseCoverOnlyPartialUpdate(lastRenderedSelectorIndex, selectorIndex);
-  const int selectedMenuIndex =
-      metrics.homeContinueReadingInMenu ? selectorIndex : selectorIndex - static_cast<int>(recentBooks.size());
+  const bool menuOnlyPartialUpdate = canUseMenuOnlyPartialUpdate(lastRenderedSelectorIndex, renderedSelectorIndex);
+  bool coverOnlyPartialUpdate = canUseCoverOnlyPartialUpdate(lastRenderedSelectorIndex, renderedSelectorIndex);
+  const int selectedMenuIndex = metrics.homeContinueReadingInMenu
+                                    ? renderedSelectorIndex
+                                    : renderedSelectorIndex - static_cast<int>(recentBooks.size());
 #if defined(SSD1677_PROBE_DEBUG) && SSD1677_PROBE_DEBUG
   LOG_INF("HOME", "menu-update from=%d to=%d recent=%u first=%d full=%d cover=%d/%d partial=%d rows=%d",
-          lastRenderedSelectorIndex, selectorIndex, static_cast<unsigned>(recentBooks.size()), firstRenderDone ? 1 : 0,
-          fullRedrawRequired ? 1 : 0, isCoverSelectionIndex(lastRenderedSelectorIndex) ? 1 : 0,
-          isCoverSelectionIndex(selectorIndex) ? 1 : 0, menuOnlyPartialUpdate ? 1 : 0,
+          lastRenderedSelectorIndex, renderedSelectorIndex, static_cast<unsigned>(recentBooks.size()),
+          firstRenderDone ? 1 : 0, fullRedrawRequired ? 1 : 0, isCoverSelectionIndex(lastRenderedSelectorIndex) ? 1 : 0,
+          isCoverSelectionIndex(renderedSelectorIndex) ? 1 : 0, menuOnlyPartialUpdate ? 1 : 0,
           GUI.supportsHomeMenuRowUpdates() ? 1 : 0);
 #endif
   int firstUpdatedMenuIndex = 0;
@@ -374,7 +376,7 @@ void HomeActivity::render(RenderLock&& lock) {
     if (coverOnlyPartialUpdate) {
       coverDirtyRect = GUI.drawHomeCoverSelectionUpdate(
           renderer, Rect{0, metrics.homeTopPadding, pageWidth, metrics.homeCoverTileHeight}, recentBooks,
-          lastRenderedSelectorIndex, selectorIndex);
+          lastRenderedSelectorIndex, renderedSelectorIndex);
       coverOnlyPartialUpdate = coverDirtyRect.width > 0 && coverDirtyRect.height > 0;
       if (coverOnlyPartialUpdate) {
         renderer.setPartialUpdateRect(coverDirtyRect.x, coverDirtyRect.y, coverDirtyRect.width, coverDirtyRect.height);
@@ -386,8 +388,9 @@ void HomeActivity::render(RenderLock&& lock) {
     const int previousMenuIndex = metrics.homeContinueReadingInMenu
                                       ? lastRenderedSelectorIndex
                                       : lastRenderedSelectorIndex - static_cast<int>(recentBooks.size());
-    const int currentMenuIndex =
-        metrics.homeContinueReadingInMenu ? selectorIndex : selectorIndex - static_cast<int>(recentBooks.size());
+    const int currentMenuIndex = metrics.homeContinueReadingInMenu
+                                     ? renderedSelectorIndex
+                                     : renderedSelectorIndex - static_cast<int>(recentBooks.size());
     firstUpdatedMenuIndex = std::min(previousMenuIndex, currentMenuIndex);
     lastUpdatedMenuIndex = std::max(previousMenuIndex, currentMenuIndex);
     const Rect dirtyRect = GUI.getHomeMenuDirtyRect(menuRect, previousMenuIndex, currentMenuIndex);
@@ -440,7 +443,7 @@ void HomeActivity::render(RenderLock&& lock) {
     }
     GUI.drawRecentBookCover(
         renderer, Rect{0, metrics.homeTopPadding, pageWidth, metrics.homeCoverTileHeight}, *booksForCover,
-        selectorIndex, coverRendered, coverBufferStored, bufferRestored,
+        renderedSelectorIndex, coverRendered, coverBufferStored, bufferRestored,
         [this, &lock]() {
           if (lock.isStale() || !storeCoverBuffer()) return false;
           if (!lock.isStale()) return true;
@@ -483,7 +486,7 @@ void HomeActivity::render(RenderLock&& lock) {
 
 #if defined(SSD1677_PROBE_DEBUG) && SSD1677_PROBE_DEBUG
   if (!menuOnlyPartialUpdate && !coverOnlyPartialUpdate &&
-      (isCoverSelectionIndex(lastRenderedSelectorIndex) || isCoverSelectionIndex(selectorIndex))) {
+      (isCoverSelectionIndex(lastRenderedSelectorIndex) || isCoverSelectionIndex(renderedSelectorIndex))) {
     const unsigned long afterHints = millis();
     LOG_INF("HOME", "cover-profile clear=%lu restore=%lu header=%lu cover=%lu menu=%lu hints=%lu total=%lu",
             afterClear - renderStart, afterRestore - afterClear, afterHeader - afterRestore, afterCover - afterHeader,
@@ -496,16 +499,31 @@ void HomeActivity::render(RenderLock&& lock) {
 #endif
 
   // Menu-only path uses setPartialUpdateRect + displayBuffer so dark mode still
-  // takes the windowed dark redrive branch. Full redraws keep the existing policy.
+  // takes the windowed dark redrive branch. The first complete home frame must
+  // finish synchronously: partial navigation is only safe once the panel, not
+  // just the shared framebuffer, has a known home-screen baseline.
   if (menuOnlyPartialUpdate || coverOnlyPartialUpdate) {
     renderer.displayBuffer();
+  } else if (!firstRenderDone) {
+    renderer.waitRefreshComplete();
+    if (lock.isStale()) {
+      fullRedrawRequired = true;
+      freeCoverBuffer();
+      coverRendered = false;
+      return;
+    }
+    if (renderer.isDarkMode()) {
+      renderer.displayBufferDarkRedrive();
+    } else {
+      renderer.displayBuffer();
+    }
   } else if (renderer.isDarkMode()) {
     renderer.displayBufferDarkRedrive();
   } else {
     renderer.displayBufferAsync();
   }
 
-  lastRenderedSelectorIndex = selectorIndex;
+  lastRenderedSelectorIndex = renderedSelectorIndex;
   fullRedrawRequired = false;
 
   if (!firstRenderDone) {
