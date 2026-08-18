@@ -42,7 +42,9 @@ def verify_shipping_translations() -> bool:
 
         failed = True
         print(f"{language}: built-in CJK UI font is missing {len(missing)} translated characters:")
-        print("  " + " ".join(f"U+{codepoint:04X} {chr(codepoint)}" for codepoint in missing))
+        # Keep diagnostics printable on Windows consoles that still use a
+        # non-UTF-8 code page. The codepoint is sufficient to locate the glyph.
+        print("  " + " ".join(f"U+{codepoint:04X}" for codepoint in missing))
 
     if not failed:
         print(f"Built-in CJK UI font covers all shipping translations ({len(generated)} glyphs).")
