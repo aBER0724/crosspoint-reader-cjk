@@ -127,13 +127,14 @@ void EpubReaderChapterSelectionActivity::loop() {
   });
 }
 
-void EpubReaderChapterSelectionActivity::render(RenderLock&&) {
+void EpubReaderChapterSelectionActivity::render(RenderLock&& lock) {
   auto metrics = UITheme::getInstance().getMetrics();
   Rect screen = UITheme::getInstance().getScreenSafeArea(renderer, true, false);
   const int contentTop = screen.y + metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
   const int contentHeight = screen.height - contentTop - metrics.verticalSpacing;
   const int totalItems = getTotalItems();
   const int pageItems = GUI.getListPageItems(contentHeight, false);
+  const bool firstRender = lastRenderedSelectorIndex < 0;
   const bool selectionChanged = lastRenderedSelectorIndex >= 0 && lastRenderedSelectorIndex != selectorIndex;
   const bool sameListPage = selectionChanged && lastRenderedSelectorIndex / pageItems == selectorIndex / pageItems;
   const bool partialUpdate = !renderer.isDarkMode() && !fullRedrawRequired && sameListPage;
@@ -164,7 +165,21 @@ void EpubReaderChapterSelectionActivity::render(RenderLock&&) {
     GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
   }
 
-  if (renderer.isDarkMode()) {
+  if (firstRender) {
+    // A directory opened from the reader menu cannot use the old activity as
+    // its differential baseline. Finish any active waveform, then establish a
+    // complete directory frame before enabling partial selection updates.
+    renderer.waitRefreshComplete();
+    if (lock.isStale()) {
+      fullRedrawRequired = true;
+      return;
+    }
+    if (renderer.isDarkMode()) {
+      renderer.displayBufferDarkRedrive();
+    } else {
+      renderer.displayBuffer();
+    }
+  } else if (renderer.isDarkMode()) {
     renderer.displayBufferDarkRedrive();
   } else {
     renderer.displayBufferAsync();
