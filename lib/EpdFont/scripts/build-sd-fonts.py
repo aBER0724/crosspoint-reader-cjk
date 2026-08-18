@@ -35,6 +35,7 @@ import threading
 import time
 import socket
 import urllib.request
+import zipfile
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
@@ -91,6 +92,37 @@ def download_font(url: str, dest: Path, retries: int = 3) -> Path:
     size_kb = dest.stat().st_size / 1024
     print(f"  Downloaded {dest.name} ({size_kb:.0f} KB)")
     return dest
+
+
+def extract_archive_member(archive_path: Path, member: str, family_name: str, style_name: str) -> Path:
+    """Extract a single font from a ZIP release asset and cache it."""
+    suffix = Path(member).suffix
+    if suffix.lower() not in (".ttf", ".otf"):
+        raise ValueError(f"{family_name}/{style_name}: archive member must be a TTF or OTF file")
+
+    cached = DOWNLOAD_DIR / family_name / f"{style_name}_{archive_path.stem}{suffix}"
+    if cached.exists() and cached.stat().st_mtime_ns >= archive_path.stat().st_mtime_ns:
+        return cached
+
+    tmp_path = None
+    try:
+        with zipfile.ZipFile(archive_path) as archive:
+            info = archive.getinfo(member)
+            cached.parent.mkdir(parents=True, exist_ok=True)
+            with archive.open(info) as source, tempfile.NamedTemporaryFile(
+                dir=cached.parent, suffix=suffix, delete=False
+            ) as output:
+                tmp_path = Path(output.name)
+                shutil.copyfileobj(source, output)
+    except (KeyError, zipfile.BadZipFile) as e:
+        raise RuntimeError(f"{family_name}/{style_name}: cannot extract {member} from {archive_path.name}") from e
+    except Exception:
+        if tmp_path is not None:
+            tmp_path.unlink(missing_ok=True)
+        raise
+
+    tmp_path.replace(cached)
+    return cached
 
 
 def extract_static_instance(source_path: Path, axes: dict, family_name: str, style_name: str) -> Path:
@@ -168,6 +200,9 @@ def resolve_font_path(style_spec: dict, family_name: str, style_name: str) -> Pa
         resolved = download_font(url, dest)
     else:
         raise ValueError(f"{family_name}/{style_name}: must have 'path' or 'url'")
+
+    if "archive_member" in style_spec:
+        resolved = extract_archive_member(resolved, style_spec["archive_member"], family_name, style_name)
 
     # If variable font axes are specified, extract a static instance
     if "variable" in style_spec:

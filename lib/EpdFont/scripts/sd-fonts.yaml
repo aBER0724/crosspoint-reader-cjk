@@ -92,6 +92,42 @@ families:
     styles:
       regular: {url: "https://raw.githubusercontent.com/chiron-fonts/chiron-go-round-tc/release/STATIC_OTF/ChironGoRoundTC-400R.otf"}
 
+  - name: JoyDisplaySC
+    description: "Narrow oblique Simplified Chinese display face derived from Smiley Sans"
+    intervals: latin-ext,cjk
+    sizes: [8, 10, 12, 14, 16, 18]
+    force_autohint: true
+    styles:
+      regular:
+        url: "https://github.com/atelier-anchor/smiley-sans/releases/download/v2.0.1/smiley-sans-v2.0.1.zip"
+        archive_member: "SmileySans-Oblique.ttf"
+
+  - name: VermilionFangsong
+    description: "Bookish Simplified Chinese Fangsong face derived from Zhuque Fangsong"
+    intervals: latin-ext,cjk
+    sizes: [8, 10, 12, 14, 16, 18]
+    force_autohint: true
+    styles:
+      regular:
+        url: "https://github.com/TrionesType/zhuque/releases/download/v0.212/ZhuqueFangsong-v0.212.zip"
+        archive_member: "ZhuqueFangsong-Regular.ttf"
+
+  - name: BrightReadingSC
+    description: "Print-inspired Simplified Chinese reading face derived from LXGW Bright GB"
+    intervals: latin-ext,cjk
+    sizes: [8, 10, 12, 14, 16, 18]
+    force_autohint: true
+    styles:
+      regular: {url: "https://raw.githubusercontent.com/lxgw/LxgwBright/f9e978f4944cb36b081941a001e92a02e7dcc3d3/LXGWBrightGB/LXGWBrightGB-Regular.ttf"}
+
+  - name: BrightReadingTC
+    description: "Print-inspired Traditional Chinese reading face derived from LXGW Bright TC"
+    intervals: latin-ext,cjk
+    sizes: [8, 10, 12, 14, 16, 18]
+    force_autohint: true
+    styles:
+      regular: {url: "https://raw.githubusercontent.com/lxgw/LxgwBright/f9e978f4944cb36b081941a001e92a02e7dcc3d3/LXGWBrightTC/LXGWBrightTC-Regular.ttf"}
+
   # 鈹€鈹€ Serif 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
   - name: Literata
