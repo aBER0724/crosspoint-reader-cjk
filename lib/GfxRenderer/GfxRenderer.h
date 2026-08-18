@@ -158,7 +158,7 @@ class GfxRenderer {
   // Render CJK character using built-in UI font (from PROGMEM)
   void renderBuiltinCjkGlyph(uint32_t cp, int* x, int y, bool pixelState) const;
   // Check if fontId is a reader font (should use external Chinese font)
-  static bool isReaderFont(int fontId);
+  bool isReaderFont(int fontId) const;
   // Get effective font ID, handling fallback for external reader font IDs
   int getEffectiveFontId(int fontId) const;
   // Returns the configured per-character spacing for ASCII digits/letters,
