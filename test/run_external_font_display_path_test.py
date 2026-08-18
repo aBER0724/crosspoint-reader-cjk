@@ -223,16 +223,22 @@ CASES = [
         ],
     },
     {
-        "name": "TextSettingsActivity keeps prebuilt CJK sizes fixed and visible",
+        "name": "TextSettingsActivity exposes installed reader sizes without scaling CJK fonts",
         "path": ROOT / "src" / "activities" / "settings" / "TextSettingsActivity.cpp",
         "required": [
             'sizes_.push_back({uiPointSizeLabel(families[sdIndex]), 12});',
-            "const SdCardFontFileInfo* currentFile = sdFamily->findClosestReaderSize(SETTINGS.fontSize);",
-            'sizes_.push_back({std::to_string(currentFile->pointSize) + " pt", SETTINGS.fontSize});',
-            "return previewTarget_ == FontTarget::Ui ||",
+            "for (uint8_t sizeIndex = 0; sizeIndex < CrossPointSettings::FONT_SIZE_COUNT; ++sizeIndex) {",
+            "const SdCardFontFileInfo* file = sdFamily->findClosestReaderSize(sizeIndex);",
+            "if (!file ||",
+            "std::find(addedPointSizes.begin(), addedPointSizes.end(), file->pointSize) != addedPointSizes.end()",
+            'sizes_.push_back({std::to_string(file->pointSize) + " pt", sizeIndex});',
+            "const SdCardFontFileInfo* selectedFile = sdFamily->findClosestReaderSize(SETTINGS.fontSize);",
+            "fonts_[currentFamilyIndex_].source != FontEntry::Source::Builtin && sizes_.size() == 1",
             "if (hasFixedExternalSize() || listIndex < 0 || listIndex >= static_cast<int>(sizes_.size())) return;",
         ],
-        "forbidden": [],
+        "forbidden": [
+            "const SdCardFontFileInfo* currentFile = sdFamily->findClosestReaderSize(SETTINGS.fontSize);\n    if (currentFile) sizes_.push_back({std::to_string(currentFile->pointSize) + \" pt\", SETTINGS.fontSize});",
+        ],
     },
     {
         "name": "TextSettingsActivity preserves reader layout and style controls",
