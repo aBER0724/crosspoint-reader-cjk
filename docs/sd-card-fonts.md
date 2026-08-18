@@ -24,7 +24,7 @@ There are three ways to install fonts:
 ### Option 3: Manual SD card copy
 
 1. Download font files from the
-   [CJK font repository](https://github.com/aBER0724/crosspoint-fonts)
+   [CJK font repository](https://github.com/aBER0724/crosspoint-cjk-fonts)
 2. Copy font family folders to one of two locations on your SD card:
 
    - `/.fonts/` — hidden directory (preferred; keeps the SD root tidy
@@ -69,7 +69,8 @@ The fallback is **size-matched**. The built-in UI fonts render at 8 pt
 so CrossPoint loads your SD family at those sizes too and maps each UI font to
 its same-size SD font. CJK book names therefore appear at the same size as the
 Latin text around them. For this to work the family must contain `.cpfont`
-files at sizes **8, 10 and 12** (in addition to the reader sizes 12–18); any UI
+files at sizes **8, 10 and 12** (in addition to the reader sizes 14, 16, 18,
+and 22); any UI
 size missing from the family simply keeps showing boxes for CJK at that size.
 
 When converting your own font, include the UI sizes:
@@ -77,7 +78,7 @@ When converting your own font, include the UI sizes:
     python3 lib/EpdFont/scripts/fontconvert_sdcard.py \
       MyCJKFont-Regular.otf \
       --intervals cjk \
-      --sizes 8,10,12,14,16,18 \
+      --sizes 8,10,12,14,16,18,22 \
       --style regular \
       --name MyCJKFont \
       --output-dir ./MyCJKFont/
@@ -101,10 +102,10 @@ What this means in practice:
 ## Available Pre-Built Fonts
 
 The current CJK list is maintained in the
-[CJK font repository](https://github.com/aBER0724/crosspoint-fonts).
+[CJK font repository](https://github.com/aBER0724/crosspoint-cjk-fonts).
 That independent repository is the reproducible build source and Release CDN;
 generated binaries are not stored in this firmware repository. Its Actions
-workflow validates SHA-256-locked upstream sources, builds the six physical
+workflow validates SHA-256-locked upstream sources, builds the seven physical
 sizes, generates manifest schema v2, and publishes the `sd-fonts-m2-b4`
 Release.
 
@@ -139,7 +140,7 @@ To convert your own TrueType/OpenType fonts:
     python3 lib/EpdFont/scripts/fontconvert_sdcard.py \
       MyFont-Regular.ttf \
       --intervals latin-ext \
-      --sizes 12,14,16,18 \
+      --sizes 14,16,18,22 \
       --style regular \
       --name MyFont \
       --output-dir ./MyFont/
@@ -152,7 +153,7 @@ To convert your own TrueType/OpenType fonts:
       --italic MyFont-Italic.ttf \
       --bolditalic MyFont-BoldItalic.ttf \
       --intervals latin-ext \
-      --sizes 12,14,16,18 \
+      --sizes 14,16,18,22 \
       --name MyFont \
       --output-dir ./MyFont/
 

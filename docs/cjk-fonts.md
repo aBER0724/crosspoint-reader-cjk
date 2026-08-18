@@ -14,8 +14,8 @@ source of truth for the current format and workflow.
   full-width punctuation.
 - Add the `hangul` preset when Korean coverage is required.
 - Generate 8, 10, and 12 pt files for size-matched UI rendering.
-- Generate the reader sizes you intend to select, normally 12, 14, 16, and
-  18 pt.
+- Generate the standard reader sizes: 14, 16, 18, and 22 pt. Already-installed
+  12/14/16/18 families remain compatible.
 - Keep every size in one family directory using
   `<Family>/<Family>_<size>.cpfont`.
 
@@ -29,6 +29,7 @@ For example:
   NotoSansSC_14.cpfont
   NotoSansSC_16.cpfont
   NotoSansSC_18.cpfont
+  NotoSansSC_22.cpfont
 ```
 
 ## Install And Select
@@ -47,7 +48,7 @@ SD card can be used.
 python3 lib/EpdFont/scripts/fontconvert_sdcard.py \
   MyCJKFont-Regular.otf \
   --intervals latin-ext,cjk \
-  --sizes 8,10,12,14,16,18 \
+  --sizes 8,10,12,14,16,18,22 \
   --style regular \
   --name MyCJKFont \
   --output-dir ./MyCJKFont/

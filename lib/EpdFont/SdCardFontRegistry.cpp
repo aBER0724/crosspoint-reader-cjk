@@ -28,52 +28,53 @@ const SdCardFontFileInfo* SdCardFontFamilyInfo::findClosestReaderSize(const uint
   if (sizes.empty()) return nullptr;
   std::sort(sizes.begin(), sizes.end());
 
-  // If the family provides the standard reader sizes, map the enum straight to
-  // them. This keeps body text correct even when the family also ships smaller
-  // UI-fallback sizes (e.g. 8/10 for CJK book titles) that would otherwise
-  // shift the ordinal mapping below and make reading too small.
-  static constexpr uint8_t kReaderTargets[] = {12, 14, 16, 18};
-  const auto hasSizeForStyle = [&](uint8_t s) { return std::find(sizes.begin(), sizes.end(), s) != sizes.end(); };
-  if (hasSizeForStyle(12) && hasSizeForStyle(14) && hasSizeForStyle(16) && hasSizeForStyle(18)) {
-    const uint8_t idx = fontSizeEnum < 4 ? fontSizeEnum : 3;
-    return findFile(kReaderTargets[idx], style);
+  const uint8_t idx = fontSizeEnum < READER_POINT_SIZES.size() ? fontSizeEnum : READER_POINT_SIZES.size() - 1;
+  const auto hasSizeForStyle = [&](const uint8_t size) {
+    return std::find(sizes.begin(), sizes.end(), size) != sizes.end();
+  };
+  const auto providesAll = [&](const auto& targets) {
+    return std::all_of(targets.begin(), targets.end(), hasSizeForStyle);
+  };
+
+  // Prefer the current 14/16/18/22 reader catalog. Check it before the
+  // legacy set because the two overlap at 14/16/18 and a current family may
+  // also include 12 pt for UI fallback.
+  if (providesAll(READER_POINT_SIZES)) {
+    return findFile(READER_POINT_SIZES[idx], style);
   }
 
-  // When the family provides at least 4 sizes, use ordinal (index-based)
-  // selection so custom-built font sets (e.g. 10/12/14/16) map SMALL to
-  // the smallest file, not to a hardcoded 12pt target.
-  if (sizes.size() >= 4) {
-    uint8_t idx = fontSizeEnum;
-    if (idx >= sizes.size()) idx = sizes.size() - 1;
-    return findFile(sizes[idx], style);
+  // Keep already-installed 12/14/16/18 families mapped exactly as before.
+  if (providesAll(LEGACY_READER_POINT_SIZES)) {
+    return findFile(LEGACY_READER_POINT_SIZES[idx], style);
   }
 
-  // Fewer sizes than enum slots (e.g. CJK packs with only 2-3 sizes):
-  // fall back to closest-match against the built-in reader targets.
-  uint8_t target = 14;
-  switch (fontSizeEnum) {
-    case 0:
-      target = 12;
-      break;
-    case 2:
-      target = 16;
-      break;
-    case 3:
-      target = 18;
-      break;
-    case 1:
-    default:
-      target = 14;
-      break;
+  // For custom families, keep UI fallback files out of ordinal reader-size
+  // selection. Size 12 is excluded only when 8 or 10 is present too, because
+  // a reader-only custom family may legitimately use 12 pt as its smallest
+  // physical reader size.
+  std::vector<uint8_t> readerSizes;
+  readerSizes.reserve(sizes.size());
+  const bool hasSmallUiSize = hasSizeForStyle(UI_POINT_SIZES[0]) || hasSizeForStyle(UI_POINT_SIZES[1]);
+  for (const uint8_t size : sizes) {
+    const bool isUiOnly =
+        size == UI_POINT_SIZES[0] || size == UI_POINT_SIZES[1] || (hasSmallUiSize && size == UI_POINT_SIZES[2]);
+    if (!isUiOnly) readerSizes.push_back(size);
   }
 
+  if (readerSizes.size() >= READER_POINT_SIZES.size()) {
+    return findFile(readerSizes[idx], style);
+  }
+
+  // Sparse sets resolve to the closest current reader target. UI fallback
+  // sizes stay excluded whenever the family also exposes reader files.
+  const std::vector<uint8_t>& candidates = readerSizes.empty() ? sizes : readerSizes;
+  const uint8_t target = READER_POINT_SIZES[idx];
   const SdCardFontFileInfo* best = nullptr;
   uint8_t bestDelta = 255;
-  for (const auto& f : files) {
-    if (f.style != style) continue;
-    const uint8_t delta = f.pointSize > target ? f.pointSize - target : target - f.pointSize;
-    if (!best || delta < bestDelta || (delta == bestDelta && f.pointSize < best->pointSize)) {
-      best = &f;
+  for (const uint8_t candidate : candidates) {
+    const uint8_t delta = candidate > target ? candidate - target : target - candidate;
+    if (!best || delta < bestDelta || (delta == bestDelta && candidate < best->pointSize)) {
+      best = findFile(candidate, style);
       bestDelta = delta;
     }
   }

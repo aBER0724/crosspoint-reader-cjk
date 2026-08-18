@@ -193,10 +193,12 @@ CASES = [
         "forbidden": [],
     },
     {
-        "name": "TextSettingsActivity limits UI font targets to installed UI point sizes",
+        "name": "TextSettingsActivity uses the shared UI and reader size contract",
         "path": ROOT / "src" / "activities" / "settings" / "TextSettingsActivity.cpp",
         "required": [
-            "return family.hasSize(8) || family.hasSize(10) || family.hasSize(12);",
+            "SdCardFontFamilyInfo::UI_POINT_SIZES.begin()",
+            "SdCardFontFamilyInfo::UI_POINT_SIZES.end()",
+            "for (const uint8_t pointSize : SdCardFontFamilyInfo::UI_POINT_SIZES)",
             "if (font.source == FontEntry::Source::Builtin) {\n    targetCount = 1;",
             "if (!hasUiPointSize(families[font.sourceIndex])) targetCount = 1;",
             "const int selectedTarget = std::min(currentTarget, targetCount - 1);",
@@ -233,6 +235,8 @@ CASES = [
             "std::find(addedPointSizes.begin(), addedPointSizes.end(), file->pointSize) != addedPointSizes.end()",
             'sizes_.push_back({std::to_string(file->pointSize) + " pt", sizeIndex});',
             "const SdCardFontFileInfo* selectedFile = sdFamily->findClosestReaderSize(SETTINGS.fontSize);",
+            "Current CJK packs",
+            "14/16/18/22 pt",
             "fonts_[currentFamilyIndex_].source != FontEntry::Source::Builtin && sizes_.size() == 1",
             "if (hasFixedExternalSize() || listIndex < 0 || listIndex >= static_cast<int>(sizes_.size())) return;",
         ],
