@@ -151,6 +151,60 @@ CASES = [
         ],
     },
     {
+        "name": "FontDownloadActivity installs only the previewed point size",
+        "path": ROOT / "src" / "activities" / "settings" / "FontDownloadActivity.cpp",
+        "required": [
+            "downloadFamily(families_[familyIndex], fileIndex, PREVIEW_TMP_PATH);",
+            "const bool completeFamily = fileIndex < 0;",
+            "const size_t firstFileIndex = completeFamily ? 0 : static_cast<size_t>(fileIndex);",
+            "const size_t endFileIndex = completeFamily ? family.files.size() : firstFileIndex + 1;",
+            "const bool useStagedFile = !completeFamily && stagedFilePath && Storage.exists(stagedFilePath);",
+            "if (!Storage.rename(stagedFilePath, partPath.c_str())) {",
+        ],
+        "forbidden": [
+            "downloadFamily(families_[familyIndex]);",
+        ],
+    },
+    {
+        "name": "FontDownloadActivity preserves partial installs during whole-family operations",
+        "path": ROOT / "src" / "activities" / "settings" / "FontDownloadActivity.cpp",
+        "required": [
+            "family.partial = family.installed && (!hasReceipt || !allManifestFilesInstalled);",
+            "if (families_[i].installed && !families_[i].partial) continue;",
+            "if (!f.installed || f.partial) return true;",
+            "if (completeFamily) {\n    std::vector<std::string> retainedFilenames;",
+            "fontInstaller_.prepareFamilyPrune(family.name.c_str(), retainedFilenames)",
+        ],
+        "forbidden": [
+            "family.partial = family.installed && !hasReceipt;",
+        ],
+    },
+    {
+        "name": "FontInstaller transaction records distinguish complete and partial installs",
+        "path": ROOT / "src" / "FontInstaller.cpp",
+        "required": [
+            "constexpr uint8_t kTransactionRecordVersion1 = 1;",
+            "constexpr uint8_t kTransactionRecordVersion2 = 2;",
+            "completeFamily = true;",
+            "writeTransactionRecord(installingPath, fingerprint, completeFamily)",
+            "if (completeFamily) {\n    if (!writeTransactionRecord(receiptTempPath, fingerprint, true)) return false;",
+            "readTransactionRecord(receiptPath, installedFingerprint, completeFamily) && completeFamily",
+        ],
+        "forbidden": [],
+    },
+    {
+        "name": "TextSettingsActivity limits UI font targets to installed UI point sizes",
+        "path": ROOT / "src" / "activities" / "settings" / "TextSettingsActivity.cpp",
+        "required": [
+            "return family.hasSize(8) || family.hasSize(10) || family.hasSize(12);",
+            "if (!hasUiPointSize(families[font.sourceIndex])) targetCount = 1;",
+            "const int selectedTarget = std::min(currentTarget, targetCount - 1);",
+            "if (targetsUi && !hasUiPointSize(family)) return;",
+            'sizes_.push_back({uiPointSizeLabel(families[sdIndex]), 12});',
+        ],
+        "forbidden": [],
+    },
+    {
         "name": "BaseTheme button hints force BW render mode",
         "path": ROOT / "src" / "components" / "themes" / "BaseTheme.cpp",
         "required": [
@@ -210,7 +264,7 @@ CASES = [
         "name": "GfxRenderer always redrives dark-mode FAST/HALF UI",
         "path": ROOT / "lib" / "GfxRenderer" / "GfxRenderer.cpp",
         "required": [
-            'if (darkMode && (refreshMode == HalDisplay::FAST_REFRESH || refreshMode == HalDisplay::HALF_REFRESH)) {',
+            'if (darkMode &&\n      (effectiveRefreshMode == HalDisplay::FAST_REFRESH || effectiveRefreshMode == HalDisplay::HALF_REFRESH)) {',
             'display.displayBuffer(HalDisplay::DARK_REDRIVE, fadingFix);',
         ],
         "forbidden": [
@@ -228,7 +282,7 @@ CASES = [
             'partialX_ = partialY_ = partialW_ = partialH_ = 0;',
             'display.displayWindowDarkRedrive(physicalWindow.x, physicalWindow.y, physicalWindow.width,',
             'display.displayWindow(physicalWindow.x, physicalWindow.y, physicalWindow.width, physicalWindow.height,',
-            'display.displayBuffer(refreshMode, fadingFix);',
+            'display.displayBuffer(effectiveRefreshMode, fadingFix);',
         ],
         "forbidden": [],
     },
@@ -256,7 +310,7 @@ CASES = [
             "GUI.drawHomeCoverSelectionUpdate(",
             "if (!menuOnlyPartialUpdate && !coverOnlyPartialUpdate) {",
             "if (menuOnlyPartialUpdate || coverOnlyPartialUpdate) {",
-            "GUI.drawRecentBookCover(renderer, Rect{0, metrics.homeTopPadding, pageWidth, metrics.homeCoverTileHeight},",
+            "GUI.drawRecentBookCover(\n        renderer, Rect{0, metrics.homeTopPadding, pageWidth, metrics.homeCoverTileHeight}, *booksForCover,",
             "std::array<const char*, 6> menuItems{};",
             "GUI.drawButtonMenuRange(renderer, menuRect, menuItemCount, selectedMenuIndex, menuLabel, menuIcon,",
             "GUI.supportsHomeMenuRowUpdates()",
