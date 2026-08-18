@@ -12,8 +12,8 @@ constexpr size_t kStyleTocEntrySize = 32;
 constexpr uint16_t kVersion = 4;
 constexpr uint16_t kFlags = 1;
 constexpr uint8_t kMaxStyles = 4;
-constexpr uint32_t kMaxIntervals = 4096;
 constexpr uint32_t kMaxGlyphs = 65536;
+constexpr uint32_t kMaxIntervals = kMaxGlyphs;
 constexpr uint32_t kMaxKernEntries = 4096;
 constexpr uint32_t kUnicodeMax = 0x10FFFF;
 constexpr uint32_t kMaxEncodedOffset = std::numeric_limits<uint32_t>::max();
@@ -307,7 +307,8 @@ bool validateV4(const Reader& reader) {
 
     if (style.styleId >= kMaxStyles || (i > 0 && style.styleId <= styles[i - 1].styleId) ||
         style.intervalCount > kMaxIntervals || style.glyphCount > kMaxGlyphs ||
-        style.kernLeftEntryCount > kMaxKernEntries || style.kernRightEntryCount > kMaxKernEntries) {
+        style.intervalCount > style.glyphCount || style.kernLeftEntryCount > kMaxKernEntries ||
+        style.kernRightEntryCount > kMaxKernEntries) {
       return false;
     }
   }
