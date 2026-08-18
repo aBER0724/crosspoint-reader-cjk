@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -14,6 +15,12 @@ struct SdCardFontFileInfo {
 };
 
 struct SdCardFontFamilyInfo {
+  // Reader size slots are persisted as 0..3. Keep this mapping centralized so
+  // registry resolution, settings labels, and catalog tooling cannot drift.
+  inline static constexpr std::array<uint8_t, 3> UI_POINT_SIZES = {8, 10, 12};
+  inline static constexpr std::array<uint8_t, 4> READER_POINT_SIZES = {14, 16, 18, 22};
+  inline static constexpr std::array<uint8_t, 4> LEGACY_READER_POINT_SIZES = {12, 14, 16, 18};
+
   std::string name;  // directory name, e.g. "NotoSansCJK"
   std::vector<SdCardFontFileInfo> files;
 

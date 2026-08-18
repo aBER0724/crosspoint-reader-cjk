@@ -17,13 +17,13 @@
 
 #ifndef FONT_MANIFEST_URL
 // Manifest + .cpfont assets are published by the independent
-// aBER0724/crosspoint-fonts repository's release-fonts.yml workflow under the
+// aBER0724/crosspoint-cjk-fonts repository's release-fonts.yml workflow under the
 // "sd-fonts-m<META>-b<BIN>" tag. The tag derives its version numbers from
 // lib/EpdFont/scripts/cpfont_version.py.
 #define FONT_MANIFEST_URL_STRINGIFY_INNER(x) #x
 #define FONT_MANIFEST_URL_STRINGIFY(x) FONT_MANIFEST_URL_STRINGIFY_INNER(x)
 #define FONT_MANIFEST_URL                                                                                  \
-  "https://github.com/aBER0724/crosspoint-fonts/releases/download/sd-fonts-m" FONT_MANIFEST_URL_STRINGIFY( \
+  "https://github.com/aBER0724/crosspoint-cjk-fonts/releases/download/sd-fonts-m" FONT_MANIFEST_URL_STRINGIFY( \
       FONTS_MANIFEST_VERSION) "-b" FONT_MANIFEST_URL_STRINGIFY(CPFONT_VERSION) "/fonts.json"
 #endif
 

@@ -35,12 +35,13 @@ constexpr int MARGIN_MAX = CrossPointSettings::SCREEN_MARGIN_MAX;
 constexpr int MARGIN_STEP = CrossPointSettings::SCREEN_MARGIN_STEP;
 
 bool hasUiPointSize(const SdCardFontFamilyInfo& family) {
-  return family.hasSize(8) || family.hasSize(10) || family.hasSize(12);
+  return std::any_of(SdCardFontFamilyInfo::UI_POINT_SIZES.begin(), SdCardFontFamilyInfo::UI_POINT_SIZES.end(),
+                     [&family](const uint8_t pointSize) { return family.hasSize(pointSize); });
 }
 
 std::string uiPointSizeLabel(const SdCardFontFamilyInfo& family) {
   std::string label;
-  for (const uint8_t pointSize : {8, 10, 12}) {
+  for (const uint8_t pointSize : SdCardFontFamilyInfo::UI_POINT_SIZES) {
     if (!family.hasSize(pointSize)) continue;
     if (!label.empty()) label += " / ";
     label += std::to_string(pointSize);
@@ -348,10 +349,9 @@ void TextSettingsActivity::rebuildSizeEntries() {
 
   if (sdFamily) {
     // SD fonts are never scaled. Expose only the distinct physical reader
-    // files that the four persisted size slots resolve to. A complete CJK
-    // pack therefore offers 12/14/16/18 pt while a partial one-file install
-    // remains a read-only size. The 8/10 pt files stay reserved for UI slots
-    // when the family also provides the standard reader sizes.
+    // files that the four persisted size slots resolve to. Current CJK packs
+    // offer 14/16/18/22 pt; already-installed 12/14/16/18 packs keep their
+    // legacy mapping. UI-only 8/10/12 pt files never shift reader slots.
     std::vector<uint8_t> addedPointSizes;
     addedPointSizes.reserve(CrossPointSettings::FONT_SIZE_COUNT);
     const SdCardFontFileInfo* selectedFile = sdFamily->findClosestReaderSize(SETTINGS.fontSize);
