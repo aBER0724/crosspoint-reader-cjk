@@ -1,14 +1,19 @@
 #!/usr/bin/env python3
 
 import importlib.util
+import re
 import tempfile
 import unittest
 import zipfile
 from pathlib import Path
 from unittest import mock
 
+import yaml
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 BUILD_SCRIPT = REPO_ROOT / "lib" / "EpdFont" / "scripts" / "build-sd-fonts.py"
+FONT_CONFIG = REPO_ROOT / "lib" / "EpdFont" / "scripts" / "sd-fonts.yaml"
+FONT_DOWNLOAD_ACTIVITY = REPO_ROOT / "src" / "activities" / "settings" / "FontDownloadActivity.cpp"
 
 
 def load_build_module():
@@ -68,6 +73,32 @@ class ArchiveMemberExtractionTest(unittest.TestCase):
         invalid_archive.write_bytes(b"not-a-zip")
         with self.assertRaisesRegex(RuntimeError, "cannot extract Test.ttf"):
             self.module.extract_archive_member(invalid_archive, "Test.ttf", "TestFamily", "regular")
+
+
+class FontCatalogConfigTest(unittest.TestCase):
+    def test_catalog_fits_firmware_limit_and_has_unique_names(self):
+        config = yaml.safe_load(FONT_CONFIG.read_text(encoding="utf-8"))
+        families = config["families"]
+        names = [family["name"] for family in families]
+
+        source = FONT_DOWNLOAD_ACTIVITY.read_text(encoding="utf-8")
+        match = re.search(r"MAX_MANIFEST_FAMILIES\s*=\s*(\d+)", source)
+        self.assertIsNotNone(match)
+        self.assertLessEqual(len(families), int(match.group(1)))
+        self.assertEqual(len(names), len(set(names)))
+
+    def test_new_traditional_chinese_sources_are_version_pinned(self):
+        config = yaml.safe_load(FONT_CONFIG.read_text(encoding="utf-8"))
+        families = {family["name"]: family for family in config["families"]}
+
+        iansui = families["IansuiTC"]["styles"]["regular"]
+        self.assertIn("/v1.020/", iansui["url"])
+        self.assertEqual(iansui["archive_member"], "Iansui-Regular.ttf")
+
+        genwan_url = families["GenWanSerifTC"]["styles"]["regular"]["url"]
+        genyo_url = families["GenYoGothicTC"]["styles"]["regular"]["url"]
+        self.assertRegex(genwan_url, r"/ButTaiwan/genwan-font/[0-9a-f]{40}/")
+        self.assertRegex(genyo_url, r"/ButTaiwan/genyog-font/[0-9a-f]{40}/")
 
 
 if __name__ == "__main__":

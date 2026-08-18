@@ -43,22 +43,22 @@ CPFONT_MAGIC = b"CPFONT\x00\x00"
 
 STYLE_NAMES = {0: "regular", 1: "bold", 2: "italic", 3: "bolditalic"}
 
-# Family descriptions can be loaded from the sd-fonts.yaml config
-# (via --descriptions-from) or fall back to the family name.
-FAMILY_DESCRIPTIONS: dict[str, str] = {
-    "ChironGoRoundTC": "Traditional Chinese rounded sans-serif with Japanese kana",
-    "WenKaiCJK": "Readable CJK handwriting-style typeface derived from LXGW WenKai",
-    "NotoSansJP": "Japanese sans-serif (kanji + kana)",
-    "NotoSansSC": "Simplified Chinese sans-serif + Japanese kana",
-    "NotoSansTC": "Traditional Chinese sans-serif + Japanese kana",
-    "NotoSerifJP": "Japanese Mincho-style serif with kanji and kana",
-    "NotoSerifSC": "Simplified Chinese Song-style serif with Japanese kana",
-    "NotoSerifTC": "Traditional Chinese Ming-style serif with Japanese kana",
+# Family metadata can be loaded from sd-fonts.yaml (via --descriptions-from).
+# The firmware ignores optional provenance keys that it does not use.
+FAMILY_METADATA: dict[str, dict[str, str]] = {
+    "ChironGoRoundTC": {"description": "Traditional Chinese rounded sans-serif with Japanese kana"},
+    "WenKaiCJK": {"description": "Readable CJK handwriting-style typeface derived from LXGW WenKai"},
+    "NotoSansJP": {"description": "Japanese sans-serif (kanji + kana)"},
+    "NotoSansSC": {"description": "Simplified Chinese sans-serif + Japanese kana"},
+    "NotoSansTC": {"description": "Traditional Chinese sans-serif + Japanese kana"},
+    "NotoSerifJP": {"description": "Japanese Mincho-style serif with kanji and kana"},
+    "NotoSerifSC": {"description": "Simplified Chinese Song-style serif with Japanese kana"},
+    "NotoSerifTC": {"description": "Traditional Chinese Ming-style serif with Japanese kana"},
 }
 
 
-def load_descriptions_from_yaml(yaml_path: Path) -> dict[str, str]:
-    """Load family descriptions from sd-fonts.yaml config."""
+def load_metadata_from_yaml(yaml_path: Path) -> dict[str, dict[str, str]]:
+    """Load public family metadata from sd-fonts.yaml config."""
     try:
         import yaml
     except ImportError:
@@ -68,7 +68,21 @@ def load_descriptions_from_yaml(yaml_path: Path) -> dict[str, str]:
     with open(yaml_path) as f:
         config = yaml.safe_load(f)
 
-    return {f["name"]: f["description"] for f in config.get("families", []) if "description" in f}
+    metadata = {}
+    for family in config.get("families", []):
+        public = {}
+        for yaml_key, manifest_key in (
+            ("description", "description"),
+            ("license", "license"),
+            ("license_url", "licenseUrl"),
+            ("source_url", "sourceUrl"),
+        ):
+            value = family.get(yaml_key)
+            if value:
+                public[manifest_key] = value
+        if public:
+            metadata[family["name"]] = public
+    return metadata
 
 
 def read_cpfont_styles(filepath: Path) -> list[str]:
@@ -169,7 +183,8 @@ def build_manifest(
         styles = read_cpfont_styles(files[0]) if files else []
 
         # Get description
-        description = FAMILY_DESCRIPTIONS.get(family_name)
+        metadata = FAMILY_METADATA.get(family_name, {})
+        description = metadata.get("description")
         if description is None:
             print(
                 f"  WARNING: no description for family '{family_name}', "
@@ -188,14 +203,16 @@ def build_manifest(
                 }
             )
 
-        manifest_families.append(
-            {
-                "name": family_name,
-                "description": description,
-                "styles": styles,
-                "files": file_entries,
-            }
-        )
+        family_entry = {
+            "name": family_name,
+            "description": description,
+            "styles": styles,
+            "files": file_entries,
+        }
+        for key in ("license", "licenseUrl", "sourceUrl"):
+            if key in metadata:
+                family_entry[key] = metadata[key]
+        manifest_families.append(family_entry)
 
     return {
         "version": FONTS_MANIFEST_VERSION,
@@ -241,12 +258,12 @@ def main():
         base_url += "/"
 
     # Load descriptions from YAML config if provided
-    global FAMILY_DESCRIPTIONS
+    global FAMILY_METADATA
     if args.descriptions_from:
         desc_path = Path(args.descriptions_from)
         if desc_path.exists():
-            FAMILY_DESCRIPTIONS = load_descriptions_from_yaml(desc_path)
-            print(f"Loaded {len(FAMILY_DESCRIPTIONS)} descriptions from {desc_path}")
+            FAMILY_METADATA = load_metadata_from_yaml(desc_path)
+            print(f"Loaded metadata for {len(FAMILY_METADATA)} families from {desc_path}")
         else:
             print(f"WARNING: {desc_path} not found, using family names as descriptions", file=sys.stderr)
 

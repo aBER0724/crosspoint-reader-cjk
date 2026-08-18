@@ -128,6 +128,41 @@ families:
     styles:
       regular: {url: "https://raw.githubusercontent.com/lxgw/LxgwBright/f9e978f4944cb36b081941a001e92a02e7dcc3d3/LXGWBrightTC/LXGWBrightTC-Regular.ttf"}
 
+  - name: IansuiTC
+    description: "Traditional Chinese handwriting-style face derived from Klee One"
+    license: OFL-1.1
+    license_url: "https://github.com/ButTaiwan/iansui/blob/v1.020/OFL.txt"
+    source_url: "https://github.com/ButTaiwan/iansui/tree/v1.020"
+    intervals: latin-ext,cjk
+    sizes: [8, 10, 12, 14, 16, 18]
+    force_autohint: true
+    styles:
+      regular:
+        url: "https://github.com/ButTaiwan/iansui/releases/download/v1.020/iansui.zip"
+        archive_member: "Iansui-Regular.ttf"
+
+  - name: GenWanSerifTC
+    description: "Warm Traditional Chinese Ming-style face with an ink-bleed print texture"
+    license: OFL-1.1
+    license_url: "https://github.com/ButTaiwan/genwan-font/blob/25e718615173a3b51099ecc9a6bf4fa558c03fbc/SIL_Open_Font_License_1.1.txt"
+    source_url: "https://github.com/ButTaiwan/genwan-font/tree/25e718615173a3b51099ecc9a6bf4fa558c03fbc"
+    intervals: latin-ext,cjk
+    sizes: [8, 10, 12, 14, 16, 18]
+    force_autohint: true
+    styles:
+      regular: {url: "https://raw.githubusercontent.com/ButTaiwan/genwan-font/25e718615173a3b51099ecc9a6bf4fa558c03fbc/otf/TC/GenWanMin2TC-R.otf"}
+
+  - name: GenYoGothicTC
+    description: "Traditional Chinese sans-serif with classic print-oriented glyph forms"
+    license: OFL-1.1
+    license_url: "https://github.com/ButTaiwan/genyog-font/blob/1f06b99e2ca9ba1aa06dc26701e1a900ffa57a91/SIL_Open_Font_License_1.1.txt"
+    source_url: "https://github.com/ButTaiwan/genyog-font/tree/1f06b99e2ca9ba1aa06dc26701e1a900ffa57a91"
+    intervals: latin-ext,cjk
+    sizes: [8, 10, 12, 14, 16, 18]
+    force_autohint: true
+    styles:
+      regular: {url: "https://raw.githubusercontent.com/ButTaiwan/genyog-font/1f06b99e2ca9ba1aa06dc26701e1a900ffa57a91/otf/TC/GenYoGothic2TC-R.otf"}
+
   # 鈹€鈹€ Serif 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
   - name: Literata
