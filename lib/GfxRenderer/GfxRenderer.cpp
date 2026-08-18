@@ -3341,7 +3341,14 @@ int GfxRenderer::getAsciiSpacing(const uint32_t cp) const {
 
 // Check if fontId is a reader font (should use external Chinese font)
 // UI fonts (UI_10, UI_12, SMALL_FONT) should NOT use external font
-bool GfxRenderer::isReaderFont(const int fontId) {
+bool GfxRenderer::isReaderFont(const int fontId) const {
+  // SD fonts have content-derived IDs, which may be negative. They render
+  // through their registered EPD family, never through the external reader
+  // font compatibility path.
+  if (sdCardFonts_.count(fontId) != 0) {
+    return false;
+  }
+
   // First check if it's a UI font - UI fonts should NOT use external reader
   // font
   for (int i = 0; i < UI_FONT_COUNT; i++) {
@@ -3367,6 +3374,13 @@ bool GfxRenderer::isReaderFont(const int fontId) {
 // When external font is selected (negative ID) but not available, fall back to
 // built-in font
 int GfxRenderer::getEffectiveFontId(int fontId) const {
+  // SD fonts use content-derived IDs and may legitimately be negative. Once a
+  // font is registered, its ID is authoritative and must not be mistaken for
+  // a synthetic external-reader ID.
+  if (sdCardFonts_.count(fontId) != 0) {
+    return fontId;
+  }
+
   // Only negative IDs that are reader fonts need fallback
   // UI fonts have negative IDs too but should not be redirected
   if (fontId < 0 && isReaderFont(fontId)) {
