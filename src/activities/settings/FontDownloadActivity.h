@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <string>
 #include <vector>
 
@@ -12,7 +13,7 @@
 // the build tooling lives in lib/EpdFont/scripts/cpfont_version.py. This
 // firmware-side copy must be bumped manually when the firmware is updated to
 // support a new manifest schema.
-#define FONTS_MANIFEST_VERSION 1
+#define FONTS_MANIFEST_VERSION 2
 
 #ifndef FONT_MANIFEST_URL
 // Manifest + .cpfont assets are published by .github/workflows/release-fonts.yml
@@ -61,7 +62,8 @@ class FontDownloadActivity : public Activity {
     std::string name;
     size_t size = 0;
     uint8_t pointSize = 0;
-    uint32_t crc32 = 0;
+    std::array<uint8_t, 32> sha256{};
+    uint32_t fingerprint = 0;
     bool installed = false;
   };
 
@@ -124,7 +126,7 @@ class FontDownloadActivity : public Activity {
   void returnToFamilyList();
   void installPreviewedFamily();
   void updateAll();
-  bool computeFileCrc32(const char* path, uint32_t& outCrc);
+  bool computeFileSha256(const char* path, std::array<uint8_t, 32>& outHash);
   bool showDownloadAllRow() const;
   bool showUpdateAllRow() const;
   int specialRowCount() const;

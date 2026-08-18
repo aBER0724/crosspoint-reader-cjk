@@ -19,10 +19,10 @@ convention <FamilyName>_<size>.cpfont.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import struct
 import sys
-import zlib
 from pathlib import Path
 
 # Import canonical version constants from the shared file in lib/EpdFont/scripts/
@@ -140,13 +140,13 @@ def parse_filename(filename: str) -> tuple[str, str] | None:
     return family, size_str
 
 
-def compute_crc32(filepath: Path) -> int:
-    """Compute standard CRC32 matching the firmware and zlib."""
-    crc = 0
+def compute_sha256(filepath: Path) -> str:
+    """Compute the lowercase SHA-256 digest used by manifest schema v2."""
+    digest = hashlib.sha256()
     with open(filepath, "rb") as f:
         for chunk in iter(lambda: f.read(65536), b""):
-            crc = zlib.crc32(chunk, crc)
-    return crc & 0xFFFFFFFF
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def scan_cpfont_files(input_dir: Path) -> dict[str, list[Path]]:
@@ -199,7 +199,7 @@ def build_manifest(
                 {
                     "name": filepath.name,
                     "size": filepath.stat().st_size,
-                    "crc32": compute_crc32(filepath),
+                    "sha256": compute_sha256(filepath),
                 }
             )
 
