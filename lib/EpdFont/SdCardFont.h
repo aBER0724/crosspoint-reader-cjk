@@ -23,6 +23,7 @@ class SdCardFont {
   static constexpr uint16_t MAX_PAGE_GLYPHS = 512;
   static constexpr uint8_t MAX_STYLES = 4;
   using CancellationCallback = bool (*)(const void*);
+  static constexpr int PREWARM_FAILED = -1;
   static constexpr int PREWARM_CANCELLED = -2;
 
   SdCardFont() = default;
@@ -44,7 +45,8 @@ class SdCardFont {
   // Default 0x0F = all present styles.
   // When metadataOnly=true, only glyph metrics are loaded (no bitmap data).
   // Returns number of glyphs that couldn't be loaded (0 on full success), or
-  // PREWARM_CANCELLED when the optional callback aborts the operation.
+  // PREWARM_FAILED on allocation/IO failure, or PREWARM_CANCELLED when the
+  // optional callback aborts the operation.
   int prewarm(const char* utf8Text, uint8_t styleMask = 0x0F, bool metadataOnly = false,
               CancellationCallback isCancelled = nullptr, const void* cancellationContext = nullptr);
 
@@ -145,7 +147,10 @@ class SdCardFont {
     uint32_t ligatureFileOffset = 0;
     uint32_t bitmapFileOffset = 0;
 
-    // Full intervals loaded from file (kept in RAM for codepoint lookup)
+    // Full intervals loaded from file (kept in RAM for codepoint lookup).
+    // Sparse BMP fonts can instead use a page-packed coverage bitmap: interval
+    // tables for some CJK fonts exceed the largest free heap block after a
+    // network download, while the bitmap stores only pages containing glyphs.
     EpdUnicodeInterval* fullIntervals = nullptr;
     EPD_PACKED_BEGIN
     struct BmpInterval16 {
@@ -157,6 +162,14 @@ class SdCardFont {
     static_assert(sizeof(BmpInterval16) == 6, "BmpInterval16 must remain compact");
     BmpInterval16* bmpIntervals = nullptr;
     bool intervalsAreBmp16 = false;
+    static constexpr uint16_t BMP_PAGE_COUNT = 256;
+    static constexpr uint16_t BMP_PAGE_MAP_WORDS = BMP_PAGE_COUNT / 32;
+    static constexpr uint16_t BMP_WORDS_PER_PAGE = 8;
+    uint32_t bmpCoveredPages[BMP_PAGE_MAP_WORDS] = {};
+    uint32_t* bmpCoverageData = nullptr;
+    uint16_t bmpCoveragePageCount = 0;
+    uint16_t bmpMiniBitmapCapacity = 0;
+    bool intervalsAreBmpCoverage = false;
 
     // Persistent kern-class + ligature tables (lazy-loaded on first prewarm).
     // The full kern MATRIX is NOT resident — on Literata-class fonts a single
@@ -197,6 +210,7 @@ class SdCardFont {
     uint32_t miniIntervalCapacity = 0;
     uint32_t miniGlyphCapacity = 0;
     uint32_t miniBitmapCapacity = 0;
+    bool miniBitmapUsesCoverageArena = false;
     // Bitmap bytes the current page actually used (set by prewarmStyle), the
     // underuse-hysteresis signal; 0 = no bitmap built this scope (metadata-only
     // prewarm), which leaves the hysteresis counter untouched.

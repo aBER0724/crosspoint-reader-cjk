@@ -27,6 +27,7 @@ bool FontCacheManager::prewarmCache(int fontId, const char* utf8Text, uint8_t st
   if (it != sdCardFonts_.end()) {
     int missed = it->second->prewarm(utf8Text, styleMask, false, isCancelled, cancellationContext);
     if (missed == SdCardFont::PREWARM_CANCELLED) return false;
+    if (missed < 0) return false;
     if (missed > 0) {
       LOG_DBG("FCM", "prewarmCache(SD): %d glyph(s) not found (styleMask=0x%02X)", missed, styleMask);
     }

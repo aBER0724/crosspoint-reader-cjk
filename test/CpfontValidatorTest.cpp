@@ -222,6 +222,22 @@ Style makeMaxKernClassStyle() {
   return style;
 }
 
+Style makeHighlyFragmentedStyle(uint32_t intervalCount) {
+  Style style;
+  style.id = 0;
+  style.advanceY = 16;
+  style.ascender = 12;
+  style.descender = -4;
+  style.intervals.reserve(intervalCount);
+  style.glyphs.reserve(intervalCount);
+  for (uint32_t index = 0; index < intervalCount; ++index) {
+    const uint32_t codepoint = 0x1000 + index * 2;
+    style.intervals.emplace_back(codepoint, codepoint);
+    style.glyphs.push_back({1, 1, 16, 0, 1, {0x40}});
+  }
+  return style;
+}
+
 std::vector<uint8_t> buildCanonical(std::vector<Style> styles) {
   const size_t dataStart = kHeaderSize + styles.size() * kTocEntrySize;
   std::vector<uint8_t> data(dataStart, 0);
@@ -320,6 +336,7 @@ void testCanonicalFiles() {
   expectValid(makeSingleStyle(), "single style");
   expectValid(makeMultiStyle(), "multiple styles");
   expectValid(buildCanonical({makeMaxKernClassStyle()}), "255 kern classes");
+  expectValid(buildCanonical({makeHighlyFragmentedStyle(4097)}), "more than 4096 fragmented intervals");
   expectValid(makeSingleStyle(), "exact EOF");
 }
 
@@ -410,6 +427,10 @@ void testSectionLayoutAndOverflow() {
   data = makeSingleStyle();
   writeU32(data, kTocStart + kTocIntervalCount, std::numeric_limits<uint32_t>::max());
   expectInvalid(data, "count overflow");
+
+  data = makeSingleStyle();
+  writeU32(data, kTocStart + kTocIntervalCount, readU32(data, kTocStart + kTocGlyphCount) + 1);
+  expectInvalid(data, "interval count exceeds glyph count");
 
   data = makeSingleStyle();
   writeU32(data, kTocStart + kTocDataOffset, std::numeric_limits<uint32_t>::max() - 3);

@@ -47,9 +47,6 @@ constexpr const char* PREVIEW_SAMPLE_LINES[] = {
     "\xe3\x82\xa2\xe3\x82\xa4\xe3\x82\xa6\xe3\x82\xa8\xe3\x82\xaa",
     "The quick brown fox 0123456789",
 };
-constexpr const char* PREVIEW_SAMPLE_TEXT =
-    "\xe9\x98\x85\xe8\xaf\xbb\xe9\xa2\x84\xe8\xa7\x88\xe6\xb1\x89\xe5\xad\x97\xe7\xb9\x81\xe9\xab\x94\xe4\xb8\xad\xe6"
-    "\x96\x87\xe3\x81\x82\xe3\x82\xa2The quick brown fox 0123456789";
 constexpr size_t MAX_STYLES_PER_FAMILY = 8;
 constexpr size_t MAX_BASE_URL_LENGTH = 256;
 constexpr size_t MAX_DESCRIPTION_LENGTH = 160;
@@ -820,9 +817,6 @@ void FontDownloadActivity::downloadPreview(int familyIndex, int fileIndex) {
       }
       activePreviewFamilyIndex_ = familyIndex;
       activePreviewFileIndex_ = fileIndex;
-      if (auto* cache = renderer.getFontCacheManager()) {
-        cache->prewarmCache(previewFontId_, PREVIEW_SAMPLE_TEXT, 0x01);
-      }
       state_ = FONT_PREVIEW;
     }
   }
@@ -1440,11 +1434,28 @@ void FontDownloadActivity::render(RenderLock&&) {
         const int sampleLineHeight = renderer.getLineHeight(sampleFontId);
         const int maxY = pageHeight - metrics.buttonHintsHeight - metrics.verticalSpacing;
         int y = contentTop + lineHeight;
+        auto* cache = previewFontId_ != 0 ? renderer.getFontCacheManager() : nullptr;
+        bool prewarmed = true;
+        if (cache) {
+          cache->resetStats();
+          LOG_DBG("FONT", "Preview prewarm start: free=%d max=%d", ESP.getFreeHeap(), ESP.getMaxAllocHeap());
+        }
         for (const char* sample : PREVIEW_SAMPLE_LINES) {
           if (y + sampleLineHeight > maxY) break;
+          // A complete four-line CJK preview can exceed the largest contiguous
+          // heap block after WiFi use. Warm and render one line at a time so the
+          // persistent SD-font arena is reused without falling back to per-glyph IO.
+          if (cache && !cache->prewarmCache(previewFontId_, sample, 0x01)) {
+            prewarmed = false;
+          }
           const auto text = renderer.truncatedText(sampleFontId, sample, pageWidth - 2 * metrics.contentSidePadding);
           renderer.drawText(sampleFontId, metrics.contentSidePadding, y, text.c_str());
           y += sampleLineHeight;
+        }
+        if (cache) {
+          cache->logStats("font-preview");
+          LOG_DBG("FONT", "Preview prewarm done: ok=%d free=%d max=%d", prewarmed, ESP.getFreeHeap(),
+                  ESP.getMaxAllocHeap());
         }
       }
     }
