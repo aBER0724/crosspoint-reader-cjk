@@ -33,6 +33,20 @@ constexpr StrId ALIGNMENT_IDS[] = {StrId::STR_JUSTIFY, StrId::STR_ALIGN_LEFT, St
 constexpr int MARGIN_MIN = CrossPointSettings::SCREEN_MARGIN_MIN;
 constexpr int MARGIN_MAX = CrossPointSettings::SCREEN_MARGIN_MAX;
 constexpr int MARGIN_STEP = CrossPointSettings::SCREEN_MARGIN_STEP;
+
+bool hasUiPointSize(const SdCardFontFamilyInfo& family) {
+  return family.hasSize(8) || family.hasSize(10) || family.hasSize(12);
+}
+
+std::string uiPointSizeLabel(const SdCardFontFamilyInfo& family) {
+  std::string label;
+  for (const uint8_t pointSize : {8, 10, 12}) {
+    if (!family.hasSize(pointSize)) continue;
+    if (!label.empty()) label += " / ";
+    label += std::to_string(pointSize);
+  }
+  return label.empty() ? "12 pt" : label + " pt";
+}
 }  // namespace
 
 TextSettingsActivity::TextSettingsActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
@@ -308,6 +322,12 @@ void TextSettingsActivity::rebuildSizeEntries() {
   if (previewTarget_ == FontTarget::Ui) {
     if (currentFont && currentFont->source == FontEntry::Source::Legacy) {
       sizes_.push_back({std::to_string(currentFont->pointSize) + " pt", currentFont->pointSize});
+    } else if (registry_ && currentFont && currentFont->source == FontEntry::Source::SdFamily) {
+      const auto& families = registry_->getFamilies();
+      const int sdIndex = currentFont->sourceIndex;
+      if (sdIndex >= 0 && sdIndex < static_cast<int>(families.size())) {
+        sizes_.push_back({uiPointSizeLabel(families[sdIndex]), 12});
+      }
     } else {
       sizes_.push_back({"12 pt", 12});
     }
@@ -404,7 +424,14 @@ void TextSettingsActivity::applyFamily(int listIndex) {
   const int currentTarget = isReader && isUi
                                 ? static_cast<int>(FontTarget::Both)
                                 : (isUi ? static_cast<int>(FontTarget::Ui) : static_cast<int>(FontTarget::Reader));
-  optionPopup_.show(StrId::STR_FONT, FONT_TARGET_IDS, static_cast<int>(std::size(FONT_TARGET_IDS)), currentTarget,
+  int targetCount = static_cast<int>(std::size(FONT_TARGET_IDS));
+  if (font.source == FontEntry::Source::SdFamily && registry_) {
+    const auto& families = registry_->getFamilies();
+    if (font.sourceIndex < 0 || font.sourceIndex >= static_cast<int>(families.size())) return;
+    if (!hasUiPointSize(families[font.sourceIndex])) targetCount = 1;
+  }
+  const int selectedTarget = std::min(currentTarget, targetCount - 1);
+  optionPopup_.show(StrId::STR_FONT, FONT_TARGET_IDS, targetCount, selectedTarget,
                     [this, listIndex](int target) { applyFamilyToTarget(listIndex, static_cast<FontTarget>(target)); });
 }
 
@@ -453,7 +480,9 @@ void TextSettingsActivity::applyFamilyToTarget(int listIndex, FontTarget target)
     const auto& families = registry_->getFamilies();
     if (sdIndex < 0 || sdIndex >= static_cast<int>(families.size())) return;
 
-    const std::string& familyName = families[sdIndex].name;
+    const auto& family = families[sdIndex];
+    if (targetsUi && !hasUiPointSize(family)) return;
+    const std::string& familyName = family.name;
     if (!fontManager.clearSelections(targetsReader, targetsUi)) {
       return;
     }

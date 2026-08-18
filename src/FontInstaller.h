@@ -38,8 +38,9 @@ class FontInstaller {
   static bool recoverInterruptedInstalls();
 
   /// Start a durable family-level transaction. Must be called before any
-  /// installed file is moved or replaced.
-  static bool beginFamilyInstall(const char* familyName, uint32_t fingerprint);
+  /// installed file is moved or replaced. Complete-family installs write the
+  /// manifest receipt; partial installs preserve any prior complete receipt.
+  static bool beginFamilyInstall(const char* familyName, uint32_t fingerprint, bool completeFamily = true);
 
   /// Preserve the current file for rollback, or record that the replacement
   /// is a newly installed file when no current file exists.
@@ -61,6 +62,9 @@ class FontInstaller {
   /// Compare the installed family receipt with the current manifest metadata.
   /// This reads only a small receipt and never scans the font files.
   static bool installedFamilyMatches(const char* familyName, uint32_t fingerprint);
+
+  /// Return whether the family has a complete-family receipt from any manifest.
+  static bool hasInstalledFamilyReceipt(const char* familyName);
 
   /// Ensure /<root>/<family>/ exists, where <root> is /.fonts (preferred) or /fonts.
   /// Re-uses the existing root if the family is already installed; otherwise

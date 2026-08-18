@@ -62,6 +62,7 @@ class FontDownloadActivity : public Activity {
     size_t size = 0;
     uint8_t pointSize = 0;
     uint32_t crc32 = 0;
+    bool installed = false;
   };
 
   struct ManifestFamily {
@@ -72,6 +73,7 @@ class FontDownloadActivity : public Activity {
     size_t totalSize = 0;
     uint32_t fingerprint = 0;
     bool installed = false;
+    bool partial = false;
     bool hasUpdate = false;
   };
 
@@ -96,6 +98,7 @@ class FontDownloadActivity : public Activity {
   size_t fileProgress_ = 0;
   size_t fileTotal_ = 0;
   int downloadingFamilyIndex_ = 0;
+  int downloadingFileIndex_ = -1;
   std::string errorMessage_;
   bool cancelRequested_ = false;
   bool lowMemoryDownload_ = false;
@@ -111,7 +114,7 @@ class FontDownloadActivity : public Activity {
   void updateDownloadProgress(size_t downloaded, size_t total);
   void renderLowMemoryProgress();
   void refreshFamilyState(ManifestFamily& family);
-  void downloadFamily(ManifestFamily& family);
+  void downloadFamily(ManifestFamily& family, int fileIndex = -1, const char* stagedFilePath = nullptr);
   void downloadAll();
   static bool parsePointSize(const char* filename, const char* familyName, uint8_t& pointSize);
   int defaultPreviewFileIndex(const ManifestFamily& family) const;

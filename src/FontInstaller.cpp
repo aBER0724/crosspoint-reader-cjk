@@ -24,7 +24,11 @@ constexpr char kCommittedMarker[] = ".crosspoint-committed";
 constexpr char kInstalledReceipt[] = ".crosspoint-installed";
 constexpr char kInstalledReceiptTemp[] = ".crosspoint-installed.tmp";
 constexpr uint8_t kTransactionRecordMagic[] = {'C', 'P', 'T', 'X'};
-constexpr size_t kTransactionRecordSize = sizeof(kTransactionRecordMagic) + 1 + sizeof(uint32_t);
+constexpr uint8_t kTransactionRecordVersion1 = 1;
+constexpr uint8_t kTransactionRecordVersion2 = 2;
+constexpr uint8_t kCompleteFamilyFlag = 0x01;
+constexpr size_t kTransactionRecordV1Size = sizeof(kTransactionRecordMagic) + 1 + sizeof(uint32_t);
+constexpr size_t kTransactionRecordV2Size = sizeof(kTransactionRecordMagic) + 2 + sizeof(uint32_t);
 
 enum class TransactionArtifact { None, Partial, Backup, NewFile };
 
@@ -58,13 +62,14 @@ bool createMarker(const char* path) {
   return written && closed && Storage.exists(path);
 }
 
-bool readTransactionRecord(const char* path, uint32_t& fingerprint);
+bool readTransactionRecord(const char* path, uint32_t& fingerprint, bool& completeFamily);
 
-bool writeTransactionRecord(const char* path, uint32_t fingerprint) {
-  uint8_t record[kTransactionRecordSize];
+bool writeTransactionRecord(const char* path, uint32_t fingerprint, bool completeFamily) {
+  uint8_t record[kTransactionRecordV2Size];
   memcpy(record, kTransactionRecordMagic, sizeof(kTransactionRecordMagic));
-  record[sizeof(kTransactionRecordMagic)] = 1;
-  const size_t fingerprintOffset = sizeof(kTransactionRecordMagic) + 1;
+  record[sizeof(kTransactionRecordMagic)] = kTransactionRecordVersion2;
+  record[sizeof(kTransactionRecordMagic) + 1] = completeFamily ? kCompleteFamilyFlag : 0;
+  const size_t fingerprintOffset = sizeof(kTransactionRecordMagic) + 2;
   for (size_t i = 0; i < sizeof(fingerprint); ++i) {
     record[fingerprintOffset + i] = static_cast<uint8_t>(fingerprint >> (i * 8));
   }
@@ -77,26 +82,45 @@ bool writeTransactionRecord(const char* path, uint32_t fingerprint) {
   if (!written || !closed || !Storage.exists(path)) return false;
 
   uint32_t storedFingerprint = 0;
-  return readTransactionRecord(path, storedFingerprint) && storedFingerprint == fingerprint;
+  bool storedCompleteFamily = false;
+  return readTransactionRecord(path, storedFingerprint, storedCompleteFamily) && storedFingerprint == fingerprint &&
+         storedCompleteFamily == completeFamily;
 }
 
-bool readTransactionRecord(const char* path, uint32_t& fingerprint) {
+bool readTransactionRecord(const char* path, uint32_t& fingerprint, bool& completeFamily) {
   if (!Storage.exists(path)) return false;
   HalFile file;
-  if (!Storage.openFileForRead("FONT", path, file) || file.fileSize() != kTransactionRecordSize) {
+  if (!Storage.openFileForRead("FONT", path, file)) {
     if (file) file.close();
     return false;
   }
-  uint8_t record[kTransactionRecordSize];
-  const bool read = file.read(record, sizeof(record)) == static_cast<int>(sizeof(record));
+  const size_t recordSize = file.fileSize();
+  if (recordSize != kTransactionRecordV1Size && recordSize != kTransactionRecordV2Size) {
+    file.close();
+    return false;
+  }
+
+  uint8_t record[kTransactionRecordV2Size] = {};
+  const bool read = file.read(record, recordSize) == static_cast<int>(recordSize);
   file.close();
-  if (!read || memcmp(record, kTransactionRecordMagic, sizeof(kTransactionRecordMagic)) != 0 ||
-      record[sizeof(kTransactionRecordMagic)] != 1) {
+  if (!read || memcmp(record, kTransactionRecordMagic, sizeof(kTransactionRecordMagic)) != 0) {
+    return false;
+  }
+
+  const uint8_t version = record[sizeof(kTransactionRecordMagic)];
+  size_t fingerprintOffset = 0;
+  if (version == kTransactionRecordVersion1 && recordSize == kTransactionRecordV1Size) {
+    completeFamily = true;
+    fingerprintOffset = sizeof(kTransactionRecordMagic) + 1;
+  } else if (version == kTransactionRecordVersion2 && recordSize == kTransactionRecordV2Size &&
+             (record[sizeof(kTransactionRecordMagic) + 1] & ~kCompleteFamilyFlag) == 0) {
+    completeFamily = (record[sizeof(kTransactionRecordMagic) + 1] & kCompleteFamilyFlag) != 0;
+    fingerprintOffset = sizeof(kTransactionRecordMagic) + 2;
+  } else {
     return false;
   }
 
   fingerprint = 0;
-  const size_t fingerprintOffset = sizeof(kTransactionRecordMagic) + 1;
   for (size_t i = 0; i < sizeof(fingerprint); ++i) {
     fingerprint |= static_cast<uint32_t>(record[fingerprintOffset + i]) << (i * 8);
   }
@@ -213,7 +237,8 @@ bool processFamilyTransactionArtifacts(const char* familyPath, bool rollback) {
 
 bool finalizeCommittedFamily(const char* familyName, const char* familyPath, const char* committedPath) {
   uint32_t fingerprint = 0;
-  if (!readTransactionRecord(committedPath, fingerprint)) {
+  bool completeFamily = false;
+  if (!readTransactionRecord(committedPath, fingerprint, completeFamily)) {
     LOG_ERR("FONT", "Invalid committed family transaction record: %s", familyName);
     return false;
   }
@@ -223,9 +248,11 @@ bool finalizeCommittedFamily(const char* familyName, const char* familyPath, con
   snprintf(receiptPath, sizeof(receiptPath), "%s/%s", familyPath, kInstalledReceipt);
   snprintf(receiptTempPath, sizeof(receiptTempPath), "%s/%s", familyPath, kInstalledReceiptTemp);
   if (Storage.exists(receiptTempPath) && !Storage.remove(receiptTempPath)) return false;
-  if (!writeTransactionRecord(receiptTempPath, fingerprint)) return false;
-  if (Storage.exists(receiptPath) && !Storage.remove(receiptPath)) return false;
-  if (!Storage.rename(receiptTempPath, receiptPath)) return false;
+  if (completeFamily) {
+    if (!writeTransactionRecord(receiptTempPath, fingerprint, true)) return false;
+    if (Storage.exists(receiptPath) && !Storage.remove(receiptPath)) return false;
+    if (!Storage.rename(receiptTempPath, receiptPath)) return false;
+  }
 
   if (!processFamilyTransactionArtifacts(familyPath, false)) return false;
   return Storage.remove(committedPath);
@@ -416,7 +443,7 @@ bool FontInstaller::recoverInterruptedInstalls() {
   return success;
 }
 
-bool FontInstaller::beginFamilyInstall(const char* familyName, uint32_t fingerprint) {
+bool FontInstaller::beginFamilyInstall(const char* familyName, uint32_t fingerprint, bool completeFamily) {
   char installingPath[192];
   char committedPath[192];
   char receiptTempPath[192];
@@ -430,7 +457,7 @@ bool FontInstaller::beginFamilyInstall(const char* familyName, uint32_t fingerpr
     return false;
   }
   if (Storage.exists(receiptTempPath) && !Storage.remove(receiptTempPath)) return false;
-  if (!writeTransactionRecord(installingPath, fingerprint)) {
+  if (!writeTransactionRecord(installingPath, fingerprint, completeFamily)) {
     LOG_ERR("FONT", "Failed to create family transaction marker: %s", familyName);
     if (Storage.exists(installingPath) && !Storage.remove(installingPath)) {
       LOG_ERR("FONT", "Failed to remove incomplete family transaction marker: %s", familyName);
@@ -561,7 +588,17 @@ bool FontInstaller::installedFamilyMatches(const char* familyName, uint32_t fing
   char receiptPath[192];
   if (!buildMarkerPath(familyName, kInstalledReceipt, receiptPath, sizeof(receiptPath))) return false;
   uint32_t installedFingerprint = 0;
-  return readTransactionRecord(receiptPath, installedFingerprint) && installedFingerprint == fingerprint;
+  bool completeFamily = false;
+  return readTransactionRecord(receiptPath, installedFingerprint, completeFamily) && completeFamily &&
+         installedFingerprint == fingerprint;
+}
+
+bool FontInstaller::hasInstalledFamilyReceipt(const char* familyName) {
+  char receiptPath[192];
+  if (!buildMarkerPath(familyName, kInstalledReceipt, receiptPath, sizeof(receiptPath))) return false;
+  uint32_t installedFingerprint = 0;
+  bool completeFamily = false;
+  return readTransactionRecord(receiptPath, installedFingerprint, completeFamily) && completeFamily;
 }
 
 bool FontInstaller::ensureFamilyDir(const char* familyName) {
