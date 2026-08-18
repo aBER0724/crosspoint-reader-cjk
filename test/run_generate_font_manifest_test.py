@@ -86,6 +86,7 @@ class ManifestMetadataTest(unittest.TestCase):
         self.assertEqual(int(version.group(1)), self.module.FONTS_MANIFEST_VERSION)
         self.assertIn('!fileObj["sha256"].is<const char*>()', source)
         self.assertIn("parseSha256(fileObj[\"sha256\"].as<const char*>(), file.sha256)", source)
+        self.assertIn("DeserializationOption::Filter(filter)", source)
         self.assertIn("mbedtls_sha256_update", source)
         self.assertIn("actualSha256 != file.sha256", source)
         self.assertNotIn('fileObj["crc32"]', source)

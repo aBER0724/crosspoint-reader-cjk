@@ -59,7 +59,6 @@ class FontDownloadActivity : public Activity {
   enum class ErrorAction { None, Preview, Install };
 
   struct ManifestFile {
-    std::string name;
     size_t size = 0;
     uint8_t pointSize = 0;
     std::array<uint8_t, 32> sha256{};
@@ -70,7 +69,6 @@ class FontDownloadActivity : public Activity {
   struct ManifestFamily {
     std::string name;
     std::string description;
-    std::vector<std::string> styles;
     std::vector<ManifestFile> files;
     size_t totalSize = 0;
     uint32_t fingerprint = 0;
@@ -119,6 +117,7 @@ class FontDownloadActivity : public Activity {
   void downloadFamily(ManifestFamily& family, int fileIndex = -1, const char* stagedFilePath = nullptr);
   void downloadAll();
   static bool parsePointSize(const char* filename, const char* familyName, uint8_t& pointSize);
+  static std::string manifestFilename(const ManifestFamily& family, const ManifestFile& file);
   int defaultPreviewFileIndex(const ManifestFamily& family) const;
   void downloadPreview(int familyIndex, int fileIndex);
   void removePreviewTemporaryFiles();

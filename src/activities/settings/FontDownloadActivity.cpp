@@ -47,10 +47,8 @@ constexpr const char* PREVIEW_SAMPLE_LINES[] = {
     "\xe3\x82\xa2\xe3\x82\xa4\xe3\x82\xa6\xe3\x82\xa8\xe3\x82\xaa",
     "The quick brown fox 0123456789",
 };
-constexpr size_t MAX_STYLES_PER_FAMILY = 8;
 constexpr size_t MAX_BASE_URL_LENGTH = 256;
 constexpr size_t MAX_DESCRIPTION_LENGTH = 160;
-constexpr size_t MAX_STYLE_NAME_LENGTH = 32;
 constexpr size_t MAX_FONT_FILE_BYTES = 256ULL * 1024ULL * 1024ULL;
 constexpr size_t SHA256_BYTES = 32;
 
@@ -214,6 +212,10 @@ int FontDownloadActivity::defaultPreviewFileIndex(const ManifestFamily& family) 
   return bestIndex;
 }
 
+std::string FontDownloadActivity::manifestFilename(const ManifestFamily& family, const ManifestFile& file) {
+  return family.name + "_" + std::to_string(file.pointSize) + ".cpfont";
+}
+
 bool FontDownloadActivity::fetchAndParseManifest() {
   // Download manifest to a temp file on SD card to avoid holding both
   // TLS buffers and the full JSON string in RAM simultaneously.
@@ -260,8 +262,17 @@ bool FontDownloadActivity::fetchAndParseManifest() {
     return false;
   }
 
+  JsonDocument filter;
+  filter["version"] = true;
+  filter["baseUrl"] = true;
+  filter["families"][0]["name"] = true;
+  filter["families"][0]["description"] = true;
+  filter["families"][0]["files"][0]["name"] = true;
+  filter["families"][0]["files"][0]["size"] = true;
+  filter["families"][0]["files"][0]["sha256"] = true;
+
   JsonDocument doc;
-  const DeserializationError err = deserializeJson(doc, manifestFile);
+  const DeserializationError err = deserializeJson(doc, manifestFile, DeserializationOption::Filter(filter));
   manifestFile.close();
   Storage.remove(MANIFEST_TMP);
 
@@ -298,7 +309,6 @@ bool FontDownloadActivity::fetchAndParseManifest() {
   }
 
   std::vector<ManifestFamily> parsedFamilies;
-  std::vector<std::string> manifestFilenames;
   parsedFamilies.reserve(familiesArr.size());
   fontInstaller_.refreshRegistry();
 
@@ -340,41 +350,12 @@ bool FontDownloadActivity::fetchAndParseManifest() {
       }
     }
 
-    if (!fObj["styles"].isNull()) {
-      if (!fObj["styles"].is<JsonArray>()) {
-        errorMessage_ = tr(STR_FONT_MANIFEST_INVALID);
-        return false;
-      }
-      JsonArray styles = fObj["styles"].as<JsonArray>();
-      if (styles.size() > MAX_STYLES_PER_FAMILY) {
-        errorMessage_ = tr(STR_FONT_MANIFEST_INVALID);
-        return false;
-      }
-      for (JsonVariant styleValue : styles) {
-        if (!styleValue.is<const char*>()) {
-          errorMessage_ = tr(STR_FONT_MANIFEST_INVALID);
-          return false;
-        }
-        std::string style = styleValue.as<const char*>();
-        if (style.empty() || style.size() > MAX_STYLE_NAME_LENGTH) {
-          errorMessage_ = tr(STR_FONT_MANIFEST_INVALID);
-          return false;
-        }
-        for (const auto& existing : family.styles) {
-          if (existing == style) {
-            errorMessage_ = tr(STR_FONT_MANIFEST_INVALID);
-            return false;
-          }
-        }
-        family.styles.push_back(std::move(style));
-      }
-    }
-
     JsonArray files = fObj["files"].as<JsonArray>();
     if (files.size() == 0 || files.size() > MAX_FILES_PER_FAMILY) {
       errorMessage_ = tr(STR_FONT_MANIFEST_INVALID);
       return false;
     }
+    family.files.reserve(files.size());
 
     for (JsonVariant fileValue : files) {
       if (!fileValue.is<JsonObject>()) {
@@ -387,36 +368,28 @@ bool FontDownloadActivity::fetchAndParseManifest() {
         return false;
       }
 
+      const char* fileName = fileObj["name"].as<const char*>();
       ManifestFile file;
-      file.name = fileObj["name"].as<const char*>();
       file.size = fileObj["size"].as<size_t>();
       if (!parseSha256(fileObj["sha256"].as<const char*>(), file.sha256)) {
-        LOG_ERR("FONT", "Invalid SHA-256 in manifest: %s", file.name.c_str());
+        LOG_ERR("FONT", "Invalid SHA-256 in manifest: %s", fileName);
         errorMessage_ = tr(STR_FONT_MANIFEST_INVALID);
         return false;
       }
-      file.fingerprint = fingerprintBytes(file.name.data(), file.name.size());
+      file.fingerprint = fingerprintBytes(fileName, strlen(fileName));
       file.fingerprint = fingerprintBytes(&file.size, sizeof(file.size), file.fingerprint);
       file.fingerprint = fingerprintBytes(file.sha256.data(), file.sha256.size(), file.fingerprint);
-      if (!parsePointSize(file.name.c_str(), family.name.c_str(), file.pointSize)) {
-        LOG_ERR("FONT", "Font filename does not match family/size convention: %s", file.name.c_str());
+      if (!parsePointSize(fileName, family.name.c_str(), file.pointSize)) {
+        LOG_ERR("FONT", "Font filename does not match family/size convention: %s", fileName);
         errorMessage_ = tr(STR_FONT_MANIFEST_INVALID);
         return false;
       }
-      if (!FontInstaller::isValidCpfontFilename(file.name.c_str()) || file.size == 0 ||
-          file.size > MAX_FONT_FILE_BYTES || file.size > std::numeric_limits<size_t>::max() - family.totalSize) {
-        LOG_ERR("FONT", "Invalid file entry in manifest: %s", file.name.c_str());
+      if (!FontInstaller::isValidCpfontFilename(fileName) || file.size == 0 || file.size > MAX_FONT_FILE_BYTES ||
+          file.size > std::numeric_limits<size_t>::max() - family.totalSize) {
+        LOG_ERR("FONT", "Invalid file entry in manifest: %s", fileName);
         errorMessage_ = tr(STR_FONT_MANIFEST_INVALID);
         return false;
       }
-      for (const auto& existing : manifestFilenames) {
-        if (existing == file.name) {
-          LOG_ERR("FONT", "Duplicate file in manifest: %s", file.name.c_str());
-          errorMessage_ = tr(STR_FONT_MANIFEST_INVALID);
-          return false;
-        }
-      }
-
       for (const auto& existing : family.files) {
         if (existing.pointSize == file.pointSize) {
           LOG_ERR("FONT", "Duplicate point size in family %s: %u", family.name.c_str(), file.pointSize);
@@ -425,21 +398,21 @@ bool FontDownloadActivity::fetchAndParseManifest() {
         }
       }
       char path[160];
-      if (!FontInstaller::buildFontPath(family.name.c_str(), file.name.c_str(), path, sizeof(path))) {
+      if (!FontInstaller::buildFontPath(family.name.c_str(), fileName, path, sizeof(path))) {
         errorMessage_ = tr(STR_FONT_MANIFEST_INVALID);
         return false;
       }
 
       family.totalSize += file.size;
-      manifestFilenames.push_back(file.name);
       family.files.push_back(std::move(file));
-      std::sort(family.files.begin(), family.files.end(),
-                [](const ManifestFile& a, const ManifestFile& b) { return a.pointSize < b.pointSize; });
     }
+    std::sort(family.files.begin(), family.files.end(),
+              [](const ManifestFile& a, const ManifestFile& b) { return a.pointSize < b.pointSize; });
 
     uint32_t fingerprint = 2166136261U;
     for (const auto& file : family.files) {
-      fingerprint = fingerprintBytes(file.name.data(), file.name.size(), fingerprint);
+      const std::string fileName = manifestFilename(family, file);
+      fingerprint = fingerprintBytes(fileName.data(), fileName.size(), fingerprint);
       fingerprint = fingerprintBytes(&file.size, sizeof(file.size), fingerprint);
       fingerprint = fingerprintBytes(file.sha256.data(), file.sha256.size(), fingerprint);
     }
@@ -677,6 +650,7 @@ void FontDownloadActivity::downloadPreview(int familyIndex, int fileIndex) {
   auto& family = families_[familyIndex];
   if (fileIndex < 0 || fileIndex >= static_cast<int>(family.files.size())) return;
   const auto& file = family.files[fileIndex];
+  const std::string fileName = manifestFilename(family, file);
   const bool hadPreview = previewFontId_ != 0;
   const int previousFamilyIndex = activePreviewFamilyIndex_;
   const int previousFileIndex = activePreviewFileIndex_;
@@ -693,8 +667,8 @@ void FontDownloadActivity::downloadPreview(int familyIndex, int fileIndex) {
   }
   requestUpdateAndWait();
 
-  auto failPreview = [this, &file, hadPreview, previousFamilyIndex, previousFileIndex](const char* message,
-                                                                                       bool cancelled) {
+  auto failPreview = [this, &fileName, hadPreview, previousFamilyIndex, previousFileIndex](const char* message,
+                                                                                           bool cancelled) {
     if (Storage.exists(PREVIEW_NEXT_PATH)) Storage.remove(PREVIEW_NEXT_PATH);
     RenderLock lock(*this);
     if (cancelled) {
@@ -708,7 +682,7 @@ void FontDownloadActivity::downloadPreview(int familyIndex, int fileIndex) {
       errorAction_ = ErrorAction::None;
     } else {
       state_ = ERROR;
-      errorMessage_ = std::string(message) + ": " + file.name;
+      errorMessage_ = std::string(message) + ": " + fileName;
     }
   };
 
@@ -727,7 +701,7 @@ void FontDownloadActivity::downloadPreview(int familyIndex, int fileIndex) {
 
   beginNetworkTransfer();
   const auto result = HttpDownloader::downloadToFile(
-      baseUrl_ + file.name, PREVIEW_NEXT_PATH,
+      baseUrl_ + fileName, PREVIEW_NEXT_PATH,
       [this](size_t downloaded, size_t total) { updateDownloadProgress(downloaded, total); }, &cancelRequested_, "", "",
       [this] { return pollDownloadCancellation(); }, file.size);
   endNetworkTransfer();
@@ -798,7 +772,7 @@ void FontDownloadActivity::downloadPreview(int familyIndex, int fileIndex) {
     bool canActivate = true;
     if (Storage.exists(PREVIEW_BACKUP_PATH) && !Storage.remove(PREVIEW_BACKUP_PATH)) {
       canActivate = false;
-      errorMessage_ = std::string(tr(STR_FONT_CLEANUP_FAILED)) + ": " + file.name;
+      errorMessage_ = std::string(tr(STR_FONT_CLEANUP_FAILED)) + ": " + fileName;
     }
 
     if (canActivate && hadPreview) {
@@ -815,11 +789,11 @@ void FontDownloadActivity::downloadPreview(int familyIndex, int fileIndex) {
           activePreviewFileIndex_ = previousFileIndex;
         }
         canActivate = false;
-        errorMessage_ = std::string(tr(STR_FONT_REPLACEMENT_FAILED)) + ": " + file.name;
+        errorMessage_ = std::string(tr(STR_FONT_REPLACEMENT_FAILED)) + ": " + fileName;
       }
     } else if (canActivate && Storage.exists(PREVIEW_TMP_PATH) && !Storage.remove(PREVIEW_TMP_PATH)) {
       canActivate = false;
-      errorMessage_ = std::string(tr(STR_FONT_CLEANUP_FAILED)) + ": " + file.name;
+      errorMessage_ = std::string(tr(STR_FONT_CLEANUP_FAILED)) + ": " + fileName;
     }
 
     if (canActivate && !Storage.rename(PREVIEW_NEXT_PATH, PREVIEW_TMP_PATH)) {
@@ -833,7 +807,7 @@ void FontDownloadActivity::downloadPreview(int familyIndex, int fileIndex) {
         }
       }
       canActivate = false;
-      errorMessage_ = std::string(tr(STR_FONT_REPLACEMENT_FAILED)) + ": " + file.name;
+      errorMessage_ = std::string(tr(STR_FONT_REPLACEMENT_FAILED)) + ": " + fileName;
     }
 
     if (canActivate) {
@@ -850,7 +824,7 @@ void FontDownloadActivity::downloadPreview(int familyIndex, int fileIndex) {
           }
         }
         canActivate = false;
-        errorMessage_ = std::string(tr(STR_FONT_INVALID_FILE)) + ": " + file.name;
+        errorMessage_ = std::string(tr(STR_FONT_INVALID_FILE)) + ": " + fileName;
       }
     }
 
@@ -957,6 +931,7 @@ void FontDownloadActivity::downloadFamily(ManifestFamily& family, int fileIndex,
   const size_t endFileIndex = completeFamily ? family.files.size() : firstFileIndex + 1;
   for (size_t i = firstFileIndex; i < endFileIndex; i++) {
     const auto& file = family.files[i];
+    const std::string fileName = manifestFilename(family, file);
 
     {
       RenderLock lock(*this);
@@ -966,8 +941,8 @@ void FontDownloadActivity::downloadFamily(ManifestFamily& family, int fileIndex,
     requestUpdateAndWait();
 
     char destPath[160];
-    if (!FontInstaller::buildFontPath(family.name.c_str(), file.name.c_str(), destPath, sizeof(destPath))) {
-      LOG_ERR("FONT", "Failed to build destination path for %s/%s", family.name.c_str(), file.name.c_str());
+    if (!FontInstaller::buildFontPath(family.name.c_str(), fileName.c_str(), destPath, sizeof(destPath))) {
+      LOG_ERR("FONT", "Failed to build destination path for %s/%s", family.name.c_str(), fileName.c_str());
       failTransaction(tr(STR_FONT_DIRECTORY_FAILED), false);
       return;
     }
@@ -1002,7 +977,7 @@ void FontDownloadActivity::downloadFamily(ManifestFamily& family, int fileIndex,
       fileProgress_ = file.size;
       requestUpdate(true);
     } else {
-      std::string url = baseUrl_ + file.name;
+      std::string url = baseUrl_ + fileName;
 
       beginNetworkTransfer();
       auto result = HttpDownloader::downloadToFile(
@@ -1016,8 +991,8 @@ void FontDownloadActivity::downloadFamily(ManifestFamily& family, int fileIndex,
       }
 
       if (result != HttpDownloader::OK) {
-        LOG_ERR("FONT", "Download failed: %s (%d)", file.name.c_str(), result);
-        failTransaction(std::string(tr(STR_DOWNLOAD_FAILED)) + ": " + file.name, false);
+        LOG_ERR("FONT", "Download failed: %s (%d)", fileName.c_str(), result);
+        failTransaction(std::string(tr(STR_DOWNLOAD_FAILED)) + ": " + fileName, false);
         return;
       }
       if (pollDownloadCancellation()) {
@@ -1029,14 +1004,14 @@ void FontDownloadActivity::downloadFamily(ManifestFamily& family, int fileIndex,
     if (!useStagedFile) {
       HalFile downloadedFile;
       if (!Storage.openFileForRead("FONT", partPath.c_str(), downloadedFile)) {
-        failTransaction(std::string(tr(STR_DOWNLOAD_FAILED)) + ": " + file.name, false);
+        failTransaction(std::string(tr(STR_DOWNLOAD_FAILED)) + ": " + fileName, false);
         return;
       }
       const size_t actualSize = downloadedFile.fileSize();
       downloadedFile.close();
       if (actualSize != file.size) {
-        LOG_ERR("FONT", "Size mismatch for %s: got %zu expected %zu", file.name.c_str(), actualSize, file.size);
-        failTransaction(std::string(tr(STR_FONT_FILE_SIZE_MISMATCH)) + ": " + file.name, false);
+        LOG_ERR("FONT", "Size mismatch for %s: got %zu expected %zu", fileName.c_str(), actualSize, file.size);
+        failTransaction(std::string(tr(STR_FONT_FILE_SIZE_MISMATCH)) + ": " + fileName, false);
         return;
       }
 
@@ -1047,23 +1022,23 @@ void FontDownloadActivity::downloadFamily(ManifestFamily& family, int fileIndex,
           return;
         }
         LOG_ERR("FONT", "Failed to calculate SHA-256: %s", partPath.c_str());
-        failTransaction(std::string(tr(STR_FONT_CHECKSUM_FAILED)) + ": " + file.name, false);
+        failTransaction(std::string(tr(STR_FONT_CHECKSUM_FAILED)) + ": " + fileName, false);
         return;
       }
       if (actualSha256 != file.sha256) {
-        LOG_ERR("FONT", "SHA-256 mismatch for %s", file.name.c_str());
-        failTransaction(std::string(tr(STR_FONT_CHECKSUM_MISMATCH)) + ": " + file.name, false);
+        LOG_ERR("FONT", "SHA-256 mismatch for %s", fileName.c_str());
+        failTransaction(std::string(tr(STR_FONT_CHECKSUM_MISMATCH)) + ": " + fileName, false);
         return;
       }
       if (pollDownloadCancellation()) {
         failTransaction("", true);
         return;
       }
-      LOG_DBG("FONT", "Downloaded %s (size=%zu SHA-256 verified)", file.name.c_str(), file.size);
+      LOG_DBG("FONT", "Downloaded %s (size=%zu SHA-256 verified)", fileName.c_str(), file.size);
 
       if (!fontInstaller_.validateCpfontFile(partPath.c_str())) {
         LOG_ERR("FONT", "Invalid .cpfont: %s", partPath.c_str());
-        failTransaction(std::string(tr(STR_FONT_INVALID_FILE)) + ": " + file.name, false);
+        failTransaction(std::string(tr(STR_FONT_INVALID_FILE)) + ": " + fileName, false);
         return;
       }
       if (pollDownloadCancellation()) {
@@ -1088,7 +1063,7 @@ void FontDownloadActivity::downloadFamily(ManifestFamily& family, int fileIndex,
   if (completeFamily) {
     std::vector<std::string> retainedFilenames;
     retainedFilenames.reserve(family.files.size());
-    for (const auto& file : family.files) retainedFilenames.push_back(file.name);
+    for (const auto& file : family.files) retainedFilenames.push_back(manifestFilename(family, file));
     if (!fontInstaller_.prepareFamilyPrune(family.name.c_str(), retainedFilenames)) {
       failTransaction(tr(STR_FONT_REPLACEMENT_FAILED), false);
       return;
