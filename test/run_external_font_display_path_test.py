@@ -197,12 +197,17 @@ CASES = [
         "path": ROOT / "src" / "activities" / "settings" / "TextSettingsActivity.cpp",
         "required": [
             "return family.hasSize(8) || family.hasSize(10) || family.hasSize(12);",
+            "if (font.source == FontEntry::Source::Builtin) {\n    targetCount = 1;",
             "if (!hasUiPointSize(families[font.sourceIndex])) targetCount = 1;",
             "const int selectedTarget = std::min(currentTarget, targetCount - 1);",
+            "if (font.source == FontEntry::Source::Builtin && target != FontTarget::Reader) return;",
             "if (targetsUi && !hasUiPointSize(family)) return;",
             'sizes_.push_back({uiPointSizeLabel(families[sdIndex]), 12});',
         ],
-        "forbidden": [],
+        "forbidden": [
+            "isUi = isReader && fontManager.getUiSelectedIndex() < 0 && SETTINGS.sdUiFontFamilyName[0] == '\\0';",
+            "return isUi ? tr(STR_READER_AND_UI) : tr(STR_EXT_READER_FONT);",
+        ],
     },
     {
         "name": "BaseTheme button hints force BW render mode",
