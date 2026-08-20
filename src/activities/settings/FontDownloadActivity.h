@@ -68,6 +68,10 @@ class FontDownloadActivity : public Activity {
   bool partialManifestFailure_ = false;
   int selectedIndex_ = 0;
 
+  // Last-update timestamp (ISO-8601) from the most recently changed manifest,
+  // used to show when the catalog content changed on the family list.
+  std::string catalogUpdatedAt_;
+
   int previewFamilyIndex_ = -1;
   int previewFileIndex_ = -1;
   int activePreviewFamilyIndex_ = -1;
@@ -91,7 +95,7 @@ class FontDownloadActivity : public Activity {
   void onWifiSelectionComplete(bool success);
   bool fetchAndParseManifests();
   bool fetchAndParseOneManifest(const std::string& url, std::vector<ManifestFamily>& outFamilies,
-                                std::string& outBaseUrl);
+                                std::string& outBaseUrl, std::string& outUpdatedAt);
   void openFontRepositories();
   bool pollDownloadCancellation();
   void beginNetworkTransfer();
