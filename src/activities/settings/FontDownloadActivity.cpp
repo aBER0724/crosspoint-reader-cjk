@@ -236,7 +236,8 @@ bool FontDownloadActivity::fetchAndParseManifests() {
   for (size_t i = 0; i < urls.size(); ++i) {
     std::vector<ManifestFamily> parsedFamilies;
     std::string parsedBaseUrl;
-    if (!fetchAndParseOneManifest(urls[i], parsedFamilies, parsedBaseUrl)) {
+    std::string parsedUpdatedAt;
+    if (!fetchAndParseOneManifest(urls[i], parsedFamilies, parsedBaseUrl, parsedUpdatedAt)) {
       if (cancelRequested_) return false;
       if (i == 0) {
         // The default repository is authoritative; a failure there is fatal.
@@ -250,6 +251,9 @@ bool FontDownloadActivity::fetchAndParseManifests() {
       for (auto& file : family.files) file.baseUrl = parsedBaseUrl;
     }
     mergeManifestFamilies(mergedFamilies, std::move(parsedFamilies));
+    if (!parsedUpdatedAt.empty() && parsedUpdatedAt > catalogUpdatedAt_) {
+      catalogUpdatedAt_ = parsedUpdatedAt;
+    }
   }
 
   if (!anySuccess) {
@@ -266,7 +270,7 @@ bool FontDownloadActivity::fetchAndParseManifests() {
 }
 
 bool FontDownloadActivity::fetchAndParseOneManifest(const std::string& url, std::vector<ManifestFamily>& outFamilies,
-                                                    std::string& outBaseUrl) {
+                                                    std::string& outBaseUrl, std::string& outUpdatedAt) {
   // Download manifest to a temp file on SD card to avoid holding both
   // TLS buffers and the full JSON string in RAM simultaneously.
   static constexpr const char* MANIFEST_TMP = "/fonts_manifest.tmp";
@@ -314,6 +318,7 @@ bool FontDownloadActivity::fetchAndParseOneManifest(const std::string& url, std:
   JsonDocument filter;
   filter["version"] = true;
   filter["baseUrl"] = true;
+  filter["updatedAt"] = true;
   filter["families"][0]["name"] = true;
   filter["families"][0]["description"] = true;
   filter["families"][0]["files"][0]["name"] = true;
@@ -348,6 +353,17 @@ bool FontDownloadActivity::fetchAndParseOneManifest(const std::string& url, std:
     LOG_ERR("FONT", "Invalid manifest base URL");
     errorMessage_ = tr(STR_FONT_MANIFEST_INVALID);
     return false;
+  }
+
+  // updatedAt is an optional top-level timestamp (ISO-8601). Older manifests
+  // without it are still valid; a present-but-malformed value is rejected.
+  outUpdatedAt.clear();
+  if (!doc["updatedAt"].isNull()) {
+    if (!doc["updatedAt"].is<const char*>()) {
+      errorMessage_ = tr(STR_FONT_MANIFEST_INVALID);
+      return false;
+    }
+    outUpdatedAt = doc["updatedAt"].as<const char*>();
   }
 
   JsonArray familiesArr = doc["families"].as<JsonArray>();
@@ -1461,9 +1477,17 @@ void FontDownloadActivity::render(RenderLock&&) {
       const auto labels = mappedInput.mapLabels(tr(STR_BACK), "", "", "");
       GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
     } else {
+      int listTop = contentTop;
+      if (!catalogUpdatedAt_.empty()) {
+        char updatedBuf[40];
+        snprintf(updatedBuf, sizeof(updatedBuf), tr(STR_FONT_CATALOG_UPDATED_AT),
+                 catalogUpdatedAt_.substr(0, 10).c_str());
+        renderer.drawText(UI_10_FONT_ID, metrics.contentSidePadding, contentTop, updatedBuf);
+        listTop = contentTop + lineHeight + metrics.verticalSpacing;
+      }
       GUI.drawList(
           renderer,
-          Rect{0, contentTop, pageWidth, pageHeight - contentTop - metrics.buttonHintsHeight - metrics.verticalSpacing},
+          Rect{0, listTop, pageWidth, pageHeight - listTop - metrics.buttonHintsHeight - metrics.verticalSpacing},
           listItemCount(), selectedIndex_,
           [this](int index) -> std::string {
             if (isFontReposRow(index)) {
