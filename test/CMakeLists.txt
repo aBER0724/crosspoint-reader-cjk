@@ -48,7 +48,8 @@ foreach(_suite IN ITEMS
     utf8_compose
     opds_filename
     minibidi_arabic
-    combining_marks)
+    combining_marks
+    font_repository)
   if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${_suite}/CMakeLists.txt")
     add_subdirectory(${_suite})
   else()
