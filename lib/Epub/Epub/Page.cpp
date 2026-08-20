@@ -35,6 +35,11 @@ bool PageLine::collectCodepoints(std::vector<uint32_t>& out, const size_t max,
   return !block || block->collectCodepoints(out, max, cancellation);
 }
 
+bool PageLine::collectCodepoints(uint32_t* out, const size_t max, size_t& count,
+                                 const PageRenderCancellation* const cancellation) const {
+  return !block || block->collectCodepoints(out, max, count, cancellation);
+}
+
 bool PageLine::serialize(HalFile& file) {
   serialization::writePod(file, xPos);
   serialization::writePod(file, yPos);
@@ -181,6 +186,26 @@ bool Page::collectCodepoints(std::vector<uint32_t>& out, const size_t max,
       return false;
     }
     if (out.size() >= max) {
+      return !cancellation || !cancellation->requested();
+    }
+  }
+  return !cancellation || !cancellation->requested();
+}
+
+bool Page::collectCodepoints(uint32_t* out, const size_t max, size_t& count,
+                             const PageRenderCancellation* const cancellation) const {
+  if (!out || max == 0 || count >= max) {
+    return !cancellation || !cancellation->requested();
+  }
+
+  for (const auto& element : elements) {
+    if (cancellation && cancellation->requested()) {
+      return false;
+    }
+    if (!element->collectCodepoints(out, max, count, cancellation)) {
+      return false;
+    }
+    if (count >= max) {
       return !cancellation || !cancellation->requested();
     }
   }

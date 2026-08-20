@@ -11,6 +11,7 @@
 #include <Logging.h>
 #include <Memory.h>
 #include <ReaderRuntimePolicy.h>
+#include <SdCardFont.h>
 #include <esp_system.h>
 
 #include <algorithm>
@@ -51,6 +52,24 @@ constexpr float bookmarkProgressEpsilon = 0.0001f;
 bool renderWasSuperseded(const void* context) {
   yield();
   return static_cast<const RenderLock*>(context)->isStale();
+}
+
+void appendCodepointUtf8(std::string& out, uint32_t cp) {
+  if (cp < 0x80) {
+    out.push_back(static_cast<char>(cp));
+  } else if (cp < 0x800) {
+    out.push_back(static_cast<char>(0xC0 | (cp >> 6)));
+    out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+  } else if (cp < 0x10000) {
+    out.push_back(static_cast<char>(0xE0 | (cp >> 12)));
+    out.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+    out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+  } else {
+    out.push_back(static_cast<char>(0xF0 | (cp >> 18)));
+    out.push_back(static_cast<char>(0x80 | ((cp >> 12) & 0x3F)));
+    out.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+    out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+  }
 }
 
 int clampPercent(int percent) {
@@ -449,6 +468,63 @@ void EpubReaderActivity::runDeferredReaderWork() {
           // The chapter re-paginated since the saved progress (settings changed): we now know the
           // real page count, so re-render at the remapped page. No-op for an unchanged resume.
           requestUpdate();
+        }
+      }
+    }
+  }
+
+  // Idle SD-font glyph prefetch: warm the next page's glyphs while the reader sits on the
+  // current one, so the actual page turn's prewarm becomes a subset-check hit (zero SD
+  // reads; see SdCardFont::resetStyleMiniData, which deliberately keeps mini data across
+  // PrewarmScopes). This is the established design intent -- "the idle prewarm of page N+1
+  // serves the actual page turn with zero SD reads" -- wired into EpubReaderActivity here.
+  // Runs only when idle (input quiet for IDLE_READER_WORK_DELAY_MS), not while waiting for
+  // the current page, and holds the RenderLock so it cannot race a real render. The lock
+  // tracks the render generation, so a quick page turn bumps the generation, making the
+  // prefetch's isCancelled callback fire and abort the prewarm promptly.
+  if (section && !section->isBuilding() && !waiting && !RenderLock::peek() &&
+      ReaderRuntime::classifyReaderMemory(ESP.getFreeHeap()) != ReaderRuntime::MemoryDecision::Stop) {
+    const int fontId = SETTINGS.getReaderFontId();
+    if (renderer.isSdCardFont(fontId) && section->currentPage >= 0 &&
+        section->currentPage + 1 < static_cast<int>(section->pageCount) &&
+        (section->currentPage + 1 != lastPrefetchedNextPage || fontId != lastPrefetchedFontId)) {
+      RenderLock lock(false, true);
+      if (!lock.locked()) return;
+      // Re-check under the lock: a page turn or render may have landed between the outer
+      // peek() and acquiring the lock here.
+      if (section->isBuilding() || section->currentPage + 1 >= static_cast<int>(section->pageCount) || lock.isStale()) {
+        return;
+      }
+      const int nextPage = section->currentPage + 1;
+      auto next = section->loadPage(nextPage);
+      if (!next || lock.isStale()) {
+        return;
+      }
+      std::vector<uint32_t> codepoints;
+      const PageRenderCancellation cancellation{renderWasSuperseded, &lock};
+      if (!next->collectCodepoints(codepoints, SdCardFont::MAX_PAGE_GLYPHS, &cancellation) || lock.isStale()) {
+        return;
+      }
+      if (codepoints.empty()) {
+        lastPrefetchedNextPage = nextPage;
+        lastPrefetchedFontId = fontId;
+        return;
+      }
+      // Re-encode to UTF-8 and run the standard prewarm path (dedup/sort/ligature/replacement
+      // glyph + cancellation) exactly as the real turn's endScanAndPrewarm does, so the next
+      // turn's subset-check hits on every glyph. All four styles: resolveStyleMask trims to
+      // the font's present styles.
+      std::string utf8Text;
+      utf8Text.reserve(codepoints.size() * 3);
+      for (const uint32_t cp : codepoints) {
+        appendCodepointUtf8(utf8Text, cp);
+      }
+      if (auto* fcm = renderer.getFontCacheManager()) {
+        if (fcm->prewarmCache(fontId, utf8Text.c_str(), 0x0F, renderWasSuperseded, &lock)) {
+          lastPrefetchedNextPage = nextPage;
+          lastPrefetchedFontId = fontId;
+          LOG_DBG("ERS", "Idle-prewarmed next page %d (%u codepoints) for SD font %d", nextPage,
+                  static_cast<unsigned>(codepoints.size()), fontId);
         }
       }
     }
@@ -1438,10 +1514,53 @@ void EpubReaderActivity::render(RenderLock&& lock) {
     // tens of seconds. Anchor navigation still waits because no safe fallback
     // destination is known.
     if (pagePending && !anchorPending && section->isPartial() && section->pageCount > 0) {
-      pendingResumePage = static_cast<uint16_t>(section->currentPage);
-      section->currentPage = section->pageCount - 1;
-      LOG_DBG("ERS", "Resume page %d exceeds partial cache; showing page %d while rebuilding", *pendingResumePage,
-              section->currentPage);
+      const int turnTarget = section->currentPage;
+      if (turnTarget >= 0) {
+        // User page turn (or jump) landed past the partial watermark while the
+        // background rebuild is still catching up. Pump the incremental build to
+        // the requested page in the foreground so the target renders immediately
+        // (one frame) instead of drawing a dead fallback frame and waiting for
+        // the idle loop. The budget cap keeps a very distant target from hogging
+        // RenderLock; if we run out, fall back to the watermark page below and
+        // let loop() finish the catch-up (which now runs at a far larger parse
+        // budget, so it lands quickly).
+        const uint32_t pumpStart = millis();
+        LOG_DBG("ERS", "PUMP start target=%d pc=%d built=%d isBuilding=%d", turnTarget, section->pageCount,
+                section->builtPageCount(), section->isBuilding() ? 1 : 0);
+        while (section->isBuilding() && section->currentPage >= static_cast<int>(section->pageCount) &&
+               millis() - pumpStart < FOREGROUND_BUILD_TIME_BUDGET_MS) {
+          const Section::BuildResult pumpResult =
+              section->buildSomeMore(BUILD_PAGES_PER_PUMP, FOREGROUND_BUILD_PARSE_STEPS_PER_PUMP,
+                                     FOREGROUND_BUILD_PARSE_BYTES_PER_PUMP, [&lock] { return lock.isStale(); });
+          LOG_DBG("ERS", "PUMP iter res=%d pc=%d built=%d elapsed=%lu", static_cast<int>(pumpResult),
+                  section->pageCount, section->builtPageCount(), static_cast<unsigned long>(millis() - pumpStart));
+          if (pumpResult == Section::BuildResult::Cancelled || lock.isStale()) {
+            return;  // Superseded by newer input; a newer render takes over.
+          }
+          if (pumpResult == Section::BuildResult::Failed) {
+            LOG_ERR("ERS", "Failed during foreground turn build");
+            resetSection();
+            showBuildError();
+            return;
+          }
+          if (pumpResult == Section::BuildResult::Completed) {
+            break;
+          }
+        }
+      }
+      if (section->currentPage >= static_cast<int>(section->pageCount)) {
+        if (turnTarget < 0) {
+          return;
+        }
+        // Budget exhausted before the target was built: keep the watermark page on
+        // screen and let loop() finish the catch-up.
+        pendingResumePage = static_cast<uint16_t>(turnTarget);
+        section->currentPage = section->pageCount - 1;
+        LOG_DBG("ERS", "Turn target %d past watermark %d; showing page %d while catching up", turnTarget,
+                section->currentPage, section->currentPage);
+      } else {
+        waitingForCurrentPage.store(false, std::memory_order_release);
+      }
     } else {
       return;
     }
@@ -1648,13 +1767,17 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
   FontManager& fontManager = FontManager::getInstance();
   if (fontManager.isExternalFontEnabled()) {
     if (ExternalFont* externalFont = fontManager.getActiveFont()) {
-      std::vector<uint32_t> codepoints;
-      codepoints.reserve(externalFont->getPreloadLimit());
-      if (!page->collectCodepoints(codepoints, externalFont->getPreloadLimit(), &cancellation)) {
+      // Keep page prewarm allocation-free. The page has a bounded preload limit,
+      // so a fixed buffer avoids reserve/sort allocations in the render task while
+      // preserving the EFT bitmap cache and its visual glyph path under low heap.
+      const size_t preloadLimit = std::min(externalFont->getPreloadLimit(), ExternalFontCachePolicy::kPreloadLimit);
+      uint32_t codepoints[ExternalFontCachePolicy::kPreloadLimit] = {};
+      size_t codepointCount = 0;
+      if (preloadLimit > 0 && !page->collectCodepoints(codepoints, preloadLimit, codepointCount, &cancellation)) {
         return;
       }
-      if (!codepoints.empty() && !externalFont->preloadGlyphs(codepoints.data(), codepoints.size(),
-                                                              cancellation.isCancelled, cancellation.context)) {
+      if (codepointCount > 0 &&
+          !externalFont->preloadGlyphs(codepoints, codepointCount, cancellation.isCancelled, cancellation.context)) {
         return;
       }
     }

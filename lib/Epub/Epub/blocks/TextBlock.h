@@ -91,6 +91,8 @@ class TextBlock final : public Block {
               const PageRenderCancellation* cancellation = nullptr) const;
   bool collectCodepoints(std::vector<uint32_t>& out, size_t max,
                          const PageRenderCancellation* cancellation = nullptr) const;
+  bool collectCodepoints(uint32_t* out, size_t max, size_t& count,
+                         const PageRenderCancellation* cancellation = nullptr) const;
   BlockType getType() override { return TEXT_BLOCK; }
   bool serialize(HalFile& file) const;
   static std::unique_ptr<TextBlock> deserialize(HalFile& file);

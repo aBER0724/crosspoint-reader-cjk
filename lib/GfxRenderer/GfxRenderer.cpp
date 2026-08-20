@@ -869,6 +869,68 @@ void GfxRenderer::renderTextFallback(const TextFallbackGlyph& fallback, const ui
                                       ? scaleTextFallbackExtent(fallback.sourceCellClipWidth, scale)
                                       : fallback.sourceCellClipWidth;
 
+  // Portrait BW renders directly into the 1-bit framebuffer. The generic
+  // drawPixel() path rotates coordinates, checks bounds, divides to find the
+  // byte/bit, and evaluates dark-mode state for every ink pixel. Scaled CJK
+  // fallback glyphs can contain hundreds of ink pixels per page, so hoist all
+  // invariant work to the glyph/row level while preserving the exact source
+  // area sampling used below. Strip targets and grayscale keep the generic
+  // path because they use different write targets/semantics.
+  const bool portraitFast = orientation == GfxRenderer::Orientation::Portrait && renderMode == BW && !_stripActive;
+  if (portraitFast) {
+    const bool shouldInvert = darkMode && !skipDarkModeForImages;
+    const bool actualState = shouldInvert ? !pixelState : pixelState;
+
+    // External glyph dimensions are uint8_t and fallback scaling only shrinks,
+    // so a fixed table avoids heap work while moving the source-boundary
+    // divisions out of the per-row inner loop.
+    uint8_t sourceStarts[256];
+    uint8_t sourceEnds[256];
+    for (int dstX = 0; dstX < dstWidth; dstX++) {
+      sourceStarts[dstX] = static_cast<uint8_t>(textFallbackSourceStart(dstX, scale));
+      sourceEnds[dstX] = static_cast<uint8_t>(textFallbackSourceEnd(dstX, srcWidth, scale));
+    }
+
+    for (int dstY = 0; dstY < dstHeight; dstY++) {
+      const int screenY = drawY + dstY;
+      if (screenY < 0 || screenY >= getScreenHeight()) continue;
+      const int srcY0 = textFallbackSourceStart(dstY, scale);
+      const int srcY1 = textFallbackSourceEnd(dstY, srcHeight, scale);
+      const uint8_t byteColumn = static_cast<uint8_t>(screenY >> 3);
+      const uint8_t bitPosition = static_cast<uint8_t>(7 - (screenY & 7));
+
+      for (int dstX = 0; dstX < dstWidth; dstX++) {
+        const int screenX = drawX + dstX;
+        if (screenX < 0 || screenX >= getScreenWidth()) continue;
+        if (scaledCellClipWidth > 0 && (screenX < *x || screenX >= *x + scaledCellClipWidth)) continue;
+
+        bool hasInk = false;
+        for (int srcY = srcY0; srcY < srcY1 && !hasInk; srcY++) {
+          for (int srcX = sourceStarts[dstX]; srcX < sourceEnds[dstX]; srcX++) {
+            const int byteIndex = srcY * bytesPerRow + srcX / 8;
+            const int bitIndex = 7 - srcX % 8;
+            const uint8_t byte = builtin ? pgm_read_byte(&bitmap[byteIndex]) : bitmap[byteIndex];
+            if ((byte >> bitIndex) & 1) {
+              hasInk = true;
+              break;
+            }
+          }
+        }
+        if (!hasInk) continue;
+
+        const int physicalY = panelHeight - 1 - screenX;
+        const uint32_t byteIndex = static_cast<uint32_t>(physicalY) * panelWidthBytes + byteColumn;
+        if (actualState) {
+          frameBuffer[byteIndex] &= ~(1u << bitPosition);
+        } else {
+          frameBuffer[byteIndex] |= 1u << bitPosition;
+        }
+      }
+    }
+    *x += scalePositiveTextAdvance(fallback.advance, halfScale);
+    return;
+  }
+
   for (int dstY = 0; dstY < dstHeight; dstY++) {
     const int screenY = drawY + dstY;
     if (screenY < 0 || screenY >= getScreenHeight()) continue;
@@ -3433,14 +3495,48 @@ void GfxRenderer::renderExternalGlyph(const uint8_t* bitmap, ExternalFont* font,
     return;
   }
 
-  for (int glyphY = minGlyphY; glyphY < maxGlyphY; glyphY++) {
-    const int screenY = layout.drawY + glyphY;
-    for (int glyphX = minGlyphX; glyphX < maxGlyphX; glyphX++) {
-      const int byteIndex = glyphY * bytesPerRow + (glyphX / 8);
-      const int bitIndex = 7 - (glyphX % 8);  // MSB first
+  // Fast path: Portrait orientation + 1-bit BW. drawPixel() in Portrait maps
+  // (screenX, screenY) -> (phyX = screenY, phyY = panelHeight-1-screenX). With
+  // screenX = drawX+glyphX and screenY = drawY+glyphY, phyX is constant per
+  // glyph row and phyY steps by -1 per glyph column, so we hoist the
+  // byte/bit derivation out of the inner loop and advance byteIndex by
+  // panelWidthBytes instead of re-running the rotation switch, division and
+  // bounds checks for every pixel. The clip above guarantees screen coords are
+  // inside the logical screen, which maps 1:1 to the panel in Portrait, so no
+  // per-pixel bounds checks are needed. This mirrors drawPixel() semantics
+  // exactly (direct frameBuffer write, darkMode inversion).
+  const bool portraitFast = orientation == GfxRenderer::Orientation::Portrait && renderMode == BW && !_stripActive;
+  if (portraitFast) {
+    const bool shouldInvert = darkMode && !skipDarkModeForImages && renderMode == BW;
+    const bool actualState = shouldInvert ? !pixelState : pixelState;
+    const int phyYBase = panelHeight - 1 - layout.drawX;  // phyY at glyphX == 0
+    for (int glyphY = minGlyphY; glyphY < maxGlyphY; glyphY++) {
+      const int phyX = layout.drawY + glyphY;  // constant per row
+      const uint8_t byteCol = static_cast<uint8_t>(phyX >> 3);
+      const uint8_t bitPos = static_cast<uint8_t>(7 - (phyX & 7));
+      const int rowBitmapOffset = glyphY * bytesPerRow;
+      uint32_t byteIndex = static_cast<uint32_t>(phyYBase - minGlyphX) * panelWidthBytes + byteCol;
+      for (int glyphX = minGlyphX; glyphX < maxGlyphX; glyphX++, byteIndex -= panelWidthBytes) {
+        const uint8_t byte = bitmap[rowBitmapOffset + (glyphX >> 3)];
+        if ((byte >> (7 - (glyphX & 7))) & 1) {
+          if (actualState) {
+            frameBuffer[byteIndex] &= ~(1u << bitPos);
+          } else {
+            frameBuffer[byteIndex] |= 1u << bitPos;
+          }
+        }
+      }
+    }
+  } else {
+    for (int glyphY = minGlyphY; glyphY < maxGlyphY; glyphY++) {
+      const int screenY = layout.drawY + glyphY;
+      for (int glyphX = minGlyphX; glyphX < maxGlyphX; glyphX++) {
+        const int byteIndex = glyphY * bytesPerRow + (glyphX / 8);
+        const int bitIndex = 7 - (glyphX % 8);  // MSB first
 
-      if ((bitmap[byteIndex] >> bitIndex) & 1) {
-        drawPixel(layout.drawX + glyphX, screenY, pixelState);
+        if ((bitmap[byteIndex] >> bitIndex) & 1) {
+          drawPixel(layout.drawX + glyphX, screenY, pixelState);
+        }
       }
     }
   }
