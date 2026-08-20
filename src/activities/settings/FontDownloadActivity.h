@@ -8,6 +8,7 @@
 #include "SdCardFont.h"
 #include "activities/Activity.h"
 #include "util/ButtonNavigator.h"
+#include "util/FontManifest.h"
 
 // JSON schema version of the fonts.json manifest. The canonical version for
 // the build tooling lives in lib/EpdFont/scripts/cpfont_version.py. This
@@ -22,7 +23,7 @@
 // lib/EpdFont/scripts/cpfont_version.py.
 #define FONT_MANIFEST_URL_STRINGIFY_INNER(x) #x
 #define FONT_MANIFEST_URL_STRINGIFY(x) FONT_MANIFEST_URL_STRINGIFY_INNER(x)
-#define FONT_MANIFEST_URL                                                                                  \
+#define FONT_MANIFEST_URL                                                                                      \
   "https://github.com/aBER0724/crosspoint-cjk-fonts/releases/download/sd-fonts-m" FONT_MANIFEST_URL_STRINGIFY( \
       FONTS_MANIFEST_VERSION) "-b" FONT_MANIFEST_URL_STRINGIFY(CPFONT_VERSION) "/fonts.json"
 #endif
@@ -58,32 +59,13 @@ class FontDownloadActivity : public Activity {
 
   enum class ErrorAction { None, Preview, Install };
 
-  struct ManifestFile {
-    size_t size = 0;
-    uint8_t pointSize = 0;
-    std::array<uint8_t, 32> sha256{};
-    uint32_t fingerprint = 0;
-    bool installed = false;
-  };
-
-  struct ManifestFamily {
-    std::string name;
-    std::string description;
-    std::vector<ManifestFile> files;
-    size_t totalSize = 0;
-    uint32_t fingerprint = 0;
-    bool installed = false;
-    bool partial = false;
-    bool hasUpdate = false;
-  };
-
   State state_ = WIFI_SELECTION;
   FontInstaller fontInstaller_;
   ButtonNavigator buttonNavigator_;
 
   // Manifest data
-  std::string baseUrl_;
   std::vector<ManifestFamily> families_;
+  bool partialManifestFailure_ = false;
   int selectedIndex_ = 0;
 
   int previewFamilyIndex_ = -1;
@@ -107,7 +89,10 @@ class FontDownloadActivity : public Activity {
   int downloadProgressBarY_ = 0;
 
   void onWifiSelectionComplete(bool success);
-  bool fetchAndParseManifest();
+  bool fetchAndParseManifests();
+  bool fetchAndParseOneManifest(const std::string& url, std::vector<ManifestFamily>& outFamilies,
+                                std::string& outBaseUrl);
+  void openFontRepositories();
   bool pollDownloadCancellation();
   void beginNetworkTransfer();
   void endNetworkTransfer();
@@ -117,7 +102,6 @@ class FontDownloadActivity : public Activity {
   void downloadFamily(ManifestFamily& family, int fileIndex = -1, const char* stagedFilePath = nullptr);
   void downloadAll();
   static bool parsePointSize(const char* filename, const char* familyName, uint8_t& pointSize);
-  static std::string manifestFilename(const ManifestFamily& family, const ManifestFile& file);
   int defaultPreviewFileIndex(const ManifestFamily& family) const;
   void downloadPreview(int familyIndex, int fileIndex);
   void removePreviewTemporaryFiles();
@@ -129,6 +113,7 @@ class FontDownloadActivity : public Activity {
   bool showDownloadAllRow() const;
   bool showUpdateAllRow() const;
   int specialRowCount() const;
+  bool isFontReposRow(int index) const { return index == 0; }
   bool isDownloadAllRow(int index) const;
   bool isUpdateAllRow(int index) const;
   bool isSelectedFamilyDeletable() const;
