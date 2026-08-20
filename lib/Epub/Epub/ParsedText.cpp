@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <functional>
 #include <limits>
 #include <string>
@@ -280,12 +281,79 @@ void ParsedText::replaceWord(const size_t index, const std::string_view word) {
 
 void ParsedText::eraseFront(const size_t count) {
   if (count == 0) return;
-  wordOffsets.erase(wordOffsets.begin(), wordOffsets.begin() + count);
+
+  const size_t totalWords = wordOffsets.size();
+  if (count >= totalWords) {
+    wordOffsets.clear();
+    wordLengths.clear();
+    wordStyles.clear();
+    wordContinues.clear();
+    wordNoSpaceBefore.clear();
+    wordIsFocusSuffix.clear();
+    std::vector<char>().swap(wordArena);
+    return;
+  }
+
+  // Soft flushes consume the front of a long CJK paragraph. The token vectors were
+  // already erased below, but the flat text arena used to retain every consumed word,
+  // so a long incremental build grew by roughly one paragraph per flush and eventually
+  // starved page deserialization. For the normal parser path offsets are append-ordered;
+  // compact that suffix in place while retaining the existing allocation. If
+  // hyphenation has made offsets non-monotonic, keep the old safe behavior rather
+  // than risking a move over a still-live source range.
+  bool ordered = true;
+  size_t previousOffset = 0;
+  size_t compactedEnd = 0;
+  for (size_t i = count; i < totalWords; ++i) {
+    const size_t offset = wordOffsets[i];
+    const size_t end = offset + static_cast<size_t>(wordLengths[i]) + 1;
+    if (end > wordArena.size() || (i > count && offset < previousOffset)) {
+      ordered = false;
+      break;
+    }
+    previousOffset = offset;
+    compactedEnd = std::max(compactedEnd, end);
+  }
+
+  if (ordered) {
+    const size_t sourceStart = wordOffsets[count];
+    if (sourceStart <= compactedEnd && sourceStart <= wordArena.size()) {
+      const size_t compactedSize = compactedEnd - sourceStart;
+      if (compactedSize > 0) {
+        std::memmove(wordArena.data(), wordArena.data() + sourceStart, compactedSize);
+        wordArena.resize(compactedSize);
+
+        // Keep the existing allocation in place: this path runs under the tight
+        // incremental-build heap budget, so asking vector for an exact-size copy
+        // could itself throw. The consumed bytes are gone from the logical arena;
+        // later appends reuse the retained capacity instead of growing forever.
+      } else {
+        std::vector<char>().swap(wordArena);
+      }
+      for (size_t i = count; i < totalWords; ++i) {
+        wordOffsets[i - count] = static_cast<uint32_t>(wordOffsets[i] - sourceStart);
+      }
+      wordOffsets.resize(totalWords - count);
+    } else {
+      ordered = false;
+    }
+  }
+
+  if (!ordered) {
+    // Hyphenation can append replacement text and make offsets non-monotonic. Keep
+    // that uncommon path allocation-free and preserve its existing arena; the
+    // normal CJK soft-flush path above is monotonic and compacted.
+    wordOffsets.erase(wordOffsets.begin(), wordOffsets.begin() + count);
+  }
   wordLengths.erase(wordLengths.begin(), wordLengths.begin() + count);
   wordStyles.erase(wordStyles.begin(), wordStyles.begin() + count);
   wordContinues.erase(wordContinues.begin(), wordContinues.begin() + count);
   wordNoSpaceBefore.erase(wordNoSpaceBefore.begin(), wordNoSpaceBefore.begin() + count);
   wordIsFocusSuffix.erase(wordIsFocusSuffix.begin(), wordIsFocusSuffix.begin() + count);
+
+  // `erase()` intentionally keeps vector capacity here. The compacted logical
+  // suffix prevents unbounded text growth, while retaining capacity avoids a
+  // throwing copy/reallocation in the embedded parser's hot path.
 }
 
 void ParsedText::addWord(const std::string_view inputWord, const EpdFontFamily::Style fontStyle, const bool underline,

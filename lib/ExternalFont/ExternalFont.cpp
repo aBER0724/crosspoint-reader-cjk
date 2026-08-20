@@ -6,7 +6,6 @@
 
 #include <algorithm>
 #include <cstring>
-#include <vector>
 
 #include "FontFilenameParser.h"
 
@@ -161,6 +160,12 @@ void ExternalFont::unload() {
   _cache = nullptr;
   delete[] _hashTable;
   _hashTable = nullptr;
+  delete[] _metricsCache;
+  _metricsCache = nullptr;
+  _metricsCapacity = 0;
+  _metricsCount = 0;
+  _metricsCursor = 0;
+  _metricsAllocationFailed = false;
 }
 
 bool ExternalFont::parseFilename(const char* filepath) {
@@ -786,18 +791,106 @@ bool ExternalFont::getGlyphMetrics(uint32_t codepoint, ExternalGlyphMetrics* out
 bool ExternalFont::getGlyphMetricsForLayout(uint32_t codepoint, ExternalGlyphMetrics* out) const {
   if (!out || !_isLoaded) return false;
 
+  // Metrics-only cache first: it survives across pages during a rebuild where the
+  // bitmap cache thrashes, so repeated codepoints (same-page repeats and adjacent
+  // pages) hit RAM instead of the SD font atlas. Lazily allocated on first use so a
+  // font that never does layout allocates nothing.
+  if (_metricsCache) {
+    if (findMetricsInCache(codepoint, out)) {
+      return true;
+    }
+  } else {
+    const_cast<ExternalFont*>(this)->ensureMetricsCache();
+  }
+
   if (_cache) {
     const int idx = findInCache(codepoint);
     if (idx >= 0 && !_cache[idx].notFound) {
       *out = _cache[idx].metrics;
+      if (_metricsCache) {
+        const_cast<ExternalFont*>(this)->storeMetricsInCache(codepoint, _cache[idx].metrics);
+      }
       return true;
     }
   }
 
-  if (_isRichMetricsFormat) {
-    return measureRichGlyphForLayout(codepoint, out);
+  // Layout misses are intentionally measured through the metrics-only path rather
+  // than getGlyph(). getGlyph() fills the 35 KB bitmap cache, which is useful for
+  // rendering but wasteful during a long background rebuild: the page bitmap cache
+  // thrashes while the layout needs only the 12-byte metrics. The render path has
+  // its own cancellation-aware preload pass and can populate the bitmap cache just
+  // before drawing the page.
+  const bool ok =
+      _isRichMetricsFormat ? measureRichGlyphForLayout(codepoint, out) : measureLegacyGlyphForLayout(codepoint, out);
+  if (ok && _metricsCache) {
+    const_cast<ExternalFont*>(this)->storeMetricsInCache(codepoint, *out);
   }
-  return measureLegacyGlyphForLayout(codepoint, out);
+  return ok;
+}
+
+bool ExternalFont::ensureMetricsCache() {
+  if (_metricsCache) {
+    return true;
+  }
+  if (_metricsAllocationFailed) {
+    return false;
+  }
+
+  // Adaptive sizing: prefer a large capacity, shrink on allocation failure so a
+  // tight heap (rebuild context holds most of it) still gets a smaller cache
+  // instead of none. Layout stays correct either way — this is purely a speed win.
+  static constexpr uint16_t kTryCapacities[] = {128, 64, 0};
+  for (const uint16_t cap : kTryCapacities) {
+    if (cap == 0) {
+      _metricsAllocationFailed = true;
+      return false;
+    }
+    GlyphMetricsEntry* c = new (std::nothrow) GlyphMetricsEntry[cap];
+    if (!c) {
+      continue;
+    }
+    _metricsCache = c;
+    _metricsCapacity = cap;
+    _metricsCount = 0;
+    _metricsCursor = 0;
+    LOG_DBG("EFT", "Metrics cache allocated: %d entries (%d bytes)", cap,
+            static_cast<int>(cap * sizeof(GlyphMetricsEntry)));
+    return true;
+  }
+  _metricsAllocationFailed = true;
+  return false;
+}
+
+bool ExternalFont::findMetricsInCache(uint32_t codepoint, ExternalGlyphMetrics* out) const {
+  for (uint16_t i = 0; i < _metricsCount; ++i) {
+    if (_metricsCache[i].codepoint == codepoint) {
+      *out = _metricsCache[i].metrics;
+      return true;
+    }
+  }
+  return false;
+}
+
+void ExternalFont::storeMetricsInCache(uint32_t codepoint, const ExternalGlyphMetrics& metrics) {
+  if (!_metricsCache || _metricsCapacity == 0) {
+    return;
+  }
+  // Refresh if already present (keeps recently-used entries resident).
+  for (uint16_t i = 0; i < _metricsCount; ++i) {
+    if (_metricsCache[i].codepoint == codepoint) {
+      _metricsCache[i].metrics = metrics;
+      return;
+    }
+  }
+  if (_metricsCount < _metricsCapacity) {
+    _metricsCache[_metricsCount].codepoint = codepoint;
+    _metricsCache[_metricsCount].metrics = metrics;
+    ++_metricsCount;
+  } else {
+    _metricsCache[_metricsCursor].codepoint = codepoint;
+    _metricsCache[_metricsCursor].metrics = metrics;
+    _metricsCursor = (_metricsCursor + 1) % _metricsCapacity;
+  }
 }
 
 bool ExternalFont::measureRichGlyphForLayout(uint32_t codepoint, ExternalGlyphMetrics* out) const {
@@ -951,18 +1044,19 @@ bool ExternalFont::preloadGlyphs(const uint32_t* codepoints, const size_t count,
     return true;
   }
 
-  const size_t maxLoad = std::min(count, getPreloadLimit());
-
-  // Sort + dedupe so SD reads stay roughly sequential (especially for legacy
-  // .bin where neighbouring codepoints are neighbouring file offsets).
-  std::vector<uint32_t> sorted(codepoints, codepoints + maxLoad);
-  std::sort(sorted.begin(), sorted.end());
-  sorted.erase(std::unique(sorted.begin(), sorted.end()), sorted.end());
+  constexpr size_t MAX_PRELOAD = ExternalFontCachePolicy::kPreloadLimit;
+  const size_t maxLoad = std::min(count, std::min(getPreloadLimit(), MAX_PRELOAD));
+  uint32_t sorted[MAX_PRELOAD] = {};
+  std::copy_n(codepoints, maxLoad, sorted);
+  std::sort(sorted, sorted + maxLoad);
+  const size_t sortedCount = static_cast<size_t>(std::unique(sorted, sorted + maxLoad) - sorted);
   if (cancelled()) {
     return false;
   }
 
-  LOG_DBG("EFT", "Preloading %zu unique glyphs", sorted.size());
+  // Keep the page-turn prewarm allocation-free. The bounded fixed buffer avoids
+  // reserve/sort allocations on top of the retained 35 KB bitmap cache.
+  LOG_DBG("EFT", "Preloading %zu unique glyphs", sortedCount);
   const unsigned long startTime = millis();
 
   size_t loaded = 0;
@@ -975,11 +1069,11 @@ bool ExternalFont::preloadGlyphs(const uint32_t* codepoints, const size_t count,
       uint32_t dataLength = 0;
       uint32_t dataOffset = 0;
     };
+    PendingEpdGlyph pending[MAX_PRELOAD] = {};
+    size_t pendingCount = 0;
 
-    std::vector<PendingEpdGlyph> pending;
-    pending.reserve(sorted.size());
-
-    for (uint32_t cp : sorted) {
+    for (size_t sortedIndex = 0; sortedIndex < sortedCount; ++sortedIndex) {
+      const uint32_t cp = sorted[sortedIndex];
       if (cancelled()) {
         return false;
       }
@@ -1005,13 +1099,16 @@ bool ExternalFont::preloadGlyphs(const uint32_t* codepoints, const size_t count,
         loaded++;
         continue;
       }
-      pending.push_back(glyph);
+      if (pendingCount < MAX_PRELOAD) {
+        pending[pendingCount++] = glyph;
+      }
     }
 
-    std::sort(pending.begin(), pending.end(),
+    std::sort(pending, pending + pendingCount,
               [](const PendingEpdGlyph& a, const PendingEpdGlyph& b) { return a.dataOffset < b.dataOffset; });
 
-    for (const PendingEpdGlyph& glyph : pending) {
+    for (size_t pendingIndex = 0; pendingIndex < pendingCount; ++pendingIndex) {
+      const PendingEpdGlyph& glyph = pending[pendingIndex];
       if (cancelled()) {
         return false;
       }
@@ -1069,7 +1166,8 @@ bool ExternalFont::preloadGlyphs(const uint32_t* codepoints, const size_t count,
     return true;
   }
 
-  for (uint32_t cp : sorted) {
+  for (size_t sortedIndex = 0; sortedIndex < sortedCount; ++sortedIndex) {
+    const uint32_t cp = sorted[sortedIndex];
     if (cancelled()) {
       return false;
     }
