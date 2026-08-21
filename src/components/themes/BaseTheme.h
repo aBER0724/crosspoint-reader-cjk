@@ -32,6 +32,9 @@ struct ThemeMetrics {
   int headerHeight;
   int verticalSpacing;
 
+  int previewPadding;
+  int previewHeightPercent;
+
   int contentSidePadding;
   int listRowHeight;
   int listWithSubtitleRowHeight;
@@ -48,6 +51,8 @@ struct ThemeMetrics {
   int homeCoverHeight;
   int homeCoverTileHeight;
   int homeRecentBooksCount;
+  bool homeContinueReadingInMenu;
+  int homeMenuTopOffset;
 
   int buttonHintsHeight;
   int sideButtonHintsWidth;
@@ -56,23 +61,48 @@ struct ThemeMetrics {
   int progressBarMarginTop;
   int statusBarHorizontalMargin;
   int statusBarVerticalMargin;
-
-  int keyboardKeyWidth;
   int keyboardKeyHeight;
   int keyboardKeySpacing;
-  int keyboardBottomKeyHeight;
-  int keyboardBottomKeySpacing;
-  bool keyboardBottomAligned;
   bool keyboardCenteredText;
   int keyboardVerticalOffset;
   int keyboardTextFieldWidthPercent;
   int keyboardWidthPercent;
   int keyboardKeyCornerRadius;
+
+  float popupTopOffsetRatio;
+  int popupMarginX;
+  int popupMarginY;
+  int popupFrameThickness;
+  int popupCornerRadius;
+  bool popupTextBold;
+  bool popupTextInverted;
+  int popupTextBaselineOffsetY;
+  int popupProgressBarHeight;
+  bool popupProgressDrawOutline;
+  bool popupProgressClampPercent;
+  bool popupProgressFillInverted;
+  bool popupProgressOutlineInverted;
+
+  int optionPopupItemSpacing;
+  int optionPopupInnerPadding;
+  int optionPopupSelectionHPadding;
+  int optionPopupSelectionVPadding;
+  int optionPopupTitleGap;
+  bool optionPopupUseSmallFont;
+  bool optionPopupOptionFontBold;
+  int optionPopupSelectionRadius;
+  bool optionPopupSelectionLight;
+  bool optionPopupDrawAllRows;
+  int optionPopupDialogSideMargin;
+  bool optionPopupTitleSeparator;
+
+  int textFieldHorizontalPadding;
+  int textFieldNormalThickness;
+  int textFieldCursorThickness;
+  int textFieldLineEndOffset;
 };
 
-enum UIIcon { Folder, Text, Image, Book, File, Recent, Settings, Transfer, Library, Wifi, Hotspot };
-
-enum class KeyboardKeyType { Normal, Shift, Mode, Space, Del, Ok, Disabled };
+enum UIIcon { None = 0, Folder, Text, Image, Book, File, Recent, Settings, Transfer, Library, Wifi, Hotspot, Bookmark };
 
 // Default theme implementation (Classic Theme)
 // Additional themes can inherit from this and override methods as needed
@@ -84,9 +114,11 @@ constexpr ThemeMetrics values = {.batteryWidth = 15,
                                  .batteryBarHeight = 20,
                                  .headerHeight = 45,
                                  .verticalSpacing = 10,
+                                 .previewPadding = 12,
+                                 .previewHeightPercent = 30,
                                  .contentSidePadding = 20,
                                  .listRowHeight = 30,
-                                 .listWithSubtitleRowHeight = 65,
+                                 .listWithSubtitleRowHeight = 50,
                                  .menuRowHeight = 45,
                                  .menuSpacing = 8,
                                  .tabSpacing = 10,
@@ -97,37 +129,59 @@ constexpr ThemeMetrics values = {.batteryWidth = 15,
                                  .homeCoverHeight = 400,
                                  .homeCoverTileHeight = 400,
                                  .homeRecentBooksCount = 1,
+                                 .homeContinueReadingInMenu = false,
+                                 .homeMenuTopOffset = 10,
                                  .buttonHintsHeight = 40,
                                  .sideButtonHintsWidth = 30,
                                  .progressBarHeight = 16,
                                  .progressBarMarginTop = 1,
                                  .statusBarHorizontalMargin = 5,
                                  .statusBarVerticalMargin = 19,
-                                 .keyboardKeyWidth = 22,
-                                 .keyboardKeyHeight = 40,
+                                 .keyboardKeyHeight = 48,
                                  .keyboardKeySpacing = 0,
-                                 .keyboardBottomKeyHeight = 35,
-                                 .keyboardBottomKeySpacing = 5,
-                                 .keyboardBottomAligned = true,
                                  .keyboardCenteredText = false,
                                  .keyboardVerticalOffset = -13,
                                  .keyboardTextFieldWidthPercent = 85,
-                                 .keyboardWidthPercent = 90,
-                                 .keyboardKeyCornerRadius = 0};
+                                 .keyboardWidthPercent = 94,
+                                 .keyboardKeyCornerRadius = 0,
+                                 .popupTopOffsetRatio = 0.075f,
+                                 .popupMarginX = 15,
+                                 .popupMarginY = 15,
+                                 .popupFrameThickness = 2,
+                                 .popupCornerRadius = 0,
+                                 .popupTextBold = true,
+                                 .popupTextInverted = true,
+                                 .popupTextBaselineOffsetY = -2,
+                                 .popupProgressBarHeight = 4,
+                                 .popupProgressDrawOutline = false,
+                                 .popupProgressClampPercent = false,
+                                 .popupProgressFillInverted = true,
+                                 .popupProgressOutlineInverted = true,
+                                 .optionPopupItemSpacing = 6,
+                                 .optionPopupInnerPadding = 16,
+                                 .optionPopupSelectionHPadding = 8,
+                                 .optionPopupSelectionVPadding = 4,
+                                 .optionPopupTitleGap = 10,
+                                 .optionPopupUseSmallFont = true,
+                                 .optionPopupOptionFontBold = true,
+                                 .optionPopupSelectionRadius = 0,
+                                 .optionPopupSelectionLight = false,
+                                 .optionPopupDrawAllRows = false,
+                                 .optionPopupDialogSideMargin = 20,
+                                 .optionPopupTitleSeparator = true,
+                                 .textFieldHorizontalPadding = 6,
+                                 .textFieldNormalThickness = 1,
+                                 .textFieldCursorThickness = 3,
+                                 .textFieldLineEndOffset = 0};
 }
 
 class BaseTheme {
  public:
   virtual ~BaseTheme() = default;
 
-  // Insets (in pixels) reserved on each edge for the button hint strip in
-  // the active orientation. Hints land on a different edge per orientation:
-  //   Portrait                  -> bottom
-  //   PortraitInverted          -> top
-  //   LandscapeCounterClockwise -> right (logical)
-  //   LandscapeClockwise        -> left  (logical)
-  // Activities should use these insets when computing their content rect so
-  // the hint strip doesn't overlap with rendered content in landscape.
+  // Insets reserved by the button hint strip in the current orientation.
+  // The CJK fork uses these helpers so list and text content stay clear of
+  // orientation-dependent button hints.
   struct HintInsets {
     int top;
     int right;
@@ -135,52 +189,68 @@ class BaseTheme {
     int left;
   };
   HintInsets getButtonHintInsets(const GfxRenderer& renderer) const;
-
-  // Returns the content Rect for an activity, accounting for the hint inset
-  // on the appropriate edge for the current orientation. `topReserved` is
-  // the height already consumed by header / tabs / etc. above the content;
-  // `bottomSpacing` is extra padding the activity wants between the content
-  // and the bottom of its drawable area.
   Rect getContentRect(const GfxRenderer& renderer, int topReserved, int bottomSpacing = 0) const;
 
   // Component drawing methods
-  virtual void drawProgressBar(const GfxRenderer& renderer, Rect rect, size_t current, size_t total) const;
-  virtual void drawBatteryLeft(const GfxRenderer& renderer, Rect rect,
-                               bool showPercentage = true) const;  // Left aligned (reader mode)
-  virtual void drawBatteryRight(const GfxRenderer& renderer, Rect rect,
-                                bool showPercentage = true) const;  // Right aligned (UI headers)
+  void drawProgressBar(const GfxRenderer& renderer, Rect rect, size_t current, size_t total) const;
+  void drawBatteryLeft(const GfxRenderer& renderer, Rect rect,
+                       bool showPercentage = true) const;  // Left aligned (reader mode)
+  void drawBatteryRight(const GfxRenderer& renderer, Rect rect,
+                        bool showPercentage = true) const;  // Right aligned (UI headers)
+  virtual void fillBatteryIcon(const GfxRenderer& renderer, Rect rect, uint16_t percentage) const;
   virtual void drawButtonHints(GfxRenderer& renderer, const char* btn1, const char* btn2, const char* btn3,
                                const char* btn4) const;
   virtual void drawSideButtonHints(const GfxRenderer& renderer, const char* topBtn, const char* bottomBtn) const;
+  virtual int getListRowStep(bool hasSubtitle) const;
+  virtual int getListPageItems(int contentHeight, bool hasSubtitle) const;
   virtual void drawList(const GfxRenderer& renderer, Rect rect, int itemCount, int selectedIndex,
                         const std::function<std::string(int index)>& rowTitle,
                         const std::function<std::string(int index)>& rowSubtitle = nullptr,
                         const std::function<UIIcon(int index)>& rowIcon = nullptr,
-                        const std::function<std::string(int index)>& rowValue = nullptr,
-                        bool highlightValue = false) const;
+                        const std::function<std::string(int index)>& rowValue = nullptr, bool highlightValue = false,
+                        const std::function<bool(int index)>& rowDimmed = nullptr) const;
   virtual void drawHeader(const GfxRenderer& renderer, Rect rect, const char* title,
                           const char* subtitle = nullptr) const;
   virtual void drawSubHeader(const GfxRenderer& renderer, Rect rect, const char* label,
                              const char* rightLabel = nullptr) const;
   virtual void drawTabBar(const GfxRenderer& renderer, Rect rect, const std::vector<TabInfo>& tabs,
                           bool selected) const;
+  virtual bool tabIndexFromPoint(const GfxRenderer& renderer, Rect rect, const std::vector<TabInfo>& tabs, int x, int y,
+                                 int& index) const;
   virtual void drawRecentBookCover(GfxRenderer& renderer, Rect rect, const std::vector<RecentBook>& recentBooks,
                                    const int selectorIndex, bool& coverRendered, bool& coverBufferStored,
-                                   bool& bufferRestored, std::function<bool()> storeCoverBuffer) const;
+                                   bool& bufferRestored, std::function<bool()> storeCoverBuffer,
+                                   const std::function<bool()>& isCancelled = nullptr) const;
+  // Bounds that must be refreshed when home-menu selection changes. Themes
+  // whose menu layout is not row-stable can safely retain the whole menu rect.
+  virtual Rect getHomeMenuDirtyRect(Rect menuRect, int previousIndex, int currentIndex) const;
+  virtual bool supportsHomeMenuRowUpdates() const { return true; }
+  // Themes with independent recent-book tiles may update the focus chrome from
+  // an already-restored unselected cover baseline instead of repainting Home.
+  virtual bool supportsHomeCoverSelectionUpdates() const { return false; }
+  virtual Rect drawHomeCoverSelectionUpdate(GfxRenderer& renderer, Rect coverRect,
+                                            const std::vector<RecentBook>& recentBooks, int previousSelectorIndex,
+                                            int selectorIndex) const {
+    return Rect{};
+  }
   virtual void drawButtonMenu(GfxRenderer& renderer, Rect rect, int buttonCount, int selectedIndex,
-                              const std::function<std::string(int index)>& buttonLabel,
+                              const std::function<const char*(int index)>& buttonLabel,
                               const std::function<UIIcon(int index)>& rowIcon) const;
+  virtual void drawButtonMenuRange(GfxRenderer& renderer, Rect rect, int buttonCount, int selectedIndex,
+                                   const std::function<const char*(int index)>& buttonLabel,
+                                   const std::function<UIIcon(int index)>& rowIcon, int firstIndex,
+                                   int lastIndex) const;
   virtual Rect drawPopup(const GfxRenderer& renderer, const char* message) const;
+  virtual void drawOptionPopup(const GfxRenderer& renderer, const char* title, const std::vector<std::string>& options,
+                               int selectedIndex) const;
   virtual void fillPopupProgress(const GfxRenderer& renderer, const Rect& layout, const int progress) const;
-  virtual void drawStatusBar(GfxRenderer& renderer, const float bookProgress, const int currentPage,
-                             const int pageCount, std::string title, const int paddingBottom = 0,
-                             const int textYOffset = 0) const;
-  virtual void drawHelpText(const GfxRenderer& renderer, Rect rect, const char* label) const;
+  void drawStatusBar(GfxRenderer& renderer, const float bookProgress, const int currentPage, const int pageCount,
+                     std::string title, const int paddingBottom = 0, const int textYOffset = 0,
+                     const bool fillMargin = true, const bool isPageBookmarked = false,
+                     const bool pageCountEstimated = false) const;
+  void drawHelpText(const GfxRenderer& renderer, Rect rect, const char* label) const;
   virtual void drawTextField(const GfxRenderer& renderer, Rect rect, const int textWidth, bool cursorMode = false,
                              int contentStartX = 0, int contentWidth = 0) const;
-  virtual void drawKeyboardKey(const GfxRenderer& renderer, Rect rect, const char* label, const bool isSelected,
-                               const char* secondaryLabel = nullptr, KeyboardKeyType keyType = KeyboardKeyType::Normal,
-                               bool inactiveSelection = false) const;
   virtual bool showsFileIcons() const { return false; }
 
   // Shared constants and helpers for battery drawing (used by all themes)

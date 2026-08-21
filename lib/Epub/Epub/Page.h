@@ -2,18 +2,19 @@
 #include <HalStorage.h>
 
 #include <algorithm>
-#include <cstddef>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "FootnoteEntry.h"
+#include "PageRenderCancellation.h"
 #include "blocks/ImageBlock.h"
 #include "blocks/TextBlock.h"
 
 enum PageElementTag : uint8_t {
   TAG_PageLine = 1,
-  TAG_PageImage = 2,  // New tag
+  TAG_PageImage = 2,
+  TAG_PageHorizontalRule = 3,
 };
 
 // represents something that has been added to a page
@@ -23,9 +24,22 @@ class PageElement {
   int16_t yPos;
   explicit PageElement(const int16_t xPos, const int16_t yPos) : xPos(xPos), yPos(yPos) {}
   virtual ~PageElement() = default;
-  virtual void render(GfxRenderer& renderer, int fontId, int xOffset, int yOffset) = 0;
-  virtual bool serialize(FsFile& file) = 0;
-  virtual void collectCodepoints(std::vector<uint32_t>& out, size_t max) const {}
+  virtual bool render(GfxRenderer& renderer, int fontId, int xOffset, int yOffset,
+                      const PageRenderCancellation* cancellation = nullptr) = 0;
+  virtual bool serialize(HalFile& file) = 0;
+  virtual bool collectCodepoints(std::vector<uint32_t>& out, size_t max,
+                                 const PageRenderCancellation* cancellation = nullptr) const {
+    (void)out;
+    (void)max;
+    return !cancellation || !cancellation->requested();
+  }
+  virtual bool collectCodepoints(uint32_t* out, size_t max, size_t& count,
+                                 const PageRenderCancellation* cancellation = nullptr) const {
+    (void)out;
+    (void)max;
+    (void)count;
+    return !cancellation || !cancellation->requested();
+  }
   virtual PageElementTag getTag() const = 0;  // Add type identification
 };
 
@@ -37,11 +51,15 @@ class PageLine final : public PageElement {
   PageLine(std::shared_ptr<TextBlock> block, const int16_t xPos, const int16_t yPos)
       : PageElement(xPos, yPos), block(std::move(block)) {}
   const std::shared_ptr<TextBlock>& getBlock() const { return block; }
-  void render(GfxRenderer& renderer, int fontId, int xOffset, int yOffset) override;
-  bool serialize(FsFile& file) override;
-  void collectCodepoints(std::vector<uint32_t>& out, size_t max) const override;
+  bool render(GfxRenderer& renderer, int fontId, int xOffset, int yOffset,
+              const PageRenderCancellation* cancellation = nullptr) override;
+  bool serialize(HalFile& file) override;
+  bool collectCodepoints(std::vector<uint32_t>& out, size_t max,
+                         const PageRenderCancellation* cancellation = nullptr) const override;
+  bool collectCodepoints(uint32_t* out, size_t max, size_t& count,
+                         const PageRenderCancellation* cancellation = nullptr) const override;
   PageElementTag getTag() const override { return TAG_PageLine; }
-  static std::unique_ptr<PageLine> deserialize(FsFile& file);
+  static std::unique_ptr<PageLine> deserialize(HalFile& file);
 };
 
 // New PageImage class
@@ -51,11 +69,28 @@ class PageImage final : public PageElement {
  public:
   PageImage(std::shared_ptr<ImageBlock> block, const int16_t xPos, const int16_t yPos)
       : PageElement(xPos, yPos), imageBlock(std::move(block)) {}
-  void render(GfxRenderer& renderer, int fontId, int xOffset, int yOffset) override;
-  bool serialize(FsFile& file) override;
+  bool render(GfxRenderer& renderer, int fontId, int xOffset, int yOffset,
+              const PageRenderCancellation* cancellation = nullptr) override;
+  void renderPlaceholder(GfxRenderer& renderer, int xOffset, int yOffset) const;
+  bool serialize(HalFile& file) override;
   PageElementTag getTag() const override { return TAG_PageImage; }
-  static std::unique_ptr<PageImage> deserialize(FsFile& file);
+  static std::unique_ptr<PageImage> deserialize(HalFile& file);
   const ImageBlock& getImageBlock() const { return *imageBlock; }
+};
+
+class PageHorizontalRule final : public PageElement {
+  uint16_t width;
+  uint8_t thickness;
+
+ public:
+  PageHorizontalRule(uint16_t width, uint8_t thickness, const int16_t xPos, const int16_t yPos)
+      : PageElement(xPos, yPos), width(width), thickness(thickness) {}
+
+  bool render(GfxRenderer& renderer, int fontId, int xOffset, int yOffset,
+              const PageRenderCancellation* cancellation = nullptr) override;
+  bool serialize(HalFile& file) override;
+  PageElementTag getTag() const override { return TAG_PageHorizontalRule; }
+  static std::unique_ptr<PageHorizontalRule> deserialize(HalFile& file);
 };
 
 class Page {
@@ -75,15 +110,30 @@ class Page {
     footnotes.push_back(entry);
   }
 
-  void render(GfxRenderer& renderer, int fontId, int xOffset, int yOffset) const;
-  void collectCodepoints(std::vector<uint32_t>& out, size_t max) const;
-  bool serialize(FsFile& file) const;
-  static std::unique_ptr<Page> deserialize(FsFile& file);
+  bool render(GfxRenderer& renderer, int fontId, int xOffset, int yOffset,
+              const PageRenderCancellation* cancellation = nullptr) const;
+  bool renderImages(GfxRenderer& renderer, int fontId, int xOffset, int yOffset,
+                    const PageRenderCancellation* cancellation = nullptr) const;
+  bool renderWithImagePlaceholders(GfxRenderer& renderer, int fontId, int xOffset, int yOffset,
+                                   const PageRenderCancellation* cancellation = nullptr) const;
+  bool collectCodepoints(std::vector<uint32_t>& out, size_t max,
+                         const PageRenderCancellation* cancellation = nullptr) const;
+  bool collectCodepoints(uint32_t* out, size_t max, size_t& count,
+                         const PageRenderCancellation* cancellation = nullptr) const;
+  bool serialize(HalFile& file) const;
+  static std::unique_ptr<Page> deserialize(HalFile& file);
 
   // Check if page contains any images (used to force full refresh)
   bool hasImages() const {
     return std::any_of(elements.begin(), elements.end(),
                        [](const std::shared_ptr<PageElement>& el) { return el->getTag() == TAG_PageImage; });
+  }
+
+  bool hasImagesNeedingDecode() const {
+    return std::any_of(elements.begin(), elements.end(), [](const std::shared_ptr<PageElement>& element) {
+      return element->getTag() == TAG_PageImage &&
+             static_cast<const PageImage&>(*element).getImageBlock().needsDecode();
+    });
   }
 
   // Get bounding box of all images on the page (union of image rects)

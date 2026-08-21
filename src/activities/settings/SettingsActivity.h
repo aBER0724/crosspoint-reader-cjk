@@ -1,17 +1,14 @@
 #pragma once
 #include <I18n.h>
 
-#include <cstddef>
-#include <cstdint>
 #include <functional>
 #include <string>
-#include <utility>
 #include <vector>
 
+#include "CrossPointSettings.h"
 #include "activities/Activity.h"
+#include "components/OptionPopup.h"
 #include "util/ButtonNavigator.h"
-
-class CrossPointSettings;
 
 enum class SettingType { TOGGLE, ENUM, ACTION, VALUE, STRING };
 
@@ -24,8 +21,12 @@ enum class SettingAction {
   Network,
   ClearCache,
   CheckForUpdates,
-  InstallFirmwareFromSd,
+  SdFirmwareUpdate,
   Language,
+  DownloadFonts,
+  FontRepositories,
+  TextSettings,
+  SelectReaderFont,
   SelectUiFont,
 };
 
@@ -34,6 +35,7 @@ struct SettingInfo {
   SettingType type;
   uint8_t CrossPointSettings::* valuePtr = nullptr;
   std::vector<StrId> enumValues;
+  std::vector<std::string> enumStringValues;  // runtime alternative to StrId enumValues (for SD card fonts etc.)
   SettingAction action = SettingAction::None;
 
   struct ValueRange {
@@ -45,10 +47,11 @@ struct SettingInfo {
 
   const char* key = nullptr;             // JSON API key (nullptr for ACTION types)
   StrId category = StrId::STR_NONE_OPT;  // Category for web UI grouping
-  bool isSecret = false;                 // Secret fields are write-only in the web settings API
+  bool obfuscated = false;               // Save/load via base64 obfuscation (passwords)
+  bool inTextSettings = false;           // Surfaced in the Text Settings screen; hidden from the flat Reader list
 
   // Direct char[] string fields (for settings stored in CrossPointSettings)
-  char* stringPtr = nullptr;
+  size_t stringOffset = 0;
   size_t stringMaxLen = 0;
 
   // Dynamic accessors (for settings stored outside CrossPointSettings, e.g. KOReaderCredentialStore)
@@ -56,6 +59,16 @@ struct SettingInfo {
   std::function<void(uint8_t)> valueSetter;
   std::function<std::string()> stringGetter;
   std::function<void(const std::string&)> stringSetter;
+
+  SettingInfo& withObfuscated() {
+    obfuscated = true;
+    return *this;
+  }
+
+  SettingInfo& withTextSettings() {
+    inTextSettings = true;
+    return *this;
+  }
 
   static SettingInfo Toggle(StrId nameId, uint8_t CrossPointSettings::* ptr, const char* key = nullptr,
                             StrId category = StrId::STR_NONE_OPT) {
@@ -105,7 +118,7 @@ struct SettingInfo {
     SettingInfo s;
     s.nameId = nameId;
     s.type = SettingType::STRING;
-    s.stringPtr = ptr;
+    s.stringOffset = (size_t)ptr - (size_t)&SETTINGS;
     s.stringMaxLen = maxLen;
     s.key = key;
     s.category = category;
@@ -128,7 +141,7 @@ struct SettingInfo {
 
   static SettingInfo DynamicString(StrId nameId, std::function<std::string()> getter,
                                    std::function<void(const std::string&)> setter, const char* key = nullptr,
-                                   StrId category = StrId::STR_NONE_OPT, bool isSecret = false) {
+                                   StrId category = StrId::STR_NONE_OPT) {
     SettingInfo s;
     s.nameId = nameId;
     s.type = SettingType::STRING;
@@ -136,7 +149,6 @@ struct SettingInfo {
     s.stringSetter = std::move(setter);
     s.key = key;
     s.category = category;
-    s.isSecret = isSecret;
     return s;
   }
 };
@@ -155,29 +167,26 @@ class SettingsActivity final : public Activity {
   std::vector<SettingInfo> systemSettings;
   const std::vector<SettingInfo>* currentSettings = nullptr;
 
-  int initialCategoryIndex = 0;
-  int initialSettingIndex = 0;
+  bool preserveQuickResumeTimeoutOn = false;
+  bool quickResumeTimeoutAutoEnabled = false;
   bool forceFullSettingsRefresh = false;
+
+  OptionPopup optionPopup;
 
   static constexpr int categoryCount = 4;
   static const StrId categoryNames[categoryCount];
 
   void enterCategory(int categoryIndex);
   void toggleCurrentSetting();
+  void openSleepTimeoutPicker();
+  void rebuildSettingsLists();
+  void syncQuickResumeTimeoutForSleepScreen(bool sleepScreenChanged, bool quickResumeTimeoutChanged);
 
  public:
   explicit SettingsActivity(GfxRenderer& renderer, MappedInputManager& mappedInput)
-      : SettingsActivity(renderer, mappedInput, 0, 0) {}
-  explicit SettingsActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, int initialCategoryIndex,
-                            int initialSettingIndex = 0)
-      : Activity("Settings", renderer, mappedInput),
-        initialCategoryIndex(initialCategoryIndex),
-        initialSettingIndex(initialSettingIndex) {}
+      : Activity("Settings", renderer, mappedInput) {}
   void onEnter() override;
   void onExit() override;
   void loop() override;
   void render(RenderLock&&) override;
-
-  // No-op in standalone settings. Meaningful only when launched from EpubReaderActivity.
-  void invalidateSectionPreservingPosition();
 };

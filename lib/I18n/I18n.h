@@ -23,6 +23,7 @@ class I18n {
   Language getLanguage() const { return _language; }
   void setLanguage(Language lang);
   const char* getLanguageName(Language lang) const;
+  static Language languageFromCode(const char* code);
 
   void saveSettings();
   void loadSettings();

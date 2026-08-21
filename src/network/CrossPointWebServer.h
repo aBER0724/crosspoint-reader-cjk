@@ -5,6 +5,7 @@
 #include <WebServer.h>
 #include <WebSocketsServer.h>
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -52,6 +53,48 @@ class CrossPointWebServer {
     UploadState() { buffer.resize(UPLOAD_BUFFER_SIZE); }
   } upload;
 
+  // Used by font upload handler (.cpfont multipart upload)
+  struct FontUploadState {
+    FsFile file;
+    std::string familyName;
+    std::string finalPath;
+    std::string tempPath;
+    std::string errorMessage;
+    std::string currentFilename;
+    std::string lastCompletedFilename;
+    uint32_t fingerprint = 0;
+    uint32_t sessionId = 0;
+    size_t currentIndex = 0;
+    size_t nextIndex = 0;
+    size_t totalFiles = 0;
+    size_t expectedFileSize = 0;
+    size_t lastCompletedFileSize = 0;
+    bool transactionActive = false;
+    bool requestValid = false;
+    bool requestSucceeded = false;
+    bool requestCommitted = false;
+    bool cleanupPending = false;
+    bool duplicateRequest = false;
+    bool duplicateCommitted = false;
+    bool magicChecked = false;
+    size_t bytesWritten = 0;
+    std::array<uint8_t, 8> magic{};
+    size_t magicBytes = 0;
+    unsigned long lastActivityAt = 0;
+    unsigned long lastCleanupAttemptAt = 0;
+
+    static constexpr size_t BUFFER_SIZE = 4096;
+    static constexpr size_t MAX_FILE_SIZE = 256ULL * 1024ULL * 1024ULL;
+    static constexpr size_t MAX_FILES_PER_FAMILY = 32;
+    static constexpr unsigned long BATCH_IDLE_TIMEOUT_MS = 2UL * 60UL * 1000UL;
+    static constexpr unsigned long DUPLICATE_RETRY_WINDOW_MS = 30UL * 1000UL;
+    static constexpr unsigned long CLEANUP_RETRY_INTERVAL_MS = 5UL * 1000UL;
+    std::vector<uint8_t> buffer;
+    size_t bufferPos = 0;
+
+    FontUploadState() { buffer.resize(BUFFER_SIZE); }
+  } fontUpload;
+
   CrossPointWebServer();
   ~CrossPointWebServer();
 
@@ -77,6 +120,7 @@ class CrossPointWebServer {
   std::unique_ptr<WebServer> server = nullptr;
   std::unique_ptr<WebSocketsServer> wsServer = nullptr;
   bool running = false;
+  bool watchdogTaskRegistered = false;
   bool apMode = false;  // true when running in AP mode, false for STA mode
   uint16_t port = 80;
   uint16_t wsPort = 81;  // WebSocket port
@@ -122,6 +166,15 @@ class CrossPointWebServer {
   void handleWifiSave() const;
   void handleWifiList() const;
   void handleWifiDelete() const;
+
+  // Font management handlers
+  void handleFontsPage() const;
+  void handleFontList() const;
+  void handleFontUploadData();
+  void handleFontUpload();
+  void handleFontDelete();
+  void resetFontUploadRequest();
+  void abortFontUploadBatch(const char* errorMessage);
 
   // OPDS server handlers
   void handleGetOpdsServers() const;

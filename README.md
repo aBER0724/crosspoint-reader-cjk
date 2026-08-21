@@ -239,7 +239,7 @@ For agentic coding tools (AI coding agents), also read [AGENTS.md](./AGENTS.md).
 ## 📜 Credits
 
 - [CrossPoint Reader](https://github.com/daveallie/crosspoint-reader) - Original Project
-- [open-x4-sdk](https://github.com/daveallie/open-x4-sdk) - Xteink X4 Development SDK
+- [freeink-sdk](https://github.com/aBER0724/freeink-sdk) - FreeInk device SDK (display/hardware)
 
 ---
 

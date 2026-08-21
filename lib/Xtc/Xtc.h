@@ -94,6 +94,11 @@ class Xtc {
                                   std::function<void(const uint8_t* data, size_t size, size_t offset)> callback,
                                   size_t chunkSize = 1024) const;
 
+  xtc::XtcError loadPagePlaneChunks(
+      uint32_t pageIndex,
+      std::function<bool(const uint8_t* plane1, const uint8_t* plane2, size_t size, size_t offset)> callback,
+      size_t chunkSize = 4096) const;
+
   // Progress calculation
   uint8_t calculateProgress(uint32_t currentPage) const;
 

@@ -12,6 +12,8 @@ constexpr ThemeMetrics values = {.batteryWidth = 16,
                                  .batteryBarHeight = 40,
                                  .headerHeight = 84,
                                  .verticalSpacing = 16,
+                                 .previewPadding = 12,
+                                 .previewHeightPercent = 30,
                                  .contentSidePadding = 20,
                                  .listRowHeight = 40,
                                  .listWithSubtitleRowHeight = 60,
@@ -25,52 +27,84 @@ constexpr ThemeMetrics values = {.batteryWidth = 16,
                                  .homeCoverHeight = 226,
                                  .homeCoverTileHeight = 242,
                                  .homeRecentBooksCount = 1,
+                                 .homeContinueReadingInMenu = false,
+                                 .homeMenuTopOffset = 16,
                                  .buttonHintsHeight = 40,
                                  .sideButtonHintsWidth = 30,
                                  .progressBarHeight = 16,
                                  .progressBarMarginTop = 1,
                                  .statusBarHorizontalMargin = 5,
                                  .statusBarVerticalMargin = 19,
-                                 .keyboardKeyWidth = 31,
-                                 .keyboardKeyHeight = 40,
+                                 .keyboardKeyHeight = 48,
                                  .keyboardKeySpacing = 0,
-                                 .keyboardBottomKeyHeight = 35,
-                                 .keyboardBottomKeySpacing = 5,
-                                 .keyboardBottomAligned = true,
                                  .keyboardCenteredText = false,
                                  .keyboardVerticalOffset = -7,
                                  .keyboardTextFieldWidthPercent = 85,
-                                 .keyboardWidthPercent = 90,
-                                 .keyboardKeyCornerRadius = 6};
+                                 .keyboardWidthPercent = 94,
+                                 .popupTopOffsetRatio = 0.165f,
+                                 .popupMarginX = 16,
+                                 .popupMarginY = 12,
+                                 .popupFrameThickness = 2,
+                                 .popupCornerRadius = 6,
+                                 .popupTextBold = false,
+                                 .popupTextInverted = false,
+                                 .popupTextBaselineOffsetY = -2,
+                                 .popupProgressBarHeight = 4,
+                                 .popupProgressDrawOutline = false,
+                                 .popupProgressClampPercent = false,
+                                 .popupProgressFillInverted = false,
+                                 .popupProgressOutlineInverted = false,
+                                 .optionPopupItemSpacing = 8,
+                                 .optionPopupInnerPadding = 20,
+                                 .optionPopupSelectionHPadding = 16,
+                                 .optionPopupSelectionVPadding = 12,
+                                 .optionPopupTitleGap = 16,
+                                 .optionPopupUseSmallFont = true,
+                                 .optionPopupOptionFontBold = false,
+                                 .optionPopupSelectionRadius = 6,
+                                 .optionPopupSelectionLight = true,
+                                 .optionPopupDrawAllRows = false,
+                                 .optionPopupDialogSideMargin = 20,
+                                 .optionPopupTitleSeparator = true,
+                                 .textFieldHorizontalPadding = 6,
+                                 .textFieldNormalThickness = 1,
+                                 .textFieldCursorThickness = 3,
+                                 .textFieldLineEndOffset = 0};
 }
 
 class LyraTheme : public BaseTheme {
  public:
   // Component drawing methods
-  //   void drawProgressBar(const GfxRenderer& renderer, Rect rect, size_t current, size_t total) override;
-  void drawBatteryLeft(const GfxRenderer& renderer, Rect rect, bool showPercentage = true) const override;
-  void drawBatteryRight(const GfxRenderer& renderer, Rect rect, bool showPercentage = true) const override;
+  void fillBatteryIcon(const GfxRenderer& renderer, Rect rect, uint16_t percentage) const override;
   void drawHeader(const GfxRenderer& renderer, Rect rect, const char* title, const char* subtitle) const override;
   void drawSubHeader(const GfxRenderer& renderer, Rect rect, const char* label,
                      const char* rightLabel = nullptr) const override;
   void drawTabBar(const GfxRenderer& renderer, Rect rect, const std::vector<TabInfo>& tabs,
                   bool selected) const override;
+  bool tabIndexFromPoint(const GfxRenderer& renderer, Rect rect, const std::vector<TabInfo>& tabs, int x, int y,
+                         int& index) const override;
+  int getListRowStep(bool hasSubtitle) const override;
+  int getListPageItems(int contentHeight, bool hasSubtitle) const override;
   void drawList(const GfxRenderer& renderer, Rect rect, int itemCount, int selectedIndex,
                 const std::function<std::string(int index)>& rowTitle,
                 const std::function<std::string(int index)>& rowSubtitle,
                 const std::function<UIIcon(int index)>& rowIcon, const std::function<std::string(int index)>& rowValue,
-                bool highlightValue) const override;
+                bool highlightValue, const std::function<bool(int index)>& rowDimmed = nullptr) const override;
   void drawButtonHints(GfxRenderer& renderer, const char* btn1, const char* btn2, const char* btn3,
                        const char* btn4) const override;
   void drawSideButtonHints(const GfxRenderer& renderer, const char* topBtn, const char* bottomBtn) const override;
+  Rect getHomeMenuDirtyRect(Rect menuRect, int previousIndex, int currentIndex) const override;
   void drawButtonMenu(GfxRenderer& renderer, Rect rect, int buttonCount, int selectedIndex,
-                      const std::function<std::string(int index)>& buttonLabel,
+                      const std::function<const char*(int index)>& buttonLabel,
                       const std::function<UIIcon(int index)>& rowIcon) const override;
+  void drawButtonMenuRange(GfxRenderer& renderer, Rect rect, int buttonCount, int selectedIndex,
+                           const std::function<const char*(int index)>& buttonLabel,
+                           const std::function<UIIcon(int index)>& rowIcon, int firstIndex,
+                           int lastIndex) const override;
   void drawRecentBookCover(GfxRenderer& renderer, Rect rect, const std::vector<RecentBook>& recentBooks,
                            const int selectorIndex, bool& coverRendered, bool& coverBufferStored, bool& bufferRestored,
-                           std::function<bool()> storeCoverBuffer) const override;
+                           std::function<bool()> storeCoverBuffer,
+                           const std::function<bool()>& isCancelled) const override;
   void drawEmptyRecents(const GfxRenderer& renderer, const Rect rect) const;
-  Rect drawPopup(const GfxRenderer& renderer, const char* message) const override;
-  void fillPopupProgress(const GfxRenderer& renderer, const Rect& layout, const int progress) const override;
   bool showsFileIcons() const override { return true; }
 };

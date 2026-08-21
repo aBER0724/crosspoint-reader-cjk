@@ -4,6 +4,7 @@
 #include <freertos/semphr.h>
 #include <freertos/task.h>
 
+#include <atomic>
 #include <cassert>
 #include <memory>
 #include <string>
@@ -14,6 +15,8 @@
 
 class Activity;    // forward declaration
 class RenderLock;  // forward declaration
+
+enum class HomeMenuItem { NONE, FILE_BROWSER, RECENTS, OPDS_BROWSER, FILE_TRANSFER, SETTINGS_MENU };
 
 /**
  * ActivityManager
@@ -45,10 +48,19 @@ class ActivityManager {
   enum class PendingAction { None, Push, Pop, Replace };
   PendingAction pendingAction = PendingAction::None;
 
+  bool appStateSavePending = false;
+  unsigned long lastUserInputMs = 0UL;
+  unsigned long lastDeferredPersistenceAttemptMs = 0UL;
+  static constexpr unsigned long DEFERRED_PERSIST_IDLE_MS = 3000UL;
+  static constexpr unsigned long DEFERRED_PERSIST_RETRY_MS = 1000UL;
+
+  void flushDeferredPersistence();
+
   // Task to render and display the activity
   TaskHandle_t renderTaskHandle = nullptr;
   static void renderTaskTrampoline(void* param);
   [[noreturn]] virtual void renderTaskLoop();
+  void updateReaderUiGlyphCacheMode();
 
   // Set by requestUpdateAndWait(); read and cleared by the render task after render completes.
   // Note: only one waiting task is supported at a time
@@ -58,9 +70,27 @@ class ActivityManager {
   // Must only be used via RenderLock
   SemaphoreHandle_t renderingMutex = nullptr;
 
-  // Whether to trigger a render after the current loop()
-  // This variable must only be set by the main loop, to avoid race conditions
-  bool requestedUpdate = false;
+  // Bumped whenever new input supersedes the render currently in progress.
+  // Long-running render paths use this through RenderLock to stop at a safe
+  // boundary instead of making activity transitions wait for stale work.
+  std::atomic<uint32_t> renderGeneration{0};
+
+  void invalidateRender() { renderGeneration.fetch_add(1, std::memory_order_relaxed); }
+
+  // Whether to trigger a render after the current loop(). Both the main and
+  // render tasks may set it; atomic access coalesces concurrent requests.
+  std::atomic<bool> requestedUpdate{false};
+
+  // State/completion serials let loop() distinguish a staged current frame
+  // from one that input has already superseded. A boolean can lose the race
+  // where a new notification arrives as the render task clears it.
+  std::atomic<uint32_t> renderRequestSerial{0};
+  std::atomic<uint32_t> completedRenderSerial{0};
+
+  // Protected by activityManagerSpinlock together with waitingTaskHandle.
+  uint32_t waitingRenderSerial = 0;
+
+  void notifyRenderTask();
 
  public:
   explicit ActivityManager(GfxRenderer& renderer, MappedInputManager& mappedInput)
@@ -83,11 +113,20 @@ class ActivityManager {
   void goToRecentBooks();
   void goToBrowser();
   void goToReader(std::string path);
-  void goToSleep();
+  void goToSleep(bool fromTimeout = false);
   void goToBoot();
   void goToFullScreenMessage(std::string message, EpdFontFamily::Style style = EpdFontFamily::REGULAR);
   void goToCrashReport();
-  void goHome();
+  void goHome(HomeMenuItem initialMenuItem = HomeMenuItem::NONE);
+
+  // Reader teardown updates crash-recovery state while ActivityManager holds
+  // RenderLock. Delay its SD write until the UI has been idle instead.
+  void queueAppStateSave() { appStateSavePending = true; }
+
+  // Sleep is an explicit persistence boundary. Normal interaction stays
+  // asynchronous, but after the outgoing activity has exited this commits its
+  // queued progress and crash-recovery state before deep sleep starts.
+  void flushDeferredPersistenceBeforeSleep();
 
   // This will move current activity to stack instead of deleting it
   void pushActivity(std::unique_ptr<Activity>&& activity);
@@ -98,7 +137,21 @@ class ActivityManager {
 
   bool preventAutoSleep() const;
   bool isReaderActivity() const;
+  bool handleForcedRefresh();
   bool skipLoopDelay() const;
+
+  // Mark the active render and any staged framebuffer as stale without
+  // scheduling a replacement. Input paths use this to let an in-progress
+  // reader render release RenderLock before the action is finalized on
+  // button/touch release.
+  void cancelCurrentRender() {
+    invalidateRender();
+    renderRequestSerial.fetch_add(1, std::memory_order_relaxed);
+  }
+
+  // Reader interaction marks the generation requested immediately afterward,
+  // so optional quality work can stay out of the user-visible path.
+  uint32_t nextRenderGeneration() const { return renderGeneration.load(std::memory_order_relaxed) + 1; }
 
   // If immediate is true, the update will be triggered immediately.
   // Otherwise, it will be deferred until the end of the current loop iteration.

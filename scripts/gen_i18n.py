@@ -12,8 +12,8 @@ Each YAML file must contain:
   _language_code: "ENUM_NAME"       (e.g. "ES")
   STR_KEY: "translation text"
 
-The English file is the reference. Missing keys in other languages are
-automatically filled from English, with a warning.
+The English file is the reference. Shipping CJK languages must match it
+exactly; incomplete community languages retain the English fallback behavior.
 
 Usage:
     python gen_i18n.py <translations_dir> <output_dir>
@@ -22,11 +22,29 @@ Example:
     python gen_i18n.py lib/I18n/translations lib/I18n/
 """
 
-import sys
+import argparse
 import os
 import re
+import sys
 from pathlib import Path
 from typing import List, Dict, Tuple
+
+
+STRICT_LANGUAGE_CODES = {
+    "CHINESE_SIMPLIFIED",
+    "CHINESE_TRADITIONAL",
+    "JAPANESE",
+}
+
+PRINTF_PLACEHOLDER_RE = re.compile(
+    r"%(?:\d+\$)?[-+#0 'I]*(?:\d+|\*)?(?:\.(?:\d+|\*))?"
+    r"(?:hh|h|ll|l|j|z|t|L)?[diuoxXfFeEgGaAcspn%]"
+)
+
+
+def extract_printf_placeholders(value: str) -> List[str]:
+    """Return printf placeholders in call-argument order, excluding literal %% tokens."""
+    return [match.group(0) for match in PRINTF_PLACEHOLDER_RE.finditer(value) if match.group(0) != "%%"]
 
 
 # ---------------------------------------------------------------------------
@@ -190,7 +208,47 @@ def load_translations(
         if not re.match(r"^[a-zA-Z_][a-zA-Z0-9_]*$", key):
             raise ValueError(f"Invalid C++ identifier in English file: '{key}'")
 
-    # Build translations dict, filling missing keys from English
+    # Shipping CJK translations are maintained as a complete product surface.
+    # Fail before writing generated files so a missing label cannot silently turn
+    # into English in a release build and stale keys cannot look translated while
+    # remaining absent from the firmware.
+    english_keys = set(string_keys)
+    validation_errors: List[str] = []
+    for fname in ordered_files:
+        if fname == english_file:
+            continue
+
+        data = parsed[fname]
+        lang_code = data.get("_language_code", fname)
+        translated_keys = {key for key in data if not key.startswith("_")}
+        missing = sorted(english_keys - translated_keys)
+        empty = sorted(key for key in english_keys & translated_keys if not data[key].strip())
+        extra = sorted(translated_keys - english_keys)
+
+        if lang_code.upper() in STRICT_LANGUAGE_CODES:
+            if missing:
+                validation_errors.append(f"{lang_code}: missing keys: {', '.join(missing)}")
+            if empty:
+                validation_errors.append(f"{lang_code}: empty translations: {', '.join(empty)}")
+            if extra:
+                validation_errors.append(f"{lang_code}: keys not in English: {', '.join(extra)}")
+
+            for key in sorted(english_keys & translated_keys):
+                if not data[key].strip():
+                    continue
+                expected = extract_printf_placeholders(english_data[key])
+                actual = extract_printf_placeholders(data[key])
+                if actual != expected:
+                    validation_errors.append(
+                        f"{lang_code}: placeholder mismatch for {key}: expected {expected}, got {actual}"
+                    )
+        elif extra:
+            print(f"  WARNING: {lang_code} has keys not in English: {', '.join(extra)}")
+
+    if validation_errors:
+        raise ValueError("Strict translation validation failed:\n  " + "\n  ".join(validation_errors))
+
+    # Build translations dict, filling missing community-language keys from English.
     translations: Dict[str, List[str]] = {}
     for key in string_keys:
         row: List[str] = []
@@ -203,16 +261,6 @@ def load_translations(
                 print(f"  INFO: '{key}' missing in {lang_code}, using English fallback")
             row.append(value)
         translations[key] = row
-
-    # Warn about extra keys in non-English files
-    for fname in ordered_files:
-        if fname == english_file:
-            continue
-        data = parsed[fname]
-        extra = [k for k in data if not k.startswith("_") and k not in english_data]
-        if extra:
-            lang_code = data.get("_language_code", fname)
-            print(f"  WARNING: {lang_code} has keys not in English: {', '.join(extra)}")
 
     print(f"Loaded {len(language_codes)} languages, {len(string_keys)} string keys")
     return language_codes, language_names, string_keys, translations
@@ -246,11 +294,37 @@ LANG_ABBREVIATIONS = {
 
 
 def get_lang_abbreviation(lang_code: str, lang_name: str) -> str:
-    """Return a 2-letter abbreviation for a language."""
+    """Return a unique C identifier suffix for STRINGS_<abbr>.
+
+    Prefer the explicit name map for historical short labels. Otherwise use the
+    full language code when it is longer than 2 characters so multi-letter
+    codes such as CAV do not collide with CA via a naive [:2] truncation.
+    """
     lower = lang_name.lower()
     if lower in LANG_ABBREVIATIONS:
         return LANG_ABBREVIATIONS[lower]
-    return lang_code[:2].upper()
+    code = "".join(ch if (ch.isalnum() or ch == "_") else "_" for ch in lang_code.upper())
+    if not code:
+        raise ValueError(f"empty language code for name={lang_name!r}")
+    if len(code) > 2:
+        return code
+    return code[:2]
+
+
+def ensure_unique_abbreviations(languages: List[str], language_names: List[str]) -> List[str]:
+    """Compute abbreviations and fail fast on collisions."""
+    abbrevs: List[str] = []
+    seen: dict[str, str] = {}
+    for code, name in zip(languages, language_names):
+        abbrev = get_lang_abbreviation(code, name)
+        if abbrev in seen:
+            raise ValueError(
+                f"I18n abbreviation collision: {abbrev} used by both "
+                f"{seen[abbrev]} and {code} (name={name!r})"
+            )
+        seen[abbrev] = code
+        abbrevs.append(abbrev)
+    return abbrevs
 
 
 def escape_cpp_string(s: str) -> List[str]:
@@ -394,6 +468,7 @@ def generate_keys_header(
     output_path: str,
 ) -> None:
     """Generate I18nKeys.h."""
+    ensure_unique_abbreviations(languages, language_names)
     lines: List[str] = [
         "#pragma once",
         "#include <cstdint>",
@@ -421,6 +496,10 @@ def generate_keys_header(
     lines.append("")
 
     # Extern declarations
+    lines.append("// Language codes (defined in I18nStrings.cpp)")
+    lines.append("extern const char* const LANGUAGE_CODES[];")
+    lines.append("")
+
     lines.append("// Language display names (defined in I18nStrings.cpp)")
     lines.append("extern const char* const LANGUAGE_NAMES[];")
     lines.append("")
@@ -494,6 +573,7 @@ def generate_strings_header(
     output_path: str,
 ) -> None:
     """Generate I18nStrings.h."""
+    ensure_unique_abbreviations(languages, language_names)
     lines: List[str] = [
         "#pragma once",
         '#include <string>',
@@ -523,12 +603,21 @@ def generate_strings_cpp(
     output_path: str,
 ) -> None:
     """Generate I18nStrings.cpp."""
+    ensure_unique_abbreviations(languages, language_names)
     lines: List[str] = [
         '#include "I18nStrings.h"',
         "",
         "// THIS FILE IS AUTO-GENERATED BY gen_i18n.py. DO NOT EDIT.",
         "",
     ]
+
+    # LANGUAGE_CODES array
+    lines.append("// Language codes")
+    lines.append("const char* const LANGUAGE_CODES[] = {")
+    for code in languages:
+        _append_string_entry(lines, code)
+    lines.append("};")
+    lines.append("")
 
     # LANGUAGE_NAMES array
     lines.append("// Language display names")
@@ -610,14 +699,10 @@ def main(translations_dir=None, output_dir=None, language_filter=None) -> None:
     default_translations_dir = "lib/I18n/translations"
     default_output_dir = "lib/I18n/"
 
-    if translations_dir is None or output_dir is None:
-        if len(sys.argv) == 3:
-            translations_dir = sys.argv[1]
-            output_dir = sys.argv[2]
-        else:
-            # Default for no arguments or weird arguments (e.g. SCons)
-            translations_dir = default_translations_dir
-            output_dir = default_output_dir
+    if translations_dir is None:
+        translations_dir = default_translations_dir
+    if output_dir is None:
+        output_dir = default_output_dir
 
     # Check for I18N_LANGUAGES env var if no filter provided
     if language_filter is None:
@@ -660,8 +745,26 @@ def main(translations_dir=None, output_dir=None, language_filter=None) -> None:
         sys.exit(1)
 
 
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(description="Generate I18n C++ files from per-language YAML translations.")
+    parser.add_argument(
+        "translations_dir",
+        nargs="?",
+        default="lib/I18n/translations",
+        help="directory containing per-language YAML files",
+    )
+    parser.add_argument(
+        "output_dir",
+        nargs="?",
+        default="lib/I18n",
+        help="directory for generated I18n C++ files",
+    )
+    return parser.parse_args(argv)
+
+
 if __name__ == "__main__":
-    main()
+    args = parse_args()
+    main(args.translations_dir, args.output_dir)
 else:
     try:
         Import("env")

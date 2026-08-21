@@ -104,13 +104,13 @@ bool BluetoothPageTurnSettingsActivity::refreshViewModel() {
   const bool connected = BLUETOOTH_PAGE_TURN.isConnected();
   const int scannedDeviceCount = BLUETOOTH_PAGE_TURN.getScannedDeviceCount();
   const auto connectionState = BLUETOOTH_PAGE_TURN.getConnectionState();
-  const std::string statusMessage = BLUETOOTH_PAGE_TURN.getStatusMessage();
+  const auto statusReason = BLUETOOTH_PAGE_TURN.getStatusReason();
   const std::string bondedDeviceName = BLUETOOTH_PAGE_TURN.getBondedDeviceName();
   const std::string bondedDeviceAddress = BLUETOOTH_PAGE_TURN.getBondedDeviceAddress();
 
   const bool hasChanged = enabled != lastEnabled || hasBondedDevice != lastHasBondedDevice ||
                           connected != lastConnected || scannedDeviceCount != lastScannedDeviceCount ||
-                          connectionState != lastConnectionState || statusMessage != lastStatusMessage ||
+                          connectionState != lastConnectionState || statusReason != lastStatusReason ||
                           bondedDeviceName != lastBondedDeviceName || bondedDeviceAddress != lastBondedDeviceAddress;
 
   if (!hasChanged) {
@@ -122,7 +122,7 @@ bool BluetoothPageTurnSettingsActivity::refreshViewModel() {
   lastConnected = connected;
   lastScannedDeviceCount = scannedDeviceCount;
   lastConnectionState = connectionState;
-  lastStatusMessage = statusMessage;
+  lastStatusReason = statusReason;
   lastBondedDeviceName = bondedDeviceName;
   lastBondedDeviceAddress = bondedDeviceAddress;
   rebuildMenuItems();
@@ -197,9 +197,11 @@ std::string BluetoothPageTurnSettingsActivity::getStatusText() const {
 }
 
 std::string BluetoothPageTurnSettingsActivity::getStatusDetail() const {
-  const std::string statusMessage = BLUETOOTH_PAGE_TURN.getStatusMessage();
-  if (!statusMessage.empty()) {
-    return statusMessage;
+  switch (BLUETOOTH_PAGE_TURN.getStatusReason()) {
+    case BluetoothPageTurnManager::StatusReason::None:
+      break;
+    case BluetoothPageTurnManager::StatusReason::StackUnavailable:
+      return tr(STR_BLUETOOTH_STACK_UNAVAILABLE);
   }
 
   const std::string bondedDeviceName = BLUETOOTH_PAGE_TURN.getBondedDeviceName();

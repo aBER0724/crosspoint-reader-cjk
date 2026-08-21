@@ -21,29 +21,27 @@
  */
 class KOReaderSyncActivity final : public Activity {
  public:
-  explicit KOReaderSyncActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
-                                const std::shared_ptr<Epub>& epub, const std::string& epubPath, int currentSpineIndex,
-                                int currentPage, int totalPagesInSpine,
+  explicit KOReaderSyncActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, const std::string& epubPath,
+                                int currentSpineIndex, int currentPage, int totalPagesInSpine,
+                                SavedProgressPosition localKoPos, std::string localChapterName,
                                 std::optional<uint16_t> currentParagraphIndex = std::nullopt)
       : Activity("KOReaderSync", renderer, mappedInput),
-        epub(epub),
         epubPath(epubPath),
         currentSpineIndex(currentSpineIndex),
         currentPage(currentPage),
         totalPagesInSpine(totalPagesInSpine),
         currentParagraphIndex(currentParagraphIndex),
+        localChapterName(std::move(localChapterName)),
         remoteProgress{},
         remotePosition{},
-        localProgress{} {}
+        localProgress(std::move(localKoPos)) {}
 
   void onEnter() override;
+  bool isReaderActivity() const override { return true; }
   void onExit() override;
   void loop() override;
   void render(RenderLock&&) override;
-  bool preventAutoSleep() override { return state == CONNECTING || state == SYNCING; }
-  // Sync screen is UI, not book content — keep it Portrait/Inverted even when
-  // the user has configured the EPUB reader to render in Landscape.
-  bool isReaderActivity() const override { return true; }
+  bool preventAutoSleep() override { return state == CONNECTING || state == SYNCING || state == UPLOADING; }
 
  private:
   enum State {
@@ -53,13 +51,15 @@ class KOReaderSyncActivity final : public Activity {
     SHOWING_RESULT,
     UPLOADING,
     UPLOAD_COMPLETE,
+    SYNC_COMPLETE,
     NO_REMOTE_PROGRESS,
     SYNC_FAILED,
     NO_CREDENTIALS
   };
 
-  std::shared_ptr<Epub> epub;
+  std::shared_ptr<Epub> epub;  // null until lazy-loaded after TLS in performSync()
   std::string epubPath;
+  std::string localChapterName;
   int currentSpineIndex;
   int currentPage;
   int totalPagesInSpine;
@@ -74,13 +74,29 @@ class KOReaderSyncActivity final : public Activity {
   KOReaderProgress remoteProgress;
   CrossPointPosition remotePosition;
 
-  // Local progress as KOReader format (for display)
-  KOReaderPosition localProgress;
+  // Local progress as KOReader format (pre-computed before Epub was released)
+  SavedProgressPosition localProgress;
 
   // Selection in result screen (0=Apply, 1=Upload)
   int selectedOption = 0;
 
+  // Timed return for successful smart-sync terminal states.
+  unsigned long autoReturnAt = 0;
+  static constexpr unsigned long AUTO_RETURN_DELAY_MS = 1200;
+
+  // Tracks whether this session activated WiFi. Set in onEnter past the credentials
+  // check; checked in onExit to decide whether to silent-reboot. Can't rely on
+  // WiFi.getMode() because performUpload() calls esp_wifi_stop() on the way out,
+  // which makes WiFi.getMode() return WIFI_MODE_NULL.
+  bool wifiActivated = false;
+
   void onWifiSelectionComplete(bool success);
   void performSync();
   void performUpload();
+  bool smartSyncEnabled() const;
+  void markAutoReturn();
+  void completeAlreadySynced();
+  void ensureEpubLoaded();
+  void saveProgressAndReturn(int spineIndex, int page);
+  void returnToReader();
 };

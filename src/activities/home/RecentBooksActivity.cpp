@@ -46,6 +46,10 @@ void RecentBooksActivity::onExit() {
 
 void RecentBooksActivity::loop() {
   const int pageItems = UITheme::getInstance().getNumberOfItemsPerPage(renderer, true, false, true, true);
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const int contentTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
+  const int contentHeight =
+      renderer.getScreenHeight() - contentTop - metrics.buttonHintsHeight - metrics.verticalSpacing;
 
   if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
     if (!recentBooks.empty() && selectorIndex < static_cast<int>(recentBooks.size())) {
@@ -55,11 +59,34 @@ void RecentBooksActivity::loop() {
     }
   }
 
+  int touchSel = static_cast<int>(selectorIndex);
+  const auto listTouch =
+      handleListTouch(touchSel, static_cast<int>(recentBooks.size()), contentTop, contentHeight, true);
+  if (listTouch != ListTouchResult::None) {
+    selectorIndex = static_cast<size_t>(touchSel);
+    if (listTouch == ListTouchResult::Activated) {
+      LOG_DBG("RBA", "Tapped recent book: %s", recentBooks[selectorIndex].path.c_str());
+      onSelectBook(recentBooks[selectorIndex].path);
+    }
+    return;
+  }
+
   if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
     onGoHome();
   }
 
   int listSize = static_cast<int>(recentBooks.size());
+  const auto swipe = mappedInput.wasSwipe();
+  if (swipe == MappedInputManager::SwipeDir::Up) {
+    selectorIndex = ButtonNavigator::nextPageIndex(static_cast<int>(selectorIndex), listSize, pageItems);
+    requestUpdate();
+    return;
+  }
+  if (swipe == MappedInputManager::SwipeDir::Down) {
+    selectorIndex = ButtonNavigator::previousPageIndex(static_cast<int>(selectorIndex), listSize, pageItems);
+    requestUpdate();
+    return;
+  }
 
   buttonNavigator.onNextRelease([this, listSize] {
     selectorIndex = ButtonNavigator::nextIndex(static_cast<int>(selectorIndex), listSize);
@@ -108,5 +135,9 @@ void RecentBooksActivity::render(RenderLock&&) {
   const auto labels = mappedInput.mapLabels(tr(STR_HOME), tr(STR_OPEN), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 
-  renderer.displayBuffer();
+  if (renderer.isDarkMode()) {
+    renderer.displayBufferDarkRedrive();
+  } else {
+    renderer.displayBuffer();
+  }
 }

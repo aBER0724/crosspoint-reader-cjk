@@ -2,7 +2,7 @@
 
 const uint8_t* ExternalFont::getGlyph(uint32_t) { return nullptr; }
 
-void ExternalFont::preloadGlyphs(const uint32_t*, size_t) {}
+bool ExternalFont::preloadGlyphs(const uint32_t*, size_t, bool (*)(const void*), const void*) { return true; }
 
 bool ExternalFont::load(const char*) { return true; }
 

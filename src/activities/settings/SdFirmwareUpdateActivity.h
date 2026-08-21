@@ -6,8 +6,8 @@
 
 class SdFirmwareUpdateActivity final : public Activity {
  public:
-  explicit SdFirmwareUpdateActivity(GfxRenderer& renderer, MappedInputManager& mappedInput)
-      : Activity("SdFirmwareUpdate", renderer, mappedInput), candidates{} {}
+  explicit SdFirmwareUpdateActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, bool recoveryMode = false)
+      : Activity("SdFirmwareUpdate", renderer, mappedInput), recoveryMode(recoveryMode), candidates{} {}
 
   void onEnter() override;
   void onExit() override;
@@ -33,6 +33,7 @@ class SdFirmwareUpdateActivity final : public Activity {
   static constexpr unsigned int UNINITIALIZED_PERCENTAGE = 111;
   static constexpr size_t kMaxCandidates = 3;
 
+  bool recoveryMode = false;
   State state = SCANNING;
   bool scanDone = false;
   unsigned int lastUpdaterPercentage = UNINITIALIZED_PERCENTAGE;

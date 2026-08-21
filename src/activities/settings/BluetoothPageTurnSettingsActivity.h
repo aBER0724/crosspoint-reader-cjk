@@ -47,7 +47,7 @@ class BluetoothPageTurnSettingsActivity final : public Activity {
   bool lastConnected = false;
   int lastScannedDeviceCount = -1;
   BluetoothPageTurnManager::ConnectionState lastConnectionState = BluetoothPageTurnManager::ConnectionState::Disabled;
-  std::string lastStatusMessage;
+  BluetoothPageTurnManager::StatusReason lastStatusReason = BluetoothPageTurnManager::StatusReason::None;
   std::string lastBondedDeviceName;
   std::string lastBondedDeviceAddress;
 };
