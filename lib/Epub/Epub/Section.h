@@ -109,6 +109,8 @@ class Section {
                             const std::function<bool()>& cancelFn = nullptr);
   bool isBuilding() const { return static_cast<bool>(build_); }
   bool isBuildComplete() const { return buildComplete_; }
+  // Pages laid out since the current build started (diagnostics / progress).
+  uint16_t builtPageCount() const { return builtPageCount_; }
   // Best-known total page count: the exact pageCount once finalized, or a smoothed byte-based
   // estimate (pages so far scaled by totalBytes/bytesConsumed, damped by an EMA) while a giant spine
   // is still building, so "page X of Y" / progress don't read off the small build watermark.

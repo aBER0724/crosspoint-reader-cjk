@@ -289,6 +289,38 @@ bool TextBlock::collectCodepoints(std::vector<uint32_t>& out, const size_t max,
   return !cancellation || !cancellation->requested();
 }
 
+bool TextBlock::collectCodepoints(uint32_t* out, const size_t max, size_t& count,
+                                  const PageRenderCancellation* const cancellation) const {
+  if (!out || max == 0 || count >= max) {
+    return !cancellation || !cancellation->requested();
+  }
+
+  size_t scanned = 0;
+  for (uint16_t i = 0; i < numWords; ++i) {
+    const unsigned char* ptr = reinterpret_cast<const unsigned char*>(wordText(i));
+    while (*ptr != '\0') {
+      if ((scanned++ & 0x0Fu) == 0 && cancellation && cancellation->requested()) {
+        return false;
+      }
+      const uint32_t cp = utf8NextCodepoint(&ptr);
+      bool exists = false;
+      for (size_t j = 0; j < count; ++j) {
+        if (out[j] == cp) {
+          exists = true;
+          break;
+        }
+      }
+      if (!exists) {
+        out[count++] = cp;
+        if (count >= max) {
+          return !cancellation || !cancellation->requested();
+        }
+      }
+    }
+  }
+  return !cancellation || !cancellation->requested();
+}
+
 bool TextBlock::serialize(HalFile& file) const {
   if (!isValid) {
     LOG_ERR("TXB", "Serialization failed: invalid block");
