@@ -41,6 +41,9 @@
 class HalGPIO {
 #if CROSSPOINT_EMULATED == 0
   InputManager inputMgr;
+  bool asyncInputEnabled = false;
+  uint8_t asyncPressedEvents = 0;
+  uint8_t asyncReleasedEvents = 0;
 #endif
 
   bool lastUsbConnected = false;
@@ -58,26 +61,36 @@ class HalGPIO {
   // Inline device type helpers for cleaner downstream checks
   inline bool deviceIsX3() const { return _deviceType == DeviceType::X3; }
   inline bool deviceIsX4() const { return _deviceType == DeviceType::X4; }
+  bool isXteinkDevice() const;
 
   // Start button GPIO and setup SPI for screen and SD card
   void begin();
 
   // Button input methods
   void update();
+  void beginAsyncInput();
+  void readButtonAdc(InputManager::ButtonAdcSample& group1, InputManager::ButtonAdcSample& group2);
   bool isPressed(uint8_t buttonIndex) const;
   bool wasPressed(uint8_t buttonIndex) const;
   bool wasAnyPressed() const;
   bool wasReleased(uint8_t buttonIndex) const;
   bool wasAnyReleased() const;
   unsigned long getHeldTime() const;
-
-  // Setup wake up GPIO and enter deep sleep
-  void startDeepSleep();
+  unsigned long getPowerButtonHeldTime() const;
+  bool hasTouch() const;
+  bool wasTouchTap(float& nx, float& ny) const;
+  bool wasTouchDown(float& nx, float& ny) const;
+  bool isTouchTapCandidate(float& nx, float& ny, unsigned long& heldMs) const;
+  bool isTouchHeldAt(float& nx, float& ny) const;
+  unsigned long lastTouchHeldMs() const;
+  bool wasSwipe(float& nxStart, float& nyStart, float& nxEnd, float& nyEnd) const;
+  bool wasTouchActivity() const;
+  void setSharedConfirmPowerShortPressEmitsPower(bool enabled);
 
   // Verify power button was held long enough after wakeup.
-  // If verification fails, enters deep sleep and does not return.
+  // Returns true if verification succeeded, false if device should return to sleep.
   // Should only be called when wakeup reason is PowerButton.
-  void verifyPowerButtonWakeup(uint16_t requiredDurationMs, bool shortPressAllowed);
+  bool verifyPowerButtonWakeup(uint16_t requiredDurationMs, bool shortPressAllowed);
 
   // Check if USB is connected
   bool isUsbConnected() const;

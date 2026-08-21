@@ -70,6 +70,12 @@ class XtcParser {
                              std::function<void(const uint8_t* data, size_t size, size_t offset)> callback,
                              size_t chunkSize = 1024);
 
+  /** Stream corresponding chunks from a page's bit planes. */
+  XtcError loadPagePlaneChunks(
+      uint32_t pageIndex,
+      std::function<bool(const uint8_t* plane1, const uint8_t* plane2, size_t size, size_t offset)> callback,
+      size_t chunkSize = 4096);
+
   // Get title/author from metadata
   std::string getTitle() const { return m_title; }
   std::string getAuthor() const { return m_author; }

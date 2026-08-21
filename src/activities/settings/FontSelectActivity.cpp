@@ -13,11 +13,12 @@
 #include "util/ExternalFontLabel.h"
 
 namespace {
-constexpr int kBuiltinReaderFontCount = 3;
-constexpr CrossPointSettings::FONT_FAMILY kBuiltinReaderFonts[kBuiltinReaderFontCount] = {
-    CrossPointSettings::NOTOSERIF, CrossPointSettings::NOTOSANS, CrossPointSettings::OPENDYSLEXIC};
-constexpr StrId kBuiltinReaderFontLabels[kBuiltinReaderFontCount] = {StrId::STR_NOTO_SERIF, StrId::STR_NOTO_SANS,
-                                                                     StrId::STR_OPEN_DYSLEXIC};
+// OpenDyslexic is no longer a built-in FONT_FAMILY value; legacy saves migrate to
+// sdFontFamilyName="OpenDyslexic" and appear via FontManager external/SD fonts.
+constexpr int kBuiltinReaderFontCount = 2;
+constexpr CrossPointSettings::FONT_FAMILY kBuiltinReaderFonts[kBuiltinReaderFontCount] = {CrossPointSettings::NOTOSERIF,
+                                                                                          CrossPointSettings::NOTOSANS};
+constexpr StrId kBuiltinReaderFontLabels[kBuiltinReaderFontCount] = {StrId::STR_NOTO_SERIF, StrId::STR_NOTO_SANS};
 }  // namespace
 
 void FontSelectActivity::onEnter() {
@@ -88,8 +89,12 @@ void FontSelectActivity::openFontPreview() {
     if (selectedIndex < kBuiltinReaderFontCount) {
       // Select built-in reader font
       LOG_DBG("FNT", "Selecting built-in reader font index %d", selectedIndex);
-      FontMgr.selectFont(-1);
+      if (!FontMgr.selectFont(-1)) {
+        LOG_ERR("FNT", "Failed to select built-in reader font");
+        return;
+      }
       SETTINGS.fontFamily = static_cast<uint8_t>(kBuiltinReaderFonts[selectedIndex]);
+      SETTINGS.sdFontFamilyName[0] = '\0';
       SETTINGS.saveToFile();
     } else {
       // Select external reader font (skip if glyph too large)
@@ -123,7 +128,12 @@ void FontSelectActivity::openFontPreview() {
     if (selectedIndex == 0) {
       // Select built-in UI font (disable external font)
       LOG_DBG("FNT", "Disabling UI font");
-      FontMgr.selectUiFont(-1);
+      if (!FontMgr.selectUiFont(-1)) {
+        LOG_ERR("FNT", "Failed to select built-in UI font");
+        return;
+      }
+      SETTINGS.sdUiFontFamilyName[0] = '\0';
+      SETTINGS.saveToFile();
     } else {
       // Select external UI font (skip if glyph too large)
       const int externalIndex = selectedIndex - 1;

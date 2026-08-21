@@ -5,8 +5,8 @@
 #include <string>
 #include <vector>
 
-#include "../Activity.h"
-#include "../ActivityResult.h"
+#include "activities/Activity.h"
+#include "components/OptionPopup.h"
 #include "util/ButtonNavigator.h"
 
 class EpubReaderMenuActivity final : public Activity {
@@ -14,35 +14,29 @@ class EpubReaderMenuActivity final : public Activity {
   // Menu actions available from the reader menu.
   enum class MenuAction {
     SELECT_CHAPTER,
-    READER_SETTINGS,
-    STYLE_FIRST_LINE_INDENT,
-    STYLE_FONT_FAMILY,
-    STYLE_LINE_SPACING,
-    STYLE_INVERT_IMAGES,
-    STYLE_STATUS_BAR,
+    FOOTNOTES,
     GO_TO_PERCENT,
+    AUTO_PAGE_TURN,
     ROTATE_SCREEN,
+    BOOKMARKS,
+    TOGGLE_BOOKMARK,
     SCREENSHOT,
     DISPLAY_QR,
     GO_HOME,
     SYNC,
-    DELETE_CACHE
+    DELETE_CACHE,
+    DICTIONARY
   };
 
   explicit EpubReaderMenuActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, const std::string& title,
                                   const int currentPage, const int totalPages, const int bookProgressPercent,
-                                  const uint8_t currentOrientation)
-      : Activity("EpubReaderMenu", renderer, mappedInput),
-        title(title),
-        pendingOrientation(currentOrientation),
-        currentPage(currentPage),
-        totalPages(totalPages),
-        bookProgressPercent(bookProgressPercent) {}
+                                  const uint8_t currentOrientation, const bool hasFootnotes, bool hasBookmarks);
 
   void onEnter() override;
   void onExit() override;
   void loop() override;
   void render(RenderLock&&) override;
+  bool handleHomeGesture() override;
 
  private:
   struct MenuItem {
@@ -50,33 +44,29 @@ class EpubReaderMenuActivity final : public Activity {
     StrId labelId;
   };
 
-  // Fixed menu layout (order matters for up/down navigation).
-  const std::vector<MenuItem> menuItems = {{MenuAction::SELECT_CHAPTER, StrId::STR_SELECT_CHAPTER},
-                                           {MenuAction::READER_SETTINGS, StrId::STR_SETTINGS_TITLE},
-                                           {MenuAction::STYLE_FIRST_LINE_INDENT, StrId::STR_FIRST_LINE_INDENT},
-                                           {MenuAction::STYLE_FONT_FAMILY, StrId::STR_FONT_FAMILY},
-                                           {MenuAction::STYLE_LINE_SPACING, StrId::STR_LINE_SPACING},
-                                           {MenuAction::STYLE_INVERT_IMAGES, StrId::STR_INVERT_IMAGES},
-                                           {MenuAction::STYLE_STATUS_BAR, StrId::STR_CUSTOMISE_STATUS_BAR},
-                                           {MenuAction::ROTATE_SCREEN, StrId::STR_ORIENTATION},
-                                           {MenuAction::GO_TO_PERCENT, StrId::STR_GO_TO_PERCENT},
-                                           {MenuAction::SCREENSHOT, StrId::STR_SCREENSHOT_BUTTON},
-                                           {MenuAction::DISPLAY_QR, StrId::STR_DISPLAY_QR},
-                                           {MenuAction::GO_HOME, StrId::STR_GO_HOME_BUTTON},
-                                           {MenuAction::SYNC, StrId::STR_SYNC_PROGRESS},
-                                           {MenuAction::DELETE_CACHE, StrId::STR_DELETE_CACHE}};
+  static std::vector<MenuItem> buildMenuItems(bool hasFootnotes, bool hasBookmarks);
+  void closeCancelled();
+
+  // Fixed menu layout
+  const std::vector<MenuItem> menuItems;
+
   int selectedIndex = 0;
+  int lastRenderedSelectedIndex = -1;
+  bool fullRedrawRequired = true;
+  bool readerInputActive = false;
 
   ButtonNavigator buttonNavigator;
+  OptionPopup optionPopup;
+  // True while the button press that closed the popup is still held; its release
+  // must not fall through to the menu's own Back/Confirm handlers.
+  bool popupClosing = false;
   std::string title = "Reader Menu";
   uint8_t pendingOrientation = 0;
-  const std::vector<StrId> orientationLabels = {StrId::STR_PORTRAIT, StrId::STR_LANDSCAPE_CW, StrId::STR_INVERTED,
-                                                StrId::STR_LANDSCAPE_CCW};
+  uint8_t selectedPageTurnOption = 0;
+  const std::vector<StrId> orientationLabels = {StrId::STR_PORTRAIT, StrId::STR_LANDSCAPE_CW,
+                                                StrId::STR_ORIENTATION_INVERTED, StrId::STR_LANDSCAPE_CCW};
+  const std::vector<const char*> pageTurnLabels = {I18N.get(StrId::STR_STATE_OFF), "1", "3", "6", "12"};
   int currentPage = 0;
   int totalPages = 0;
   int bookProgressPercent = 0;
-  bool skipNextButtonCheck = true;
-
-  std::string getMenuItemValue(MenuAction action) const;
-  std::string getCurrentFontLabel() const;
 };

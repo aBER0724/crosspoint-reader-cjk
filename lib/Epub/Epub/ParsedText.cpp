@@ -1,6 +1,8 @@
 #include "ParsedText.h"
 
+#include <BidiUtils.h>
 #include <GfxRenderer.h>
+#include <Logging.h>
 #include <Utf8.h>
 
 #include <algorithm>
@@ -8,9 +10,15 @@
 #include <cstring>
 #include <functional>
 #include <limits>
+#include <string>
+#include <string_view>
 #include <vector>
 
 #include "hyphenation/Hyphenator.h"
+
+// Arduino.h (pulled in via Logging.h) defines a function-like macro word(...).
+// Keep local std::string variable names usable in this translation unit.
+#undef word
 
 constexpr int MAX_COST = std::numeric_limits<int>::max();
 
@@ -19,36 +27,24 @@ namespace {
 // Soft hyphen byte pattern used throughout EPUBs (UTF-8 for U+00AD).
 constexpr char SOFT_HYPHEN_UTF8[] = "\xC2\xAD";
 constexpr size_t SOFT_HYPHEN_BYTES = 2;
+// Paragraph-level direction: scan the first N words to find base direction.
+constexpr size_t RTL_PARAGRAPH_PROBE_WORDS = 3;
+// Per-word: scan enough chars to see through leading neutrals (quotes, numbers)
+// before giving up. 64 is a hedge for pathological cases like long numeric tokens.
+constexpr int RTL_PER_WORD_PROBE_DEPTH = 64;
+constexpr size_t MIN_JUSTIFY_GAPS = 1;
 
-// Em-space (U+2003) UTF-8 bytes; used as a fallback paragraph indent.
-constexpr char EM_SPACE_UTF8[] = "\xe2\x80\x83";
-constexpr size_t EM_SPACE_BYTES = 3;
-
-// Words coming out of the parser are bounded by ChapterHtmlSlimParser's
-// MAX_WORD_SIZE = 200. With paragraph indent (+3) or hyphenation (+1) the
-// worst case is ~204 bytes; 256 leaves comfortable headroom plus the
-// trailing null terminator that C-string APIs expect.
-constexpr size_t WORD_NULL_TERM_BUF = 256;
-
-// Copies `word` into `buf` and null-terminates it. Returns the buffer for
-// chaining into a C-string API. If the word is larger than the buffer we
-// truncate to keep the call infallible — this should never happen given
-// MAX_WORD_SIZE but the bound is enforced defensively.
-const char* nullTerminate(char (&buf)[WORD_NULL_TERM_BUF], std::string_view word) {
-  const size_t copyLen = std::min(word.size(), WORD_NULL_TERM_BUF - 1);
-  if (copyLen > 0) {
-    std::memcpy(buf, word.data(), copyLen);
+// Byte-level pre-check: Hebrew UTF-8 lead bytes 0xD6-0xD7, Arabic/Syriac 0xD8-0xDB.
+bool mayContainRtlBytes(const char* str) {
+  for (const auto* p = reinterpret_cast<const unsigned char*>(str); *p; ++p) {
+    if (*p >= 0xD6 && *p <= 0xDB) return true;
   }
-  buf[copyLen] = '\0';
-  return buf;
+  return false;
 }
 
 // Returns the first rendered codepoint of a word (skipping leading soft hyphens).
-uint32_t firstCodepoint(std::string_view word) {
-  if (word.empty()) return 0;
-  char buf[WORD_NULL_TERM_BUF];
-  nullTerminate(buf, word);
-  const auto* ptr = reinterpret_cast<const unsigned char*>(buf);
+uint32_t firstCodepoint(const std::string_view word) {
+  const auto* ptr = reinterpret_cast<const unsigned char*>(word.data());
   while (true) {
     const uint32_t cp = utf8NextCodepoint(&ptr);
     if (cp == 0) return 0;
@@ -57,101 +53,508 @@ uint32_t firstCodepoint(std::string_view word) {
 }
 
 // Returns the last codepoint of a word by scanning backward for the start of the last UTF-8 sequence.
-uint32_t lastCodepoint(std::string_view word) {
+uint32_t lastCodepoint(const std::string_view word) {
   if (word.empty()) return 0;
   // UTF-8 continuation bytes start with 10xxxxxx; scan backward to find the leading byte.
   size_t i = word.size() - 1;
   while (i > 0 && (static_cast<uint8_t>(word[i]) & 0xC0) == 0x80) {
     --i;
   }
-  // Copy the last UTF-8 sequence into a small null-terminated buffer.
-  char buf[8];
-  const size_t copyLen = std::min(word.size() - i, sizeof(buf) - 1);
-  std::memcpy(buf, word.data() + i, copyLen);
-  buf[copyLen] = '\0';
-  const auto* ptr = reinterpret_cast<const unsigned char*>(buf);
+  const auto* ptr = reinterpret_cast<const unsigned char*>(word.data() + i);
   return utf8NextCodepoint(&ptr);
 }
 
-bool containsSoftHyphen(std::string_view word) {
-  return word.find(std::string_view(SOFT_HYPHEN_UTF8, SOFT_HYPHEN_BYTES)) != std::string_view::npos;
+bool containsSoftHyphen(const std::string_view word) { return word.find(SOFT_HYPHEN_UTF8) != std::string::npos; }
+
+bool isNoBreakBeforeCjkPunctuation(const uint32_t cp) {
+  switch (cp) {
+    case '.':
+    case ',':
+    case ':':
+    case ';':
+    case '!':
+    case '?':
+    case ')':
+    case ']':
+    case '}':
+    case 0x00BB:  // 禄
+    case 0x2019:  // 鈥?
+    case 0x201D:  // 鈥?
+    case 0x3001:  // 銆?
+    case 0x3002:  // 銆?
+    case 0x3009:  // 銆?
+    case 0x300B:  // 銆?
+    case 0x300D:  // 銆?
+    case 0x300F:  // 銆?
+    case 0x3011:  // 銆?
+    case 0x3015:  // 銆?
+    case 0x3017:  // 銆?
+    case 0x3019:  // 銆?
+    case 0x301B:  // 銆?
+    case 0xFF01:  // 锛?
+    case 0xFF09:  // 锛?
+    case 0xFF0C:  // 锛?
+    case 0xFF0E:  // 锛?
+    case 0xFF1A:  // 锛?
+    case 0xFF1B:  // 锛?
+    case 0xFF1F:  // 锛?
+    case 0xFF3D:  // 锛?
+    case 0xFF5D:  // 锝?
+      return true;
+    default:
+      return false;
+  }
+}
+
+bool isNoBreakAfterCjkPunctuation(const uint32_t cp) {
+  switch (cp) {
+    case '(':
+    case '[':
+    case '{':
+    case 0x00AB:  // 芦
+    case 0x2018:  // 鈥?
+    case 0x201C:  // 鈥?
+    case 0x3008:  // 銆?
+    case 0x300A:  // 銆?
+    case 0x300C:  // 銆?
+    case 0x300E:  // 銆?
+    case 0x3010:  // 銆?
+    case 0x3014:  // 銆?
+    case 0x3016:  // 銆?
+    case 0x3018:  // 銆?
+    case 0x301A:  // 銆?
+    case 0xFF08:  // 锛?
+    case 0xFF3B:  // 锛?
+    case 0xFF5B:  // 锝?
+      return true;
+    default:
+      return false;
+  }
+}
+
+bool containsCjkBreakableCodepoint(const std::string& text) {
+  const auto* ptr = reinterpret_cast<const unsigned char*>(text.c_str());
+  while (*ptr) {
+    const uint32_t cp = utf8NextCodepoint(&ptr);
+    if (utf8IsCjkBreakable(cp)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool hasCjkBreakOpportunityBetween(const uint32_t leftCp, const uint32_t rightCp) {
+  if (!utf8IsCjkBreakable(leftCp) && !utf8IsCjkBreakable(rightCp)) return false;
+  if (isNoBreakAfterCjkPunctuation(leftCp) || isNoBreakBeforeCjkPunctuation(rightCp)) return false;
+  if (utf8IsCombiningMark(rightCp)) return false;
+  return true;
+}
+
+std::vector<size_t> cjkCharacterBreakByteOffsets(const std::string& text) {
+  struct CodepointBoundary {
+    uint32_t cp;
+    size_t endOffset;
+  };
+
+  std::vector<CodepointBoundary> codepoints;
+  codepoints.reserve(text.size());
+  bool hasCjkBreakable = false;
+
+  const auto* ptr = reinterpret_cast<const unsigned char*>(text.c_str());
+  const auto* const start = ptr;
+  while (*ptr) {
+    const uint32_t cp = utf8NextCodepoint(&ptr);
+    if (cp == 0) break;
+    if (utf8IsCjkBreakable(cp)) {
+      hasCjkBreakable = true;
+    }
+    codepoints.push_back({cp, static_cast<size_t>(ptr - start)});
+  }
+
+  if (!hasCjkBreakable || codepoints.size() < 2) return {};
+
+  std::vector<size_t> allowedOffsets;
+  allowedOffsets.reserve(codepoints.size() - 1);
+  for (size_t i = 0; i + 1 < codepoints.size(); ++i) {
+    const uint32_t current = codepoints[i].cp;
+    const uint32_t next = codepoints[i + 1].cp;
+    if (!hasCjkBreakOpportunityBetween(current, next)) continue;
+    allowedOffsets.push_back(codepoints[i].endOffset);
+  }
+  return allowedOffsets;
+}
+
+int computeJustifyExtra(const int spareSpace, const size_t gapCount) {
+  if (gapCount < MIN_JUSTIFY_GAPS || spareSpace <= 0) return 0;
+  // Distribute the spare space evenly across gaps. Do NOT bail out to 0 when the
+  // per-gap stretch is large: a sparse line (few words on a wide page) legitimately
+  // needs big gaps to reach the margin. Returning 0 there disables justification for
+  // that line, leaving it right-aligned (RTL) / left-aligned (LTR) 鈥?the mismatched
+  // alignment bug. Match the un-capped behavior of the old code.
+  return spareSpace / static_cast<int>(gapCount);
 }
 
 // Removes every soft hyphen in-place so rendered glyphs match measured widths.
 void stripSoftHyphensInPlace(std::string& word) {
   size_t pos = 0;
-  while ((pos = word.find(SOFT_HYPHEN_UTF8, pos, SOFT_HYPHEN_BYTES)) != std::string::npos) {
+  while ((pos = word.find(SOFT_HYPHEN_UTF8, pos)) != std::string::npos) {
     word.erase(pos, SOFT_HYPHEN_BYTES);
   }
 }
 
-// Builds a sanitized copy of `word` (soft hyphens stripped, optional trailing
-// hyphen appended) into `outBuf`. Returns the resulting C-string.
-const char* sanitizeWord(char (&outBuf)[WORD_NULL_TERM_BUF], std::string_view word, bool appendHyphen) {
-  size_t outLen = 0;
-  for (size_t i = 0; i < word.size() && outLen + 1 < WORD_NULL_TERM_BUF;) {
-    // Skip soft hyphen (UTF-8: 0xC2 0xAD)
-    if (i + 1 < word.size() && static_cast<uint8_t>(word[i]) == 0xC2 && static_cast<uint8_t>(word[i + 1]) == 0xAD) {
-      i += 2;
-      continue;
-    }
-    outBuf[outLen++] = word[i++];
-  }
-  if (appendHyphen && outLen + 1 < WORD_NULL_TERM_BUF) {
-    outBuf[outLen++] = '-';
-  }
-  outBuf[outLen] = '\0';
-  return outBuf;
-}
-
 // Returns the advance width for a word while ignoring soft hyphen glyphs and optionally appending a visible hyphen.
 // Uses advance width (sum of glyph advances + kerning) rather than bounding box width so that italic glyph overhangs
-// don't inflate inter-word spacing. All temporary buffers are stack-allocated to avoid heap pressure during layout.
-uint16_t measureWordWidth(const GfxRenderer& renderer, const int fontId, std::string_view word,
+// don't inflate inter-word spacing.
+uint16_t measureWordWidth(const GfxRenderer& renderer, const int fontId, const std::string_view word,
                           const EpdFontFamily::Style style, const bool appendHyphen = false) {
   if (word.size() == 1 && word[0] == ' ' && !appendHyphen) {
     return renderer.getSpaceWidth(fontId, style);
   }
   const bool hasSoftHyphen = containsSoftHyphen(word);
-  char buf[WORD_NULL_TERM_BUF];
-  const char* cstr = (hasSoftHyphen || appendHyphen) ? sanitizeWord(buf, word, appendHyphen) : nullTerminate(buf, word);
-  return renderer.getTextAdvanceX(fontId, cstr, style);
+  if (!hasSoftHyphen && !appendHyphen) {
+    return renderer.getTextAdvanceX(fontId, word.data(), style);
+  }
+
+  std::string sanitized(word);
+  if (hasSoftHyphen) {
+    stripSoftHyphensInPlace(sanitized);
+  }
+  if (appendHyphen) {
+    sanitized.push_back('-');
+  }
+  return renderer.getTextAdvanceX(fontId, sanitized.c_str(), style);
+}
+
+// Checks if a UTF-8 codepoint should be counted as part of a word for Focus Reading
+bool isWordCharacter(uint32_t cp) {
+  // ASCII range (Catches 95%+ of characters immediately)
+  if (cp < 128) {
+    // Bitwise trick: (cp | 0x20) converts uppercase ASCII to lowercase.
+    // This checks for A-Z and a-z mathematically, avoiding memory lookups and <cctype>
+    return ((cp | 0x20) >= 'a' && (cp | 0x20) <= 'z') || cp == '\'';
+  }
+
+  // General Punctuation Block, Currency, Math, Arrows, & Symbols (0x2000 - 0x2BFF)
+  if (cp >= 0x2000 && cp <= 0x2BFF) {
+    // Explicitly allow smart quotes, reject all other general punctuation (em-dashes, etc.)
+    return cp == 0x2018 || cp == 0x2019;
+  }
+
+  // Latin-1 Punctuation Block (0x00A1 - 0x00BF)
+  if (cp >= 0x00A1 && cp <= 0x00BF) {
+    // Allow ordinal indicators and micro sign, reject the rest (隆, 驴, 芦, 禄, etc.)
+    return cp == 0x00AA || cp == 0x00B5 || cp == 0x00BA;
+  }
+
+  // Rejects Two-em dash, Three-em dash, Double oblique hyphen, etc.
+  if (cp >= 0x2E00 && cp <= 0x2E7F) return false;
+
+  // Rejects Modifier Minus (0x02D7), Small Hyphen (0xFE63), and Fullwidth Hyphen (0xFF0D)
+  if (cp == 0x02D7 || cp == 0xFE63 || cp == 0xFF0D) return false;
+  // Assume all other Unicode ranges (accented letters, Cyrillic, Greek, etc.) are valid
+
+  return true;
 }
 
 }  // namespace
 
-void ParsedText::pushWord(const std::string_view word, const EpdFontFamily::Style style, const bool continues) {
-  const auto offset = static_cast<uint32_t>(wordArena.size());
+void ParsedText::pushWord(const std::string_view word, const EpdFontFamily::Style style, const bool continues,
+                          const bool noSpaceBefore, const bool isFocusSuffix) {
+  const size_t offset = wordArena.size();
   wordArena.insert(wordArena.end(), word.begin(), word.end());
-  wordOffsets.push_back(offset);
+  wordArena.push_back('\0');
+  wordOffsets.push_back(static_cast<uint32_t>(offset));
   wordLengths.push_back(static_cast<uint16_t>(word.size()));
   wordStyles.push_back(style);
   wordContinues.push_back(continues);
+  wordNoSpaceBefore.push_back(noSpaceBefore);
+  wordIsFocusSuffix.push_back(isFocusSuffix);
+}
+
+void ParsedText::replaceWord(const size_t index, const std::string_view word) {
+  const size_t offset = wordArena.size();
+  wordArena.insert(wordArena.end(), word.begin(), word.end());
+  wordArena.push_back('\0');
+  wordOffsets[index] = static_cast<uint32_t>(offset);
+  wordLengths[index] = static_cast<uint16_t>(word.size());
 }
 
 void ParsedText::eraseFront(const size_t count) {
   if (count == 0) return;
-  // Arena bytes are not compacted; the freed slots are reclaimed when the
-  // ParsedText is destroyed at the end of the paragraph. Paragraph word
-  // counts are bounded (the parser flushes when size > 750) so the arena
-  // peak is bounded too.
-  wordOffsets.erase(wordOffsets.begin(), wordOffsets.begin() + count);
+
+  const size_t totalWords = wordOffsets.size();
+  if (count >= totalWords) {
+    wordOffsets.clear();
+    wordLengths.clear();
+    wordStyles.clear();
+    wordContinues.clear();
+    wordNoSpaceBefore.clear();
+    wordIsFocusSuffix.clear();
+    std::vector<char>().swap(wordArena);
+    return;
+  }
+
+  // Soft flushes consume the front of a long CJK paragraph. The token vectors were
+  // already erased below, but the flat text arena used to retain every consumed word,
+  // so a long incremental build grew by roughly one paragraph per flush and eventually
+  // starved page deserialization. For the normal parser path offsets are append-ordered;
+  // compact that suffix in place while retaining the existing allocation. If
+  // hyphenation has made offsets non-monotonic, keep the old safe behavior rather
+  // than risking a move over a still-live source range.
+  bool ordered = true;
+  size_t previousOffset = 0;
+  size_t compactedEnd = 0;
+  for (size_t i = count; i < totalWords; ++i) {
+    const size_t offset = wordOffsets[i];
+    const size_t end = offset + static_cast<size_t>(wordLengths[i]) + 1;
+    if (end > wordArena.size() || (i > count && offset < previousOffset)) {
+      ordered = false;
+      break;
+    }
+    previousOffset = offset;
+    compactedEnd = std::max(compactedEnd, end);
+  }
+
+  if (ordered) {
+    const size_t sourceStart = wordOffsets[count];
+    if (sourceStart <= compactedEnd && sourceStart <= wordArena.size()) {
+      const size_t compactedSize = compactedEnd - sourceStart;
+      if (compactedSize > 0) {
+        std::memmove(wordArena.data(), wordArena.data() + sourceStart, compactedSize);
+        wordArena.resize(compactedSize);
+
+        // Keep the existing allocation in place: this path runs under the tight
+        // incremental-build heap budget, so asking vector for an exact-size copy
+        // could itself throw. The consumed bytes are gone from the logical arena;
+        // later appends reuse the retained capacity instead of growing forever.
+      } else {
+        std::vector<char>().swap(wordArena);
+      }
+      for (size_t i = count; i < totalWords; ++i) {
+        wordOffsets[i - count] = static_cast<uint32_t>(wordOffsets[i] - sourceStart);
+      }
+      wordOffsets.resize(totalWords - count);
+    } else {
+      ordered = false;
+    }
+  }
+
+  if (!ordered) {
+    // Hyphenation can append replacement text and make offsets non-monotonic. Keep
+    // that uncommon path allocation-free and preserve its existing arena; the
+    // normal CJK soft-flush path above is monotonic and compacted.
+    wordOffsets.erase(wordOffsets.begin(), wordOffsets.begin() + count);
+  }
   wordLengths.erase(wordLengths.begin(), wordLengths.begin() + count);
   wordStyles.erase(wordStyles.begin(), wordStyles.begin() + count);
   wordContinues.erase(wordContinues.begin(), wordContinues.begin() + count);
+  wordNoSpaceBefore.erase(wordNoSpaceBefore.begin(), wordNoSpaceBefore.begin() + count);
+  wordIsFocusSuffix.erase(wordIsFocusSuffix.begin(), wordIsFocusSuffix.begin() + count);
+
+  // `erase()` intentionally keeps vector capacity here. The compacted logical
+  // suffix prevents unbounded text growth, while retaining capacity avoids a
+  // throwing copy/reallocation in the embedded parser's hot path.
 }
 
-void ParsedText::addWord(const std::string_view word, const EpdFontFamily::Style fontStyle, const bool underline,
+void ParsedText::addWord(const std::string_view inputWord, const EpdFontFamily::Style fontStyle, const bool underline,
                          const bool attachToPrevious) {
-  if (word.empty()) return;
+  if (inputWord.empty()) return;
 
-  EpdFontFamily::Style combinedStyle = fontStyle;
+  std::string word = utf8ComposeNfc(std::string(inputWord));
+
+  // The device fonts carry no combining-mark positioning, so EPUB text stored in NFD
+  // (a base letter followed by separate combining accents -- common for Vietnamese,
+  // and used for many EPUB <h1> chapter headings) renders with the marks detached or
+  // misplaced. Compose to NFC here, the single funnel every word passes through, so a
+  // precomposed glyph is used instead. This runs once per word at layout time (the
+  // result is cached in the section file) and is a cheap no-op for mark-free text.
+  EpdFontFamily::Style baseStyle = fontStyle;
   if (underline) {
-    combinedStyle = static_cast<EpdFontFamily::Style>(combinedStyle | EpdFontFamily::UNDERLINE);
+    baseStyle = static_cast<EpdFontFamily::Style>(baseStyle | EpdFontFamily::UNDERLINE);
   }
-  pushWord(word, combinedStyle, attachToPrevious);
+  const bool wordStartsRtl = !hasRtlWord && mayContainRtlBytes(word.c_str()) &&
+                             BidiUtils::startsWithRtl(word.c_str(), RTL_PER_WORD_PROBE_DEPTH);
+
+  const auto pushToken = [&](const std::string_view token, const bool continues, const bool noSpaceBefore,
+                             const bool isFocusSuffix) {
+    pushWord(token, baseStyle, continues, noSpaceBefore, isFocusSuffix);
+  };
+
+  bool effectiveAttachToPrevious = attachToPrevious;
+  bool effectiveNoSpaceBefore = false;
+  if (attachToPrevious && !wordOffsets.empty() &&
+      hasCjkBreakOpportunityBetween(lastCodepoint(wordView(size() - 1)), firstCodepoint(word))) {
+    effectiveAttachToPrevious = false;
+    effectiveNoSpaceBefore = true;
+  }
+
+  const auto ensureTokenCapacity = [&](const size_t additionalTokens) {
+    if (additionalTokens == 0) return;
+    const size_t requiredSize = size() + additionalTokens;
+    if (wordOffsets.capacity() >= requiredSize) return;
+
+    size_t newCapacity = wordOffsets.capacity();
+    if (newCapacity < 16) {
+      newCapacity = 16;
+    }
+    while (newCapacity < requiredSize) {
+      newCapacity *= 2;
+    }
+
+    wordOffsets.reserve(newCapacity);
+    wordLengths.reserve(newCapacity);
+    wordStyles.reserve(newCapacity);
+    wordContinues.reserve(newCapacity);
+    wordNoSpaceBefore.reserve(newCapacity);
+    wordIsFocusSuffix.reserve(newCapacity);
+  };
+
+  if (auto breakOffsets = cjkCharacterBreakByteOffsets(word); !breakOffsets.empty()) {
+    // CJK-heavy paragraphs can push hundreds of tiny tokens quickly when CSS toggles
+    // inline styles. Reserve once up front to avoid repeated vector growth reallocations.
+    ensureTokenCapacity(breakOffsets.size() + 1);
+    bool firstToken = true;
+    size_t tokenStart = 0;
+    for (const size_t breakOffset : breakOffsets) {
+      if (breakOffset <= tokenStart || breakOffset > word.size()) continue;
+      pushToken(word.substr(tokenStart, breakOffset - tokenStart), firstToken ? effectiveAttachToPrevious : false,
+                firstToken ? effectiveNoSpaceBefore : true, false);
+      firstToken = false;
+      tokenStart = breakOffset;
+    }
+    if (tokenStart < word.size()) {
+      pushToken(word.substr(tokenStart), firstToken ? effectiveAttachToPrevious : false,
+                firstToken ? effectiveNoSpaceBefore : true, false);
+    }
+    if (wordStartsRtl) {
+      hasRtlWord = true;
+    }
+    return;
+  }
+
+  if (containsCjkBreakableCodepoint(word)) {
+    pushToken(std::move(word), effectiveAttachToPrevious, effectiveNoSpaceBefore, false);
+    if (wordStartsRtl) {
+      hasRtlWord = true;
+    }
+    return;
+  }
+
+  // Already-bold text should stay fully bold; focus splitting would make its suffix regular later.
+  if (!this->focusReadingEnabled || (baseStyle & EpdFontFamily::BOLD) != 0) {
+    pushToken(std::move(word), effectiveAttachToPrevious, effectiveNoSpaceBefore, false);
+    if (wordStartsRtl) {
+      hasRtlWord = true;
+    }
+    return;
+  }
+
+  // --- FOCUS READING LOGIC BELOW ---
+
+  // Worst case: a segment boundary on each byte (highly punctuated UTF-8 text).
+  ensureTokenCapacity(word.length());
+
+  // Lambda helper to process and push individual sub-segments of the string
+  // Use std::string_view to avoid heap allocations when slicing
+  auto processSegment = [&](std::string_view segment, bool isWord, bool attach, bool noSpaceBefore) {
+    if (!isWord) {
+      // Punctuation and Numbers stay regular
+      pushWord(segment, baseStyle, attach, noSpaceBefore, false);
+    } else {
+      size_t charCount = 0;
+      const unsigned char* countPtr = reinterpret_cast<const unsigned char*>(segment.data());
+      const unsigned char* countEnd = countPtr + segment.length();
+
+      while (countPtr < countEnd) {
+        utf8NextCodepoint(&countPtr);
+        charCount++;
+      }
+
+      // Target 45% for 1-bold at 4 chars and 3-bold at 7 chars with floor truncation
+      constexpr size_t FOCUS_READING_PERCENT = 45;
+      size_t targetBoldChars = (charCount * FOCUS_READING_PERCENT) / 100;
+      targetBoldChars = std::clamp<size_t>(targetBoldChars, 1, 9);
+
+      if (targetBoldChars >= charCount) {
+        // Whole segment is bold - no suffix split needed
+        pushWord(segment, static_cast<EpdFontFamily::Style>(baseStyle | EpdFontFamily::BOLD), attach, noSpaceBefore,
+                 false);
+      } else {
+        countPtr = reinterpret_cast<const unsigned char*>(segment.data());
+        for (size_t i = 0; i < targetBoldChars; ++i) {
+          utf8NextCodepoint(&countPtr);
+        }
+        size_t splitByteOffset = countPtr - reinterpret_cast<const unsigned char*>(segment.data());
+
+        // Bold prefix
+        pushWord(segment.substr(0, splitByteOffset), static_cast<EpdFontFamily::Style>(baseStyle | EpdFontFamily::BOLD),
+                 attach, noSpaceBefore, false);
+
+        // Regular suffix - marked so extractLine can merge it back into single TextBlock entry
+        pushWord(segment.substr(splitByteOffset), baseStyle, true, false, true);
+      }
+    }
+  };
+
+  // Tokenize the string by alternating states (Word vs. Non-Word)
+  const unsigned char* ptr = reinterpret_cast<const unsigned char*>(word.c_str());
+  const unsigned char* end = ptr + word.length();
+
+  const unsigned char* segmentStart = ptr;
+  uint32_t firstCp = utf8NextCodepoint(&ptr);  // Consume the first char to determine initial state
+  bool inWordSegment = isWordCharacter(firstCp);
+
+  bool isFirstSegment = true;
+
+  while (ptr < end) {
+    const unsigned char* currentCpStart = ptr;
+    uint32_t cp = utf8NextCodepoint(&ptr);
+    bool isWordChar = isWordCharacter(cp);
+
+    // Whenever the character type flips, slice off the segment we just completed and process it
+    if (isWordChar != inWordSegment) {
+      size_t segmentLen = currentCpStart - segmentStart;
+      std::string_view segment(reinterpret_cast<const char*>(segmentStart), segmentLen);
+
+      // Only the very first segment inherits the original attachToPrevious flag.
+      // Every subsequent segment MUST attach=true so it glues seamlessly to the prefix.
+      processSegment(segment, inWordSegment, isFirstSegment ? effectiveAttachToPrevious : true,
+                     isFirstSegment ? effectiveNoSpaceBefore : false);
+
+      // Setup for the next segment
+      segmentStart = currentCpStart;
+      inWordSegment = isWordChar;
+      isFirstSegment = false;
+    }
+  }
+
+  // Process the final remaining segment
+  size_t segmentLen = end - segmentStart;
+  std::string_view segment(reinterpret_cast<const char*>(segmentStart), segmentLen);
+  processSegment(segment, inWordSegment, isFirstSegment ? effectiveAttachToPrevious : true,
+                 isFirstSegment ? effectiveNoSpaceBefore : false);
+  if (wordStartsRtl) {
+    hasRtlWord = true;
+  }
 }
 
+int ParsedText::resolveFirstLineIndent(const bool isFirstLine, const GfxRenderer& renderer, const int fontId) const {
+  if (!isFirstLine || !isNaturalAlign) {
+    return 0;
+  }
+  if (blockStyle.textIndentDefined) {
+    // Preserve structural hanging indents even when decorative indentation is disabled.
+    if (blockStyle.textIndent < 0) return blockStyle.textIndent;
+    return firstLineIndent ? blockStyle.textIndent : 0;
+  }
+  if (!firstLineIndent) return 0;
+
+  // Two ideographs match the conventional CJK paragraph indent. Fall back to
+  // six spaces for fonts without the probe glyph.
+  const int ideographWidth = renderer.getTextAdvanceX(fontId, "\xE4\xB8\x80", EpdFontFamily::REGULAR);
+  if (ideographWidth > 0) return ideographWidth * 2;
+  return renderer.getSpaceWidth(fontId, EpdFontFamily::REGULAR) * 6;
+}
 // Consumes data to minimize memory usage
 void ParsedText::layoutAndExtractLines(const GfxRenderer& renderer, const int fontId, const uint16_t viewportWidth,
                                        const std::function<void(std::shared_ptr<TextBlock>)>& processLine,
@@ -160,8 +563,52 @@ void ParsedText::layoutAndExtractLines(const GfxRenderer& renderer, const int fo
     return;
   }
 
-  // Apply fixed transforms before any per-line layout work.
-  applyParagraphIndent();
+  // Per-paragraph RTL auto-detection: only when CSS/HTML didn't explicitly set direction.
+  // Explicit dir="ltr" must be respected and not overridden by content heuristic.
+  if (!blockStyle.directionDefined && hasRtlWord) {
+    // Check the first few words for RTL letter codepoints (no heap allocation).
+    const size_t wordsToScan = std::min(size(), RTL_PARAGRAPH_PROBE_WORDS);
+    for (size_t i = 0; i < wordsToScan; ++i) {
+      const std::string word(wordView(i));
+      if (BidiUtils::startsWithRtl(word.c_str(), BidiUtils::RTL_PARAGRAPH_PROBE_DEPTH)) {
+        blockStyle.isRtl = true;
+        break;
+      }
+    }
+  }
+
+  isNaturalAlign =
+      blockStyle.alignment == CssTextAlign::Justify ||
+      (blockStyle.isRtl ? blockStyle.alignment == CssTextAlign::Right : blockStyle.alignment == CssTextAlign::Left);
+
+  // Ensure SD card font glyph metrics are loaded before measuring word widths.
+  // For flash-based fonts isSdCardFont() returns false and this block is skipped
+  // entirely 鈥?no heap allocation. For SD card fonts this reads glyph metadata
+  // (advanceX only, no bitmaps) for all unique codepoints in this paragraph so
+  // that calculateWordWidths() can measure text without on-demand SD I/O.
+  if (renderer.isSdCardFont(fontId)) {
+    // The bounded advance table is paragraph-local for SD fonts. A Chinese
+    // chapter can contain thousands of distinct ideographs; accumulating the
+    // whole chapter fills the 768-entry table and makes later paragraphs fall
+    // back to one random SD read per glyph. Resetting advances here preserves
+    // the page bitmap prewarm while keeping every paragraph on the batched
+    // metadata path.
+    renderer.resetSdCardFontAdvances(fontId);
+    // Style mask: only ask the SD font to load advances for styles actually
+    // used in this paragraph. Style index is the low two bits (regular/bold/
+    // italic/bold-italic); the underline bit is irrelevant to advance metrics.
+    uint8_t styleMask = 0;
+    for (auto s : wordStyles) {
+      styleMask |= static_cast<uint8_t>(1u << (static_cast<uint8_t>(s) & 0x03));
+    }
+    if (styleMask == 0) styleMask = 0x01;  // defensive: regular only
+    std::vector<std::string> sdCardWords;
+    sdCardWords.reserve(size());
+    for (size_t i = 0; i < size(); ++i) {
+      sdCardWords.emplace_back(wordView(i));
+    }
+    renderer.ensureSdCardFontReady(fontId, sdCardWords, hyphenationEnabled, styleMask);
+  }
 
   const int pageWidth = viewportWidth;
   auto wordWidths = calculateWordWidths(renderer, fontId);
@@ -169,14 +616,16 @@ void ParsedText::layoutAndExtractLines(const GfxRenderer& renderer, const int fo
   std::vector<size_t> lineBreakIndices;
   if (hyphenationEnabled) {
     // Use greedy layout that can split words mid-loop when a hyphenated prefix fits.
-    lineBreakIndices = computeHyphenatedLineBreaks(renderer, fontId, pageWidth, wordWidths, wordContinues);
+    lineBreakIndices =
+        computeHyphenatedLineBreaks(renderer, fontId, pageWidth, wordWidths, wordContinues, wordNoSpaceBefore);
   } else {
-    lineBreakIndices = computeLineBreaks(renderer, fontId, pageWidth, wordWidths, wordContinues);
+    lineBreakIndices = computeLineBreaks(renderer, fontId, pageWidth, wordWidths, wordContinues, wordNoSpaceBefore);
   }
   const size_t lineCount = includeLastLine ? lineBreakIndices.size() : lineBreakIndices.size() - 1;
 
   for (size_t i = 0; i < lineCount; ++i) {
-    extractLine(i, pageWidth, wordWidths, wordContinues, lineBreakIndices, processLine, renderer, fontId);
+    extractLine(i, pageWidth, wordWidths, wordContinues, wordNoSpaceBefore, lineBreakIndices, processLine, renderer,
+                fontId);
   }
 
   // Remove consumed words so size() reflects only remaining words
@@ -188,9 +637,9 @@ void ParsedText::layoutAndExtractLines(const GfxRenderer& renderer, const int fo
 
 std::vector<uint16_t> ParsedText::calculateWordWidths(const GfxRenderer& renderer, const int fontId) {
   std::vector<uint16_t> wordWidths;
-  wordWidths.reserve(wordOffsets.size());
+  wordWidths.reserve(size());
 
-  for (size_t i = 0; i < wordOffsets.size(); ++i) {
+  for (size_t i = 0; i < size(); ++i) {
     wordWidths.push_back(measureWordWidth(renderer, fontId, wordView(i), wordStyles[i]));
   }
 
@@ -198,20 +647,13 @@ std::vector<uint16_t> ParsedText::calculateWordWidths(const GfxRenderer& rendere
 }
 
 std::vector<size_t> ParsedText::computeLineBreaks(const GfxRenderer& renderer, const int fontId, const int pageWidth,
-                                                  std::vector<uint16_t>& wordWidths, std::vector<bool>& continuesVec) {
+                                                  std::vector<uint16_t>& wordWidths, std::vector<bool>& continuesVec,
+                                                  std::vector<bool>& noSpaceBeforeVec) {
   if (wordOffsets.empty()) {
     return {};
   }
 
-  // Calculate first line indent (only for left/justified text).
-  // Positive text-indent (paragraph indent) is suppressed when extraParagraphSpacing is on.
-  // Negative text-indent (hanging indent, e.g. margin-left:3em; text-indent:-1em) always applies —
-  // it is structural (positions the bullet/marker), not decorative.
-  const int firstLineIndent =
-      blockStyle.textIndentDefined && (blockStyle.textIndent < 0 || !extraParagraphSpacing) &&
-              (blockStyle.alignment == CssTextAlign::Justify || blockStyle.alignment == CssTextAlign::Left)
-          ? blockStyle.textIndent
-          : 0;
+  const int firstLineIndent = resolveFirstLineIndent(true, renderer, fontId);
 
   // Ensure any word that would overflow even as the first entry on a line is split using fallback hyphenation.
   for (size_t i = 0; i < wordWidths.size(); ++i) {
@@ -224,7 +666,7 @@ std::vector<size_t> ParsedText::computeLineBreaks(const GfxRenderer& renderer, c
     }
   }
 
-  const size_t totalWordCount = wordOffsets.size();
+  const size_t totalWordCount = size();
 
   // DP table to store the minimum badness (cost) of lines starting at index i
   std::vector<int> dp(totalWordCount);
@@ -245,7 +687,9 @@ std::vector<size_t> ParsedText::computeLineBreaks(const GfxRenderer& renderer, c
     for (size_t j = i; j < totalWordCount; ++j) {
       // Add space before word j, unless it's the first word on the line or a continuation
       int gap = 0;
-      if (j > static_cast<size_t>(i) && !continuesVec[j]) {
+      if (j > static_cast<size_t>(i) && noSpaceBeforeVec[j]) {
+        gap = 0;
+      } else if (j > static_cast<size_t>(i) && !continuesVec[j]) {
         gap = renderer.getSpaceAdvance(fontId, lastCodepoint(wordView(j - 1)), firstCodepoint(wordView(j)),
                                        wordStyles[j - 1]);
       } else if (j > static_cast<size_t>(i) && continuesVec[j]) {
@@ -318,51 +762,12 @@ std::vector<size_t> ParsedText::computeLineBreaks(const GfxRenderer& renderer, c
   return lineBreakIndices;
 }
 
-void ParsedText::applyParagraphIndent() {
-  if (extraParagraphSpacing || wordOffsets.empty()) {
-    return;
-  }
-
-  if (blockStyle.textIndentDefined) {
-    // CSS text-indent is explicitly set (even if 0) - don't use fallback EmSpace
-    // The actual indent positioning is handled in extractLine()
-    return;
-  }
-  if (blockStyle.alignment != CssTextAlign::Justify && blockStyle.alignment != CssTextAlign::Left) {
-    return;
-  }
-
-  // No CSS text-indent defined - prepend an EmSpace to the first word as a
-  // visual indent. With the arena layout we can't grow the original word in
-  // place, so re-emit a modified copy at the end of the arena and rewrite the
-  // first slot's offset/length to point at it.
-  const uint32_t origOffset = wordOffsets.front();
-  const uint16_t origLength = wordLengths.front();
-  const auto newOffset = static_cast<uint32_t>(wordArena.size());
-  // Reserve to keep insertion bounded to a single growth.
-  wordArena.reserve(wordArena.size() + EM_SPACE_BYTES + origLength);
-  wordArena.insert(wordArena.end(), EM_SPACE_UTF8, EM_SPACE_UTF8 + EM_SPACE_BYTES);
-  // Append the original word bytes. The vector may have grown but data() now
-  // points at the new buffer, and origOffset is still a valid index into it
-  // because the prefix [0, origOffset+origLength) was preserved by the resize.
-  wordArena.insert(wordArena.end(), wordArena.begin() + origOffset, wordArena.begin() + origOffset + origLength);
-  wordOffsets.front() = newOffset;
-  wordLengths.front() = static_cast<uint16_t>(EM_SPACE_BYTES + origLength);
-}
-
 // Builds break indices while opportunistically splitting the word that would overflow the current line.
 std::vector<size_t> ParsedText::computeHyphenatedLineBreaks(const GfxRenderer& renderer, const int fontId,
                                                             const int pageWidth, std::vector<uint16_t>& wordWidths,
-                                                            std::vector<bool>& continuesVec) {
-  // Calculate first line indent (only for left/justified text).
-  // Positive text-indent (paragraph indent) is suppressed when extraParagraphSpacing is on.
-  // Negative text-indent (hanging indent, e.g. margin-left:3em; text-indent:-1em) always applies —
-  // it is structural (positions the bullet/marker), not decorative.
-  const int firstLineIndent =
-      blockStyle.textIndentDefined && (blockStyle.textIndent < 0 || !extraParagraphSpacing) &&
-              (blockStyle.alignment == CssTextAlign::Justify || blockStyle.alignment == CssTextAlign::Left)
-          ? blockStyle.textIndent
-          : 0;
+                                                            std::vector<bool>& continuesVec,
+                                                            std::vector<bool>& noSpaceBeforeVec) {
+  const int firstLineIndent = resolveFirstLineIndent(true, renderer, fontId);
 
   std::vector<size_t> lineBreakIndices;
   size_t currentIndex = 0;
@@ -379,7 +784,9 @@ std::vector<size_t> ParsedText::computeHyphenatedLineBreaks(const GfxRenderer& r
     while (currentIndex < wordWidths.size()) {
       const bool isFirstWord = currentIndex == lineStart;
       int spacing = 0;
-      if (!isFirstWord && !continuesVec[currentIndex]) {
+      if (!isFirstWord && noSpaceBeforeVec[currentIndex]) {
+        spacing = 0;
+      } else if (!isFirstWord && !continuesVec[currentIndex]) {
         spacing = renderer.getSpaceAdvance(fontId, lastCodepoint(wordView(currentIndex - 1)),
                                            firstCodepoint(wordView(currentIndex)), wordStyles[currentIndex - 1]);
       } else if (!isFirstWord && continuesVec[currentIndex]) {
@@ -396,7 +803,7 @@ std::vector<size_t> ParsedText::computeHyphenatedLineBreaks(const GfxRenderer& r
         continue;
       }
 
-      // Word would overflow — try to split based on hyphenation points
+      // Word would overflow 鈥?try to split based on hyphenation points
       const int availableWidth = effectivePageWidth - lineWidth - spacing;
       const bool allowFallbackBreaks = isFirstWord;  // Only for first word on line
 
@@ -435,22 +842,15 @@ bool ParsedText::hyphenateWordAtIndex(const size_t wordIndex, const int availabl
                                       const int fontId, std::vector<uint16_t>& wordWidths,
                                       const bool allowFallbackBreaks) {
   // Guard against invalid indices or zero available width before attempting to split.
-  if (availableWidth <= 0 || wordIndex >= wordOffsets.size()) {
+  if (availableWidth <= 0 || wordIndex >= size()) {
     return false;
   }
 
+  const std::string word(wordView(wordIndex));
   const auto style = wordStyles[wordIndex];
 
-  // Hyphenator currently expects a std::string. The cost is one transient
-  // heap allocation per hyphenation candidate, freed before the next word —
-  // not part of the long-lived accumulation that fragments the heap, so the
-  // OOM fix is unaffected.
-  const std::string wordStr(wordView(wordIndex));
-
-  // Collect candidate breakpoints (byte offsets and hyphen requirements). Language
-  // pattern breaks are tried first. If they leave a large ragged gap, merge fallback
-  // candidates and choose again so the visible hyphen lands closer to the line edge.
-  auto breakInfos = Hyphenator::breakOffsets(wordStr, allowFallbackBreaks);
+  // Collect candidate breakpoints (byte offsets and hyphen requirements).
+  auto breakInfos = Hyphenator::breakOffsets(word, allowFallbackBreaks);
   if (breakInfos.empty()) {
     return false;
   }
@@ -462,13 +862,12 @@ bool ParsedText::hyphenateWordAtIndex(const size_t wordIndex, const int availabl
   // Iterate over each legal breakpoint and retain the widest prefix that still fits.
   for (const auto& info : breakInfos) {
     const size_t offset = info.byteOffset;
-    if (offset == 0 || offset >= wordStr.size()) {
+    if (offset == 0 || offset >= word.size()) {
       continue;
     }
 
     const bool needsHyphen = info.requiresInsertedHyphen;
-    const std::string_view prefix(wordStr.data(), offset);
-    const int prefixWidth = measureWordWidth(renderer, fontId, prefix, style, needsHyphen);
+    const int prefixWidth = measureWordWidth(renderer, fontId, word.substr(0, offset), style, needsHyphen);
     if (prefixWidth > availableWidth || prefixWidth <= chosenWidth) {
       continue;  // Skip if too wide or not an improvement
     }
@@ -486,16 +885,15 @@ bool ParsedText::hyphenateWordAtIndex(const size_t wordIndex, const int availabl
   const int naturalSpaceWidth = renderer.getSpaceWidth(fontId, style);
   const int excessiveRaggedGap = naturalSpaceWidth > 0 ? naturalSpaceWidth * 2 : 16;
   if (availableWidth - chosenWidth > excessiveRaggedGap) {
-    auto mergedBreakInfos = Hyphenator::breakOffsets(wordStr, /*includeFallback=*/true, /*mergeFallback=*/true);
+    const auto mergedBreakInfos = Hyphenator::breakOffsets(word, /*includeFallback=*/true, /*mergeFallback=*/true);
     for (const auto& info : mergedBreakInfos) {
       const size_t offset = info.byteOffset;
-      if (offset == 0 || offset >= wordStr.size()) {
+      if (offset == 0 || offset >= word.size()) {
         continue;
       }
 
       const bool needsHyphen = info.requiresInsertedHyphen;
-      const std::string_view prefix(wordStr.data(), offset);
-      const int prefixWidth = measureWordWidth(renderer, fontId, prefix, style, needsHyphen);
+      const int prefixWidth = measureWordWidth(renderer, fontId, word.substr(0, offset), style, needsHyphen);
       if (prefixWidth > availableWidth || prefixWidth <= chosenWidth) {
         continue;
       }
@@ -506,35 +904,23 @@ bool ParsedText::hyphenateWordAtIndex(const size_t wordIndex, const int availabl
     }
   }
 
-  // Re-emit the prefix (with optional hyphen) and the remainder at the end of
-  // the arena. The original bytes become inert until the ParsedText is
-  // destroyed. Resize-then-memcpy is used instead of two .insert() calls so we
-  // never read from a vector iterator that a subsequent grow could invalidate.
-  const size_t prefixLen = chosenOffset;
-  const size_t hyphenBytes = chosenNeedsHyphen ? 1 : 0;
-  const size_t remainderLen = wordStr.size() - chosenOffset;
-  const size_t additional = prefixLen + hyphenBytes + remainderLen;
-
-  const size_t arenaOldSize = wordArena.size();
-  wordArena.resize(arenaOldSize + additional);
-  // After resize() any pointer/iterator from before is invalid; refresh data().
-  char* arena = wordArena.data();
-
-  std::memcpy(arena + arenaOldSize, wordStr.data(), prefixLen);
+  // Split the word at the selected breakpoint and append a hyphen if required.
+  std::string prefix = word.substr(0, chosenOffset);
+  std::string remainder = word.substr(chosenOffset);
   if (chosenNeedsHyphen) {
-    arena[arenaOldSize + prefixLen] = '-';
+    prefix.push_back('-');
   }
-  std::memcpy(arena + arenaOldSize + prefixLen + hyphenBytes, wordStr.data() + chosenOffset, remainderLen);
+  replaceWord(wordIndex, prefix);
 
-  const auto newPrefixOffset = static_cast<uint32_t>(arenaOldSize);
-  const auto newRemainderOffset = static_cast<uint32_t>(arenaOldSize + prefixLen + hyphenBytes);
-
-  // Update the existing slot for the prefix and insert a new slot for the remainder.
-  wordOffsets[wordIndex] = newPrefixOffset;
-  wordLengths[wordIndex] = static_cast<uint16_t>(prefixLen + hyphenBytes);
-  wordOffsets.insert(wordOffsets.begin() + wordIndex + 1, newRemainderOffset);
-  wordLengths.insert(wordLengths.begin() + wordIndex + 1, static_cast<uint16_t>(remainderLen));
+  // Insert the remainder word (with matching style and continuation flag) directly after the prefix.
+  const size_t remainderOffset = wordArena.size();
+  wordArena.insert(wordArena.end(), remainder.begin(), remainder.end());
+  wordArena.push_back('\0');
+  wordOffsets.insert(wordOffsets.begin() + wordIndex + 1, static_cast<uint32_t>(remainderOffset));
+  wordLengths.insert(wordLengths.begin() + wordIndex + 1, static_cast<uint16_t>(remainder.size()));
   wordStyles.insert(wordStyles.begin() + wordIndex + 1, style);
+  // The hyphen remainder is not a focus suffix - it starts fresh on the next line.
+  wordIsFocusSuffix.insert(wordIsFocusSuffix.begin() + wordIndex + 1, false);
 
   // Continuation flag handling after splitting a word into prefix + remainder.
   //
@@ -550,40 +936,47 @@ bool ParsedText::hyphenateWordAtIndex(const size_t wordIndex, const int availabl
   // After splitting "Quadratkilometer" at "Quadrat-" / "kilometer":
   //   [0] "200"         continues=false
   //   [1] " "           continues=true
-  //   [2] "Quadrat-"    continues=true   (KEPT — still attached to the no-break group)
-  //   [3] "kilometer"   continues=false  (NEW — starts fresh on the next line)
+  //   [2] "Quadrat-"    continues=true   (KEPT 鈥?still attached to the no-break group)
+  //   [3] "kilometer"   continues=false  (NEW 鈥?starts fresh on the next line)
   //
   // This lets the backtracking loop keep the entire prefix group ("200 Quadrat-") on one
   // line, while "kilometer" moves to the next line.
-  // wordContinues[wordIndex] is intentionally left unchanged — the prefix keeps its original attachment.
+  // wordContinues[wordIndex] is intentionally left unchanged 鈥?the prefix keeps its original attachment.
   wordContinues.insert(wordContinues.begin() + wordIndex + 1, false);
+  wordNoSpaceBefore.insert(wordNoSpaceBefore.begin() + wordIndex + 1, false);
 
   // Update cached widths to reflect the new prefix/remainder pairing.
   wordWidths[wordIndex] = static_cast<uint16_t>(chosenWidth);
-  const std::string_view remainderView(wordStr.data() + chosenOffset, remainderLen);
-  const uint16_t remainderWidth = measureWordWidth(renderer, fontId, remainderView, style);
+  const uint16_t remainderWidth = measureWordWidth(renderer, fontId, remainder, style);
   wordWidths.insert(wordWidths.begin() + wordIndex + 1, remainderWidth);
   return true;
 }
 
 void ParsedText::extractLine(const size_t breakIndex, const int pageWidth, const std::vector<uint16_t>& wordWidths,
-                             const std::vector<bool>& continuesVec, const std::vector<size_t>& lineBreakIndices,
+                             const std::vector<bool>& continuesVec, const std::vector<bool>& noSpaceBeforeVec,
+                             const std::vector<size_t>& lineBreakIndices,
                              const std::function<void(std::shared_ptr<TextBlock>)>& processLine,
                              const GfxRenderer& renderer, const int fontId) {
   const size_t lineBreak = lineBreakIndices[breakIndex];
   const size_t lastBreakAt = breakIndex > 0 ? lineBreakIndices[breakIndex - 1] : 0;
   const size_t lineWordCount = lineBreak - lastBreakAt;
 
-  // Calculate first line indent (only for left/justified text).
-  // Positive text-indent (paragraph indent) is suppressed when extraParagraphSpacing is on.
-  // Negative text-indent (hanging indent, e.g. margin-left:3em; text-indent:-1em) always applies —
-  // it is structural (positions the bullet/marker), not decorative.
-  const bool isFirstLine = breakIndex == 0;
-  const int firstLineIndent =
-      isFirstLine && blockStyle.textIndentDefined && (blockStyle.textIndent < 0 || !extraParagraphSpacing) &&
-              (blockStyle.alignment == CssTextAlign::Justify || blockStyle.alignment == CssTextAlign::Left)
-          ? blockStyle.textIndent
-          : 0;
+  const int firstLineIndent = resolveFirstLineIndent(breakIndex == 0, renderer, fontId);
+
+  // Build line data by moving from the original vectors using index range
+  std::vector<std::string> lineWords;
+  lineWords.reserve(lineWordCount);
+  std::vector<EpdFontFamily::Style> lineWordStyles;
+  lineWordStyles.reserve(lineWordCount);
+
+  for (size_t i = 0; i < lineWordCount; ++i) {
+    std::string word(wordView(lastBreakAt + i));
+    if (containsSoftHyphen(word)) {
+      stripSoftHyphensInPlace(word);
+    }
+    lineWords.push_back(std::move(word));
+    lineWordStyles.push_back(wordStyles[lastBreakAt + i]);
+  }
 
   // Calculate total word width for this line, count actual word gaps,
   // and accumulate total natural gap widths (including space kerning adjustments).
@@ -594,16 +987,23 @@ void ParsedText::extractLine(const size_t breakIndex, const int pageWidth, const
   for (size_t wordIdx = 0; wordIdx < lineWordCount; wordIdx++) {
     lineWordWidthSum += wordWidths[lastBreakAt + wordIdx];
     // Count gaps: each word after the first creates a gap, unless it's a continuation
-    if (wordIdx > 0 && !continuesVec[lastBreakAt + wordIdx]) {
+    if (wordIdx > 0 && noSpaceBeforeVec[lastBreakAt + wordIdx]) {
+      // Unicode break opportunity with no inserted Latin-style space. It is still
+      // a stretchable gap for justified CJK/Korean text.
       actualGapCount++;
-      totalNaturalGaps += renderer.getSpaceAdvance(fontId, lastCodepoint(wordView(lastBreakAt + wordIdx - 1)),
-                                                   firstCodepoint(wordView(lastBreakAt + wordIdx)),
-                                                   wordStyles[lastBreakAt + wordIdx - 1]);
+    } else if (wordIdx > 0 && !continuesVec[lastBreakAt + wordIdx]) {
+      actualGapCount++;
+      totalNaturalGaps += renderer.getSpaceAdvance(fontId, lastCodepoint(lineWords[wordIdx - 1]),
+                                                   firstCodepoint(lineWords[wordIdx]), lineWordStyles[wordIdx - 1]);
     } else if (wordIdx > 0 && continuesVec[lastBreakAt + wordIdx]) {
+      // Non-breaking space tokens (" " with continues=true) are visible, stretchable spaces 鈥?
+      // count them as justifiable gaps so justifyExtra is distributed to them too.
+      if (lineWords[wordIdx] == " ") {
+        actualGapCount++;
+      }
       // Cross-boundary kerning for continuation words (e.g. nonbreaking spaces, attached punctuation)
-      totalNaturalGaps +=
-          renderer.getKerning(fontId, lastCodepoint(wordView(lastBreakAt + wordIdx - 1)),
-                              firstCodepoint(wordView(lastBreakAt + wordIdx)), wordStyles[lastBreakAt + wordIdx - 1]);
+      totalNaturalGaps += renderer.getKerning(fontId, lastCodepoint(lineWords[wordIdx - 1]),
+                                              firstCodepoint(lineWords[wordIdx]), lineWordStyles[wordIdx - 1]);
     }
   }
 
@@ -611,74 +1011,314 @@ void ParsedText::extractLine(const size_t breakIndex, const int pageWidth, const
   const int effectivePageWidth = pageWidth - firstLineIndent;
   const bool isLastLine = breakIndex == lineBreakIndices.size() - 1;
 
-  // For justified text, compute per-gap extra to distribute remaining space evenly.
-  // Avoid stretching short English lines into unreadable word spacing: with only
-  // one or two gaps, a normal line can end up with a huge space between words.
+  // For RTL, implicit/default Left alignment becomes Right alignment.
+  // Explicit text-align:left must remain left for CSS correctness.
+  const CssTextAlign effectiveAlignment =
+      (blockStyle.isRtl && !blockStyle.textAlignDefined && blockStyle.alignment == CssTextAlign::Left)
+          ? CssTextAlign::Right
+          : blockStyle.alignment;
+
+  // For justified text, compute per-gap extra to distribute remaining space evenly
   const int spareSpace = effectivePageWidth - lineWordWidthSum - totalNaturalGaps;
-  const int naturalGap = actualGapCount > 0 ? totalNaturalGaps / static_cast<int>(actualGapCount) : 0;
-  const int candidateJustifyExtra =
-      (blockStyle.alignment == CssTextAlign::Justify && !isLastLine && actualGapCount >= 3 && spareSpace > 0)
-          ? spareSpace / static_cast<int>(actualGapCount)
-          : 0;
-  const int justifyExtra = (naturalGap > 0 && candidateJustifyExtra <= naturalGap * 2) ? candidateJustifyExtra : 0;
+  const int justifyExtra = (effectiveAlignment == CssTextAlign::Justify && !isLastLine)
+                               ? computeJustifyExtra(spareSpace, actualGapCount)
+                               : 0;
 
-  // Calculate initial x position (first line starts at indent for left/justified text;
-  // may be negative for hanging indents, e.g. margin-left:3em; text-indent:-1em).
-  auto xpos = static_cast<int16_t>(firstLineIndent);
-  if (blockStyle.alignment == CssTextAlign::Right) {
-    xpos = effectivePageWidth - lineWordWidthSum - totalNaturalGaps;
-  } else if (blockStyle.alignment == CssTextAlign::Center) {
-    xpos = (effectivePageWidth - lineWordWidthSum - totalNaturalGaps) / 2;
-  }
+  // BiDi processing: reorder words with UAX#9 in full-line context.
+  visualOrderScratch.clear();
+  visualOrderScratch.reserve(lineWordCount);
+  // Skip expensive visual-order resolution for pure LTR paragraphs that have no RTL words.
+  const bool shouldResolveVisualOrder = blockStyle.isRtl || hasRtlWord;
+  const bool willReorder =
+      shouldResolveVisualOrder && BidiUtils::computeVisualWordOrder(lineWords, blockStyle.isRtl, visualOrderScratch);
 
-  // Pre-calculate X positions for words
-  // Continuation words attach to the previous word with no space before them
   std::vector<int16_t> lineXPos;
   lineXPos.reserve(lineWordCount);
 
-  for (size_t wordIdx = 0; wordIdx < lineWordCount; wordIdx++) {
-    lineXPos.push_back(xpos);
+  if (willReorder) {
+    reorderedWordsScratch.clear();
+    reorderedStylesScratch.clear();
+    reorderedWidthsScratch.clear();
+    reorderedContinuesScratch.clear();
+    reorderedNoSpaceBeforeScratch.clear();
+    reorderedFocusSuffixScratch.clear();
+    reorderedWordsScratch.reserve(visualOrderScratch.size());
+    reorderedStylesScratch.reserve(visualOrderScratch.size());
+    reorderedWidthsScratch.reserve(visualOrderScratch.size());
+    reorderedContinuesScratch.reserve(visualOrderScratch.size());
+    reorderedNoSpaceBeforeScratch.reserve(visualOrderScratch.size());
+    reorderedFocusSuffixScratch.reserve(visualOrderScratch.size());
 
-    const bool nextIsContinuation = wordIdx + 1 < lineWordCount && continuesVec[lastBreakAt + wordIdx + 1];
-    if (nextIsContinuation) {
-      int advance = wordWidths[lastBreakAt + wordIdx];
-      // Cross-boundary kerning for continuation words (e.g. nonbreaking spaces, attached punctuation)
-      advance +=
-          renderer.getKerning(fontId, lastCodepoint(wordView(lastBreakAt + wordIdx)),
-                              firstCodepoint(wordView(lastBreakAt + wordIdx + 1)), wordStyles[lastBreakAt + wordIdx]);
-      xpos += advance;
+    for (size_t i = 0; i < visualOrderScratch.size(); ++i) {
+      const uint16_t src = visualOrderScratch[i];
+      reorderedWordsScratch.push_back(std::move(lineWords[src]));
+      reorderedStylesScratch.push_back(lineWordStyles[src]);
+      reorderedWidthsScratch.push_back(wordWidths[lastBreakAt + src]);
+      reorderedFocusSuffixScratch.push_back(wordIsFocusSuffix[lastBreakAt + src]);
+
+      // Continuation means "no break/gap between two adjacent logical tokens".
+      // After visual reordering (common in RTL), an adjacent logical pair can appear
+      // as either (prev -> curr) or (curr -> prev) in visual order; preserve both.
+      bool continues = false;
+      if (i > 0) {
+        const size_t prevSrc = visualOrderScratch[i - 1];
+        const size_t currSrc = src;
+        const bool forwardAdjacent = currSrc == prevSrc + 1;
+        const bool reverseAdjacent = prevSrc == currSrc + 1;
+
+        if (forwardAdjacent && continuesVec[lastBreakAt + currSrc]) {
+          continues = true;
+        } else if (reverseAdjacent && continuesVec[lastBreakAt + prevSrc]) {
+          continues = true;
+        }
+      }
+      reorderedContinuesScratch.push_back(continues);
+      reorderedNoSpaceBeforeScratch.push_back(!continues && noSpaceBeforeVec[lastBreakAt + src]);
+    }
+
+    int reorderedWordWidthSum = 0;
+    size_t reorderedGapCount = 0;
+    int reorderedNaturalGaps = 0;
+    for (size_t wordIdx = 0; wordIdx < reorderedWidthsScratch.size(); wordIdx++) {
+      reorderedWordWidthSum += reorderedWidthsScratch[wordIdx];
+      if (wordIdx > 0 && reorderedNoSpaceBeforeScratch[wordIdx]) {
+        // Unicode break opportunity with no inserted Latin-style space. It is still
+        // a stretchable gap for justified CJK/Korean text.
+        reorderedGapCount++;
+      } else if (wordIdx > 0 && !reorderedContinuesScratch[wordIdx]) {
+        reorderedGapCount++;
+        reorderedNaturalGaps += renderer.getSpaceAdvance(fontId, lastCodepoint(reorderedWordsScratch[wordIdx - 1]),
+                                                         firstCodepoint(reorderedWordsScratch[wordIdx]),
+                                                         reorderedStylesScratch[wordIdx - 1]);
+      } else if (wordIdx > 0 && reorderedContinuesScratch[wordIdx]) {
+        if (reorderedWordsScratch[wordIdx] == " ") {
+          reorderedGapCount++;
+        }
+        reorderedNaturalGaps +=
+            renderer.getKerning(fontId, lastCodepoint(reorderedWordsScratch[wordIdx - 1]),
+                                firstCodepoint(reorderedWordsScratch[wordIdx]), reorderedStylesScratch[wordIdx - 1]);
+      }
+    }
+
+    const int reorderedSpare = effectivePageWidth - reorderedWordWidthSum - reorderedNaturalGaps;
+    const int reorderedJustifyExtra = (effectiveAlignment == CssTextAlign::Justify && !isLastLine)
+                                          ? computeJustifyExtra(reorderedSpare, reorderedGapCount)
+                                          : 0;
+
+    const int justifyContribution = (effectiveAlignment == CssTextAlign::Justify && !isLastLine)
+                                        ? reorderedJustifyExtra * static_cast<int>(reorderedGapCount)
+                                        : 0;
+    const int contentWidth = reorderedWordWidthSum + reorderedNaturalGaps + justifyContribution;
+
+    int xpos = 0;
+    if (blockStyle.isRtl) {
+      if (effectiveAlignment == CssTextAlign::Right || effectiveAlignment == CssTextAlign::Justify) {
+        xpos = effectivePageWidth - contentWidth;
+      } else if (effectiveAlignment == CssTextAlign::Center) {
+        xpos = (effectivePageWidth - contentWidth) / 2;
+      }
     } else {
-      int gap = 0;
-      if (wordIdx + 1 < lineWordCount) {
-        gap = renderer.getSpaceAdvance(fontId, lastCodepoint(wordView(lastBreakAt + wordIdx)),
-                                       firstCodepoint(wordView(lastBreakAt + wordIdx + 1)),
-                                       wordStyles[lastBreakAt + wordIdx]);
+      xpos = firstLineIndent;
+      if (effectiveAlignment == CssTextAlign::Right) {
+        xpos = effectivePageWidth - contentWidth;
+      } else if (effectiveAlignment == CssTextAlign::Center) {
+        xpos = (effectivePageWidth - contentWidth) / 2;
       }
-      if (blockStyle.alignment == CssTextAlign::Justify && !isLastLine) {
-        gap += justifyExtra;
+    }
+
+    for (size_t wordIdx = 0; wordIdx < reorderedWidthsScratch.size(); wordIdx++) {
+      lineXPos.push_back(static_cast<int16_t>(xpos));
+      xpos += reorderedWidthsScratch[wordIdx];
+
+      const bool nextIsContinuation =
+          wordIdx + 1 < reorderedWidthsScratch.size() && reorderedContinuesScratch[wordIdx + 1];
+      if (nextIsContinuation) {
+        int advance =
+            renderer.getKerning(fontId, lastCodepoint(reorderedWordsScratch[wordIdx]),
+                                firstCodepoint(reorderedWordsScratch[wordIdx + 1]), reorderedStylesScratch[wordIdx]);
+        // wordIdx > 0 mirrors the gap accounting above (which skips index 0): a leading
+        // no-break space must not receive justifyExtra, or the line over-stretches by one
+        // gap and the last word is pushed past the right margin (issue #2185).
+        if (wordIdx > 0 && reorderedWordsScratch[wordIdx] == " " && reorderedContinuesScratch[wordIdx] &&
+            effectiveAlignment == CssTextAlign::Justify && !isLastLine) {
+          advance += reorderedJustifyExtra;
+        }
+        xpos += advance;
+      } else if (wordIdx + 1 < reorderedWidthsScratch.size()) {
+        const bool nextNoSpace = reorderedNoSpaceBeforeScratch[wordIdx + 1];
+        int gap = nextNoSpace ? 0
+                              : renderer.getSpaceAdvance(fontId, lastCodepoint(reorderedWordsScratch[wordIdx]),
+                                                         firstCodepoint(reorderedWordsScratch[wordIdx + 1]),
+                                                         reorderedStylesScratch[wordIdx]);
+        if (effectiveAlignment == CssTextAlign::Justify && !isLastLine) {
+          gap += reorderedJustifyExtra;
+        }
+        xpos += gap;
       }
-      xpos += wordWidths[lastBreakAt + wordIdx] + gap;
+    }
+
+    lineWords.swap(reorderedWordsScratch);
+    lineWordStyles.swap(reorderedStylesScratch);
+  } else {
+    // Standard LTR/RTL positioning loop when no visual reordering is needed
+    if (blockStyle.isRtl) {
+      // RTL: position words from right to left
+      int xpos = effectivePageWidth;
+      if (effectiveAlignment == CssTextAlign::Left) {
+        // Explicit left alignment in RTL context
+        xpos = lineWordWidthSum + totalNaturalGaps;
+      } else if (effectiveAlignment == CssTextAlign::Center) {
+        xpos = (effectivePageWidth + lineWordWidthSum + totalNaturalGaps) / 2;
+      }
+      // For Right and Justify, start from right edge (xpos = effectivePageWidth)
+
+      for (size_t wordIdx = 0; wordIdx < lineWordCount; wordIdx++) {
+        xpos -= wordWidths[lastBreakAt + wordIdx];
+        lineXPos.push_back(static_cast<int16_t>(xpos));
+
+        const bool nextIsContinuation = wordIdx + 1 < lineWordCount && continuesVec[lastBreakAt + wordIdx + 1];
+        if (nextIsContinuation) {
+          // Cross-boundary kerning for continuation words
+          int advance = renderer.getKerning(fontId, lastCodepoint(lineWords[wordIdx]),
+                                            firstCodepoint(lineWords[wordIdx + 1]), lineWordStyles[wordIdx]);
+          // wordIdx > 0: see the LTR branch 鈥?a leading no-break space is not a justifiable gap.
+          if (wordIdx > 0 && lineWords[wordIdx] == " " && continuesVec[lastBreakAt + wordIdx] &&
+              effectiveAlignment == CssTextAlign::Justify && !isLastLine) {
+            advance += justifyExtra;
+          }
+          xpos -= advance;
+        } else {
+          int gap = 0;
+          bool nextNoSpace = false;
+          if (wordIdx + 1 < lineWordCount) {
+            nextNoSpace = noSpaceBeforeVec[lastBreakAt + wordIdx + 1];
+            gap = nextNoSpace
+                      ? 0
+                      : renderer.getSpaceAdvance(fontId, lastCodepoint(lineWords[wordIdx]),
+                                                 firstCodepoint(lineWords[wordIdx + 1]), lineWordStyles[wordIdx]);
+          }
+          if (wordIdx + 1 < lineWordCount && effectiveAlignment == CssTextAlign::Justify && !isLastLine) {
+            gap += justifyExtra;
+          }
+          xpos -= gap;
+        }
+      }
+    } else {
+      // LTR: position words from left to right
+      int xpos = firstLineIndent;
+      if (effectiveAlignment == CssTextAlign::Right) {
+        xpos = effectivePageWidth - lineWordWidthSum - totalNaturalGaps;
+      } else if (effectiveAlignment == CssTextAlign::Center) {
+        xpos = (effectivePageWidth - lineWordWidthSum - totalNaturalGaps) / 2;
+      }
+
+      for (size_t wordIdx = 0; wordIdx < lineWordCount; wordIdx++) {
+        lineXPos.push_back(static_cast<int16_t>(xpos));
+
+        const bool nextIsContinuation = wordIdx + 1 < lineWordCount && continuesVec[lastBreakAt + wordIdx + 1];
+        if (nextIsContinuation) {
+          int advance = wordWidths[lastBreakAt + wordIdx];
+          advance += renderer.getKerning(fontId, lastCodepoint(lineWords[wordIdx]),
+                                         firstCodepoint(lineWords[wordIdx + 1]), lineWordStyles[wordIdx]);
+          // wordIdx > 0 mirrors the gap accounting above (which skips index 0): a leading
+          // no-break space must not receive justifyExtra, or the line over-stretches by one
+          // gap and the last word is pushed past the right margin (issue #2185).
+          if (wordIdx > 0 && lineWords[wordIdx] == " " && continuesVec[lastBreakAt + wordIdx] &&
+              effectiveAlignment == CssTextAlign::Justify && !isLastLine) {
+            advance += justifyExtra;
+          }
+          xpos += advance;
+        } else {
+          int gap = 0;
+          bool nextNoSpace = false;
+          if (wordIdx + 1 < lineWordCount) {
+            nextNoSpace = noSpaceBeforeVec[lastBreakAt + wordIdx + 1];
+            gap = nextNoSpace
+                      ? 0
+                      : renderer.getSpaceAdvance(fontId, lastCodepoint(lineWords[wordIdx]),
+                                                 firstCodepoint(lineWords[wordIdx + 1]), lineWordStyles[wordIdx]);
+          }
+          if (wordIdx + 1 < lineWordCount && effectiveAlignment == CssTextAlign::Justify && !isLastLine) {
+            gap += justifyExtra;
+          }
+          xpos += wordWidths[lastBreakAt + wordIdx] + gap;
+        }
+      }
     }
   }
 
-  // Materialise the line's words as std::strings so the resulting TextBlock
-  // owns its data. This is the only point in the parse pipeline where we
-  // allocate per-word strings; the count is small (the line, not the whole
-  // paragraph) so heap pressure is bounded.
-  std::vector<std::string> lineWords;
-  lineWords.reserve(lineWordCount);
-  for (size_t wordIdx = 0; wordIdx < lineWordCount; ++wordIdx) {
-    const std::string_view view = wordView(lastBreakAt + wordIdx);
-    lineWords.emplace_back(view.data(), view.size());
-  }
-  std::vector<EpdFontFamily::Style> lineWordStyles(wordStyles.begin() + lastBreakAt, wordStyles.begin() + lineBreak);
+  const auto isFocusSuffixAt = [&](const size_t idx) {
+    return willReorder ? reorderedFocusSuffixScratch[idx] : wordIsFocusSuffix[lastBreakAt + idx];
+  };
 
-  for (auto& word : lineWords) {
-    if (word.find(SOFT_HYPHEN_UTF8, 0, SOFT_HYPHEN_BYTES) != std::string::npos) {
-      stripSoftHyphensInPlace(word);
+  // Fast path: when no word on this line was split for focus reading, skip the merge work
+  // entirely and pass empty boundary/suffixX vectors. TextBlock pays zero per-word RAM cost
+  // for these annotations when the vectors are empty.
+  bool lineHasFocusSplit = false;
+  for (size_t i = 0; i < lineWordCount; i++) {
+    if (isFocusSuffixAt(i)) {
+      lineHasFocusSplit = true;
+      break;
     }
   }
 
-  processLine(
-      std::make_shared<TextBlock>(std::move(lineWords), std::move(lineXPos), std::move(lineWordStyles), blockStyle));
+  if (!lineHasFocusSplit) {
+    // TextBlock flattens the vectors into its arena; they stay owned here and die at return.
+    auto block = std::make_shared<TextBlock>(lineWords, lineXPos, lineWordStyles, std::vector<uint8_t>{},
+                                             std::vector<uint16_t>{}, blockStyle);
+    if (!block->valid()) {
+      LOG_ERR("PTX", "Dropping line: TextBlock arena allocation failed");
+      return;
+    }
+    processLine(std::move(block));
+    return;
+  }
+
+  // Slow path: merge focus suffix tokens back into their preceding word entry so each
+  // original word occupies one TextBlock slot. Splits are recorded as per-word annotations
+  // applied at render time, cutting the token count significantly when the feature is active.
+  std::vector<std::string> outWords;
+  std::vector<int16_t> outXPos;
+  std::vector<EpdFontFamily::Style> outStyles;
+  std::vector<uint8_t> outBoundaries;
+  std::vector<uint16_t> outSuffixX;
+  outWords.reserve(lineWordCount);
+  outXPos.reserve(lineWordCount);
+  outStyles.reserve(lineWordCount);
+  outBoundaries.reserve(lineWordCount);
+  outSuffixX.reserve(lineWordCount);
+
+  for (size_t i = 0; i < lineWordCount; i++) {
+    if (isFocusSuffixAt(i) && !outWords.empty()) {
+      // Focus suffix: merge string into the preceding bold-prefix entry.
+      outWords.back() += lineWords[i];
+    } else {
+      // Normal word: check for a following focus suffix to record the byte boundary.
+      uint8_t boundary = 0;
+      uint16_t suffixX = 0;
+      if (i + 1 < lineWordCount && isFocusSuffixAt(i + 1)) {
+        boundary = static_cast<uint8_t>(std::min(lineWords[i].size(), size_t{255}));
+        // Suffix x offset = layout-time advance of the bold prefix, already known from xpos table.
+        const int suffixDelta = static_cast<int>(lineXPos[i + 1]) - static_cast<int>(lineXPos[i]);
+        suffixX = static_cast<uint16_t>(suffixDelta > 0 ? suffixDelta : 0);
+      }
+      outWords.push_back(std::move(lineWords[i]));
+      outXPos.push_back(lineXPos[i]);
+      // For focus entries with a suffix, strip BOLD from the stored style.
+      // Render re-applies it to the prefix portion only, via the boundary field.
+      const EpdFontFamily::Style storedStyle =
+          boundary > 0 ? static_cast<EpdFontFamily::Style>(lineWordStyles[i] & ~EpdFontFamily::BOLD)
+                       : lineWordStyles[i];
+      outStyles.push_back(storedStyle);
+      outBoundaries.push_back(boundary);
+      outSuffixX.push_back(suffixX);
+    }
+  }
+
+  auto block = std::make_shared<TextBlock>(outWords, outXPos, outStyles, outBoundaries, outSuffixX, blockStyle);
+  if (!block->valid()) {
+    LOG_ERR("PTX", "Dropping line: TextBlock arena allocation failed");
+    return;
+  }
+  processLine(std::move(block));
 }

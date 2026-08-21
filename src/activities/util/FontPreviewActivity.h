@@ -24,6 +24,7 @@ class FontPreviewActivity final : public Activity {
   int previewFontIndex = -1;
   int originalReaderFontIndex = -1;
   int originalUiFontIndex = -1;
+  bool originalSelectionCaptured = false;
   bool previewUsesReaderSlot = false;
   bool previewUsesUiSlot = false;
 
@@ -33,5 +34,6 @@ class FontPreviewActivity final : public Activity {
   void restorePreviewFont();
   void applyReaderFont();
   void applyUiFont();
+  void applyReaderAndUiFont();
   void closePreview(bool applied);
 };

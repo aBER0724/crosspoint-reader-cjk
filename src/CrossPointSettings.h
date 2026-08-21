@@ -1,29 +1,27 @@
 #pragma once
-#include <HalStorage.h>
+#include <ArduinoJson.h>
+#include <Epub/ReaderRenderSpec.h>
+#include <PersistableStore.h>
 
 #include <cstdint>
-#include <iosfwd>
 
-class CrossPointSettings {
+class CrossPointSettings : public PersistableStore<CrossPointSettings> {
  private:
   // Private constructor for singleton
   CrossPointSettings() = default;
 
-  // Static instance
-  static CrossPointSettings instance;
+  friend class PersistableStore<CrossPointSettings>;
 
  public:
-  // Delete copy constructor and assignment
-  CrossPointSettings(const CrossPointSettings&) = delete;
-  CrossPointSettings& operator=(const CrossPointSettings&) = delete;
-
   enum SLEEP_SCREEN_MODE {
     DARK = 0,
     LIGHT = 1,
     CUSTOM = 2,
     COVER = 3,
+    // Persisted enum values: keep the fork's historic Blank/Cover custom order.
     BLANK = 4,
     COVER_CUSTOM = 5,
+    QUICK_RESUME = 6,
     SLEEP_SCREEN_MODE_COUNT
   };
   enum SLEEP_SCREEN_COVER_MODE { FIT = 0, CROP = 1, SLEEP_SCREEN_COVER_MODE_COUNT };
@@ -34,16 +32,6 @@ class CrossPointSettings {
     SLEEP_SCREEN_COVER_FILTER_COUNT
   };
 
-  // Status bar enum - legacy
-  enum STATUS_BAR_MODE {
-    NONE = 0,
-    NO_PROGRESS = 1,
-    FULL = 2,
-    BOOK_PROGRESS_BAR = 3,
-    ONLY_BOOK_PROGRESS_BAR = 4,
-    CHAPTER_PROGRESS_BAR = 5,
-    STATUS_BAR_MODE_COUNT
-  };
   enum STATUS_BAR_PROGRESS_BAR {
     BOOK_PROGRESS = 0,
     CHAPTER_PROGRESS = 1,
@@ -57,6 +45,14 @@ class CrossPointSettings {
     STATUS_BAR_PROGRESS_BAR_THICKNESS_COUNT
   };
   enum STATUS_BAR_TITLE { BOOK_TITLE = 0, CHAPTER_TITLE = 1, HIDE_TITLE = 2, STATUS_BAR_TITLE_COUNT };
+  enum XTC_STATUS_BAR_MODE {
+    XTC_STATUS_BAR_HIDE = 0,
+    XTC_STATUS_BAR_BOTTOM = 1,
+    XTC_STATUS_BAR_TOP = 2,
+    XTC_STATUS_BAR_MODE_COUNT
+  };
+
+  enum STATUS_BAR_CLOCK_MODE { STATUS_BAR_CLOCK_HIDE = 0, STATUS_BAR_CLOCK_RIGHT = 1, STATUS_BAR_CLOCK_LEFT = 2 };
 
   enum ORIENTATION {
     PORTRAIT = 0,       // 480x800 logical coordinates (current default)
@@ -66,9 +62,8 @@ class CrossPointSettings {
     ORIENTATION_COUNT
   };
 
-  // UI orientation (Portrait or Inverted only).
-  // Values match SettingInfo::Enum indices (0, 1) so the stored setting
-  // value equals the enum value directly.
+  // UI activities only support portrait and inverted orientations. Values are
+  // persisted by index, so keep the fork's historic 0/1 ordering stable.
   enum UI_ORIENTATION { UI_PORTRAIT = 0, UI_INVERTED = 1 };
 
   // Front button layout options (legacy)
@@ -92,21 +87,16 @@ class CrossPointSettings {
   };
 
   // Side button layout options
-  // Default: Previous, Next
-  // Swapped: Next, Previous
-  enum SIDE_BUTTON_LAYOUT { PREV_NEXT = 0, NEXT_PREV = 1, SIDE_BUTTON_LAYOUT_COUNT };
+  // Default: Up = Previous, Down = Next
+  enum SIDE_BUTTON_LAYOUT { PREV_NEXT = 0, NEXT_PREV = 1, SIDE_BUTTONS_DISABLED = 2, SIDE_BUTTON_LAYOUT_COUNT };
 
-  // Font family options
-  enum FONT_FAMILY { NOTOSERIF = 0, NOTOSANS = 1, OPENDYSLEXIC = 2, FONT_FAMILY_COUNT };
+  // Font family options (built-in fonts only; SD card fonts use sdFontFamilyName)
+  enum FONT_FAMILY { NOTOSERIF = 0, NOTOSANS = 1, FONT_FAMILY_COUNT };
+  static constexpr uint8_t LEGACY_OPENDYSLEXIC = 2;
+  static constexpr uint8_t BUILTIN_FONT_COUNT = FONT_FAMILY_COUNT;
   // Font size options
   enum FONT_SIZE { SMALL = 0, MEDIUM = 1, LARGE = 2, EXTRA_LARGE = 3, FONT_SIZE_COUNT };
-  // Legacy line spacing enum values kept for backward compatibility migration.
   enum LINE_COMPRESSION { TIGHT = 0, NORMAL = 1, WIDE = 2, LINE_COMPRESSION_COUNT };
-  // Line spacing factor in percent of current font line height.
-  // 100 = 1.0x (default), 80 = 0.8x, 250 = 2.5x.
-  static constexpr uint8_t LINE_SPACING_MIN = 80;
-  static constexpr uint8_t LINE_SPACING_MAX = 250;
-  static constexpr uint8_t LINE_SPACING_DEFAULT = 100;
   enum PARAGRAPH_ALIGNMENT {
     JUSTIFIED = 0,
     LEFT_ALIGN = 1,
@@ -137,19 +127,49 @@ class CrossPointSettings {
   };
 
   // Short power button press actions
-  enum SHORT_PWRBTN { IGNORE = 0, SLEEP = 1, PAGE_TURN = 2, FORCE_REFRESH = 3, SHORT_PWRBTN_COUNT };
+  enum SHORT_PWRBTN { IGNORE = 0, SLEEP = 1, PAGE_TURN = 2, FORCE_REFRESH = 3, FOOTNOTES = 4, SHORT_PWRBTN_COUNT };
+
+  // Long-press Confirm action while reading an EPUB. The setting cycles through these values.
+  // Persisted in settings.json by index: any new function (e.g. dictionary, bookmark) MUST use a
+  // value >= 2 and be appended at the END of the enumValues array in SettingsList.h, otherwise the
+  // stored indices shift and existing saves are silently misinterpreted.
+  enum LONG_PRESS_MENU_FUNCTION {
+    LP_MENU_KOSYNC = 0,
+    LP_MENU_DISABLED = 1,
+    LP_MENU_BOOKMARK = 2,
+    LP_MENU_DICTIONARY = 3,
+    LONG_PRESS_MENU_FUNCTION_COUNT
+  };
 
   // Hide battery percentage
   enum HIDE_BATTERY_PERCENTAGE { HIDE_NEVER = 0, HIDE_READER = 1, HIDE_ALWAYS = 2, HIDE_BATTERY_PERCENTAGE_COUNT };
 
-  // UI Theme
-  enum UI_THEME { CLASSIC = 0, LYRA = 1, LYRA_3_COVERS = 2 };
+  // Page turn button long press behavior
+  enum LONG_PRESS_BUTTON_BEHAVIOR {
+    OFF = 0,
+    CHAPTER_SKIP = 1,
+    ORIENTATION_CHANGE = 2,
+    LONG_PRESS_BUTTON_BEHAVIOR_COUNT
+  };
 
-  // Color mode (light/dark)
+  // UI Theme
+  enum UI_THEME { CLASSIC = 0, LYRA = 1, LYRA_3_COVERS = 2, ROUNDEDRAFF = 3 };
+
+  // Color mode (light/dark). Values are persisted by index.
   enum COLOR_MODE { LIGHT_MODE = 0, DARK_MODE = 1 };
 
   // Image rendering in EPUB reader
   enum IMAGE_RENDERING { IMAGES_DISPLAY = 0, IMAGES_PLACEHOLDER = 1, IMAGES_SUPPRESS = 2, IMAGE_RENDERING_COUNT };
+
+  enum TILT_PAGE_TURN { TILT_OFF = 0, TILT_NORMAL = 1, TILT_NVERTED = 2, TILT_PAGE_TURN_COUNT };
+
+  enum TOUCH_READER_CONTROLS { TOUCH_READER_OFF = 0, TOUCH_READER_ON = 1, TOUCH_READER_CONTROLS_COUNT };
+
+  enum QUICK_RESUME_SLEEP_SCREEN {
+    QUICK_RESUME_NEVER = 0,
+    QUICK_RESUME_AFTER_TIMEOUT = 1,
+    QUICK_RESUME_SLEEP_SCREEN_COUNT
+  };
 
   // Sleep screen settings
   uint8_t sleepScreen = DARK;
@@ -157,14 +177,25 @@ class CrossPointSettings {
   uint8_t sleepScreenCoverMode = FIT;
   // Sleep screen cover filter
   uint8_t sleepScreenCoverFilter = NO_FILTER;
-  // Status bar settings (statusBar retained for migration only)
-  uint8_t statusBar = FULL;
+  // Status bar settings
   uint8_t statusBarChapterPageCount = 1;
   uint8_t statusBarBookProgressPercentage = 1;
   uint8_t statusBarProgressBar = HIDE_PROGRESS;
   uint8_t statusBarProgressBarThickness = PROGRESS_BAR_NORMAL;
   uint8_t statusBarTitle = CHAPTER_TITLE;
   uint8_t statusBarBattery = 1;
+  uint8_t xtcStatusBarMode = XTC_STATUS_BAR_HIDE;
+  // Clock display in status bar (X3 only, requires DS3231 RTC)
+  uint8_t statusBarClock = STATUS_BAR_CLOCK_HIDE;
+  // Clock UTC offset in quarter-hour steps, biased by 48 so it fits in uint8_t.
+  // Value 48 = UTC+0, 0 = UTC-12:00, 104 = UTC+14:00.
+  // Quarter-hour granularity supports oddball zones like Nepal (+5:45) and Chatham (+12:45).
+  uint8_t clockUtcOffsetQ = 48;
+  // Clock display format: 0 = 24-hour, 1 = 12-hour
+  uint8_t clockFormat = 0;
+  // Set once an NTP sync succeeds. Used to skip re-syncing on every WiFi connect.
+  // Resetting to 0 (e.g. via the web UI) forces a re-sync on next WiFi connect.
+  uint8_t clockHasBeenSynced = 0;
   // Text rendering settings
   uint8_t extraParagraphSpacing = 1;
   uint8_t textAntiAliasing = 1;
@@ -176,6 +207,7 @@ class CrossPointSettings {
   // Button layouts (front layout retained for migration only)
   uint8_t frontButtonLayout = BACK_CONFIRM_LEFT_RIGHT;
   uint8_t sideButtonLayout = PREV_NEXT;
+  uint8_t frontButtonFollowOrientation = 0;
   // Front button remap (logical -> hardware)
   // Used by MappedInputManager to translate logical buttons into physical front buttons.
   uint8_t frontButtonBack = FRONT_HW_BACK;
@@ -185,55 +217,92 @@ class CrossPointSettings {
   // Reader font settings
   uint8_t fontFamily = NOTOSERIF;
   uint8_t fontSize = MEDIUM;
-  uint8_t lineSpacing = LINE_SPACING_DEFAULT;
+  uint8_t lineSpacing = NORMAL;
   uint8_t paragraphAlignment = JUSTIFIED;
-  // Auto-sleep timeout setting (default 10 minutes)
-  uint8_t sleepTimeout = SLEEP_10_MIN;
+  // Auto-sleep timeout setting (default 10 minutes). Legacy sleepTimeout enum values are migration-only.
+  uint8_t sleepTimeoutMinutes = 10;
   // E-ink refresh frequency (default 15 pages)
   uint8_t refreshFrequency = REFRESH_15;
   uint8_t hyphenationEnabled = 0;
 
   // Reader screen margin settings
-  uint8_t screenMargin = 5;
-  // OPDS browser settings
-  char opdsServerUrl[128] = "";
-  char opdsUsername[64] = "";
-  char opdsPassword[64] = "";
+  static constexpr uint8_t SCREEN_MARGIN_MIN = 5;
+  static constexpr uint8_t SCREEN_MARGIN_MAX = 40;
+  static constexpr uint8_t SCREEN_MARGIN_STEP = 5;
+  uint8_t screenMargin = SCREEN_MARGIN_MIN;
+  // OPDS download destination folder ("" = SD root). Global; edited from the
+  // OPDS server list. Persisted via a category-less SettingInfo::String in
+  // SettingsList.h, so it stays out of the on-device Settings screen.
+  char opdsDownloadFolder[64] = "";
+  // On-disk filename format for OPDS downloads (0=Author-Title default, 1=Title-Author,
+  // 2=Title). See OpdsFilenameFormat. Persisted via a category-less SettingInfo::Enum,
+  // edited from the OPDS server list; hidden from the on-device Settings screen.
+  uint8_t opdsFilenameFormat = 0;
   // Hide battery percentage
   uint8_t hideBatteryPercentage = HIDE_NEVER;
-  // Long-press chapter skip on side buttons
-  uint8_t longPressChapterSkip = 1;
+  // Long-press page turn button behavior
+  uint8_t longPressButtonBehavior = OFF;
+  // Long-press Confirm function in EPUB reader (cycles through LONG_PRESS_MENU_FUNCTION values).
+  // Defaults to Disabled so shortcut-based bookmark toggling remains opt-in.
+  uint8_t longPressMenuFunction = LP_MENU_DISABLED;
   // UI Theme
   uint8_t uiTheme = LYRA;
   // Sunlight fading compensation
   uint8_t fadingFix = 0;
+  // Power button return from footnotes (1 = enabled, 0 = disabled)
+  uint8_t pwrBtnFootnoteBack = 1;
   // Use book's embedded CSS styles for EPUB rendering (1 = enabled, 0 = disabled)
   uint8_t embeddedStyle = 1;
+  // Focus Reading - emphasizes the first part of words with bold
+  uint8_t focusReadingEnabled = 0;
+  // SD card reader font family name (empty = use built-in fontFamily)
+  char sdFontFamilyName[32] = "";
+  // SD card UI fallback font family name (empty = use built-in UI fonts)
+  char sdUiFontFamilyName[32] = "";
+  // Dictionary folder name under /dictionaries (empty = no dictionary)
+  char dictionaryName[32] = "";
   // Show hidden files/directories (starting with '.') in the file browser (0 = hidden, 1 = show)
   uint8_t showHiddenFiles = 0;
+  // Remove a book from the Recent Books list when its End-of-Book screen is reached (0 = off, 1 = on)
+  uint8_t removeReadBooksFromRecents = 0;
+  // Move epub to /Read/ folder on SD card when finished (0 = disabled, 1 = enabled)
+  uint8_t moveFinishedToReadFolder = 0;
+  // Short press Back goes to file browser instead of home (0 = disabled, 1 = enabled)
+  uint8_t backShortToFileBrowser = 0;
   // Image rendering mode in EPUB reader
   uint8_t imageRendering = IMAGES_DISPLAY;
+  // Tilt-based page turning (X3 only — requires QMI8658 IMU)
+  uint8_t tiltPageTurn = TILT_OFF;
+  // Touch screen reader zones/gestures on boards with a touch controller.
+  uint8_t touchReaderControls = TOUCH_READER_ON;
+  // Language setting (Language enum index, default 0 = EN)
+  uint8_t language = 0;
+  // Quick Resume: keep current content visible with moon icon instead of showing a static sleep screen.
+  uint8_t quickResumeSleepScreen = QUICK_RESUME_NEVER;
 
-  // CJK-specific settings
-  // UI orientation (Portrait or Inverted only)
-  // 0 = UI_PORTRAIT, 1 = UI_INVERTED
+  // Fork-specific CJK/display settings. Keep their defaults compatible with
+  // existing saved settings, then persist them through SettingsList.h.
   uint8_t uiOrientation = UI_PORTRAIT;
-  // First line indent for paragraphs
   uint8_t firstLineIndent = 0;
-  // Invert images in dark mode (1 = invert, 0 = keep original)
   uint8_t invertImages = 0;
-  // Color mode (light/dark) for reader
   uint8_t colorMode = LIGHT_MODE;
-  // Bluetooth page turner settings
+
+  // Bluetooth page-turn pairing state is intentionally not exposed as a
+  // generic SettingsList entry; the Bluetooth manager owns its workflow.
   uint8_t bluetoothPageTurnEnabled = 0;
   uint8_t bluetoothPageTurnBonded = 0;
   char bluetoothPageTurnAddr[18] = "";
   char bluetoothPageTurnName[64] = "";
 
-  ~CrossPointSettings() = default;
+  static constexpr uint8_t MIN_SLEEP_TIMEOUT_MINUTES = 1;
+  static constexpr uint8_t SLEEP_TIMEOUT_NEVER_MINUTES = 31;
+  static constexpr uint8_t MAX_SLEEP_TIMEOUT_MINUTES = SLEEP_TIMEOUT_NEVER_MINUTES;
 
-  // Get singleton instance
-  static CrossPointSettings& getInstance() { return instance; }
+  // Callback to resolve SD card font IDs. Set by SdCardFontSystem::begin().
+  // Returns font ID or 0 if not found.
+  using SdFontIdResolver = int (*)(void* ctx, const char* familyName, uint8_t fontSize);
+  SdFontIdResolver sdFontIdResolver = nullptr;
+  void* sdFontResolverCtx = nullptr;
 
   uint16_t getPowerButtonDuration() const {
     return (shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::SLEEP) ? 10 : 400;
@@ -241,18 +310,53 @@ class CrossPointSettings {
   int getReaderFontId() const;
   int getBuiltInReaderFontId() const;
 
-  // If count_only is true, returns the number of settings items that would be written.
-  uint8_t writeSettings(FsFile& file, bool count_only = false) const;
+  // Resolved status-bar composition. Consumers read the spec; only settings
+  // editors read the raw fields.
+  //
+  // Deliberately NOT built under storeMutex: every field it reads is a single
+  // byte, so a concurrent settings write can never produce a corrupt value —
+  // only a snapshot mixing pre- and post-change fields. That costs at most one
+  // e-ink frame drawn with a mixed status bar, which self-corrects on the next
+  // refresh. Locking here would instead put a mutex on the render path and
+  // stall it behind the SD write inside saveToFile(). Don't add one back.
+  struct StatusBarSpec {
+    bool showChapterPageCount = false;
+    bool showBookProgressPercent = false;
+    uint8_t titleMode = HIDE_TITLE;  // STATUS_BAR_TITLE
+    bool showBattery = false;
+    bool showBatteryPercent = false;
+    uint8_t clockMode = STATUS_BAR_CLOCK_HIDE;  // STATUS_BAR_CLOCK_MODE
+    bool clock12h = false;
+    uint8_t clockUtcOffsetQ = 48;             // 48 = UTC+0
+    uint8_t progressBarMode = HIDE_PROGRESS;  // STATUS_BAR_PROGRESS_BAR
+    uint8_t progressBarHeightPx = 0;          // (thickness+1)*2; 0 when the bar is hidden
+    uint8_t xtcMode = XTC_STATUS_BAR_HIDE;    // XTC_STATUS_BAR_MODE
 
-  bool saveToFile() const;
-  bool loadFromFile();
+    bool showsProgressBar() const { return progressBarMode != HIDE_PROGRESS; }
+    bool showsTitle() const { return titleMode != HIDE_TITLE; }
+    bool showsClock() const { return clockMode != STATUS_BAR_CLOCK_HIDE; }
+    // Visibility of the text lane. Clock hardware presence is the caller's
+    // concern: pass halClock.isAvailable(), or true for layout reservation.
+    bool textLaneVisible(bool clockAvailable) const {
+      return showChapterPageCount || showBookProgressPercent || showsTitle() || showBattery ||
+             (showsClock() && clockAvailable);
+    }
+  };
+  StatusBarSpec statusBarSpec() const;
+
+  // Resolved text-rendering configuration for the Epub layout engine. The
+  // viewport is renderer/orientation-derived, so the caller supplies it —
+  // passing it in keeps a spec from ever existing in a half-filled state.
+  // Unlocked for the same reason as statusBarSpec(); see the note above.
+  ReaderRenderSpec readerRenderSpec(uint16_t viewportWidth, uint16_t viewportHeight) const;
+
+  static const char* getFilePath() { return "/.crosspoint/settings.json"; }
+  void toJson(JsonDocument& doc) const;
+  bool fromJson(JsonVariantConst doc);
 
   static void validateFrontButtonMapping(CrossPointSettings& settings);
+  static uint8_t sleepTimeoutEnumToMinutes(uint8_t legacyValue);
 
- private:
-  bool loadFromBinaryFile();
-
- public:
   float getReaderLineCompression() const;
   unsigned long getSleepTimeoutMs() const;
   int getRefreshFrequency() const;

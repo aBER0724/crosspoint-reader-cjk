@@ -1,19 +1,46 @@
 #include "Page.h"
 
+#include <GfxRenderer.h>
 #include <Logging.h>
 #include <Serialization.h>
 
-void PageLine::render(GfxRenderer& renderer, const int fontId, const int xOffset, const int yOffset) {
-  block->render(renderer, fontId, xPos + xOffset, yPos + yOffset);
-}
+#include <new>
 
-void PageLine::collectCodepoints(std::vector<uint32_t>& out, size_t max) const {
-  if (block) {
-    block->collectCodepoints(out, max);
+namespace {
+
+template <typename Predicate>
+bool renderFilteredPageElements(const std::vector<std::shared_ptr<PageElement>>& elements, GfxRenderer& renderer,
+                                const int fontId, const int xOffset, const int yOffset,
+                                const PageRenderCancellation* const cancellation, Predicate&& predicate) {
+  for (const auto& element : elements) {
+    if (cancellation && cancellation->requested()) {
+      return false;
+    }
+    if (predicate(*element) && !element->render(renderer, fontId, xOffset, yOffset, cancellation)) {
+      return false;
+    }
   }
+  return !cancellation || !cancellation->requested();
 }
 
-bool PageLine::serialize(FsFile& file) {
+}  // namespace
+
+bool PageLine::render(GfxRenderer& renderer, const int fontId, const int xOffset, const int yOffset,
+                      const PageRenderCancellation* const cancellation) {
+  return block->render(renderer, fontId, xPos + xOffset, yPos + yOffset, cancellation);
+}
+
+bool PageLine::collectCodepoints(std::vector<uint32_t>& out, const size_t max,
+                                 const PageRenderCancellation* const cancellation) const {
+  return !block || block->collectCodepoints(out, max, cancellation);
+}
+
+bool PageLine::collectCodepoints(uint32_t* out, const size_t max, size_t& count,
+                                 const PageRenderCancellation* const cancellation) const {
+  return !block || block->collectCodepoints(out, max, count, cancellation);
+}
+
+bool PageLine::serialize(HalFile& file) {
   serialization::writePod(file, xPos);
   serialization::writePod(file, yPos);
 
@@ -21,22 +48,40 @@ bool PageLine::serialize(FsFile& file) {
   return block->serialize(file);
 }
 
-std::unique_ptr<PageLine> PageLine::deserialize(FsFile& file) {
+std::unique_ptr<PageLine> PageLine::deserialize(HalFile& file) {
   int16_t xPos;
   int16_t yPos;
   serialization::readPod(file, xPos);
   serialization::readPod(file, yPos);
 
   auto tb = TextBlock::deserialize(file);
-  return std::unique_ptr<PageLine>(new PageLine(std::move(tb), xPos, yPos));
+  if (!tb) {
+    LOG_ERR("PGE", "Deserialization failed: null TextBlock");
+    return nullptr;
+  }
+
+  auto* line = new (std::nothrow) PageLine(std::move(tb), xPos, yPos);
+  if (!line) {
+    LOG_ERR("PGE", "Deserialization failed: could not allocate PageLine");
+    return nullptr;
+  }
+  return std::unique_ptr<PageLine>(line);
 }
 
-void PageImage::render(GfxRenderer& renderer, const int fontId, const int xOffset, const int yOffset) {
+bool PageImage::render(GfxRenderer& renderer, const int fontId, const int xOffset, const int yOffset,
+                       const PageRenderCancellation* const cancellation) {
   // Images don't use fontId or text rendering
-  imageBlock->render(renderer, xPos + xOffset, yPos + yOffset);
+  if (cancellation && cancellation->requested()) {
+    return false;
+  }
+  return imageBlock->render(renderer, xPos + xOffset, yPos + yOffset, cancellation);
 }
 
-bool PageImage::serialize(FsFile& file) {
+void PageImage::renderPlaceholder(GfxRenderer& renderer, const int xOffset, const int yOffset) const {
+  imageBlock->renderPlaceholder(renderer, xPos + xOffset, yPos + yOffset);
+}
+
+bool PageImage::serialize(HalFile& file) {
   serialization::writePod(file, xPos);
   serialization::writePod(file, yPos);
 
@@ -44,7 +89,7 @@ bool PageImage::serialize(FsFile& file) {
   return imageBlock->serialize(file);
 }
 
-std::unique_ptr<PageImage> PageImage::deserialize(FsFile& file) {
+std::unique_ptr<PageImage> PageImage::deserialize(HalFile& file) {
   int16_t xPos;
   int16_t yPos;
   serialization::readPod(file, xPos);
@@ -54,25 +99,120 @@ std::unique_ptr<PageImage> PageImage::deserialize(FsFile& file) {
   return std::unique_ptr<PageImage>(new PageImage(std::move(ib), xPos, yPos));
 }
 
-void Page::render(GfxRenderer& renderer, const int fontId, const int xOffset, const int yOffset) const {
-  for (auto& element : elements) {
-    element->render(renderer, fontId, xOffset, yOffset);
+bool PageHorizontalRule::render(GfxRenderer& renderer, const int fontId, const int xOffset, const int yOffset,
+                                const PageRenderCancellation* const cancellation) {
+  (void)fontId;
+  if (cancellation && cancellation->requested()) {
+    return false;
   }
+  if (width == 0 || thickness == 0) {
+    return true;
+  }
+
+  renderer.drawLine(xPos + xOffset, yPos + yOffset, xPos + xOffset + width - 1, yPos + yOffset, thickness, true);
+  return !cancellation || !cancellation->requested();
 }
 
-void Page::collectCodepoints(std::vector<uint32_t>& out, size_t max) const {
-  if (max == 0 || out.size() >= max) {
-    return;
+bool PageHorizontalRule::serialize(HalFile& file) {
+  serialization::writePod(file, xPos);
+  serialization::writePod(file, yPos);
+  serialization::writePod(file, width);
+  serialization::writePod(file, thickness);
+  return true;
+}
+
+std::unique_ptr<PageHorizontalRule> PageHorizontalRule::deserialize(HalFile& file) {
+  int16_t xPos = 0;
+  int16_t yPos = 0;
+  uint16_t width = 0;
+  uint8_t thickness = 0;
+  serialization::readPod(file, xPos);
+  serialization::readPod(file, yPos);
+  serialization::readPod(file, width);
+  serialization::readPod(file, thickness);
+
+  if (width == 0 || thickness == 0) {
+    LOG_ERR("PGE", "Deserialization failed: invalid horizontal rule metadata (width=%u thickness=%u)", width,
+            thickness);
+    return nullptr;
   }
+
+  auto* rule = new (std::nothrow) PageHorizontalRule(width, thickness, xPos, yPos);
+  if (!rule) {
+    LOG_ERR("PGE", "Deserialization failed: could not allocate PageHorizontalRule");
+    return nullptr;
+  }
+  return std::unique_ptr<PageHorizontalRule>(rule);
+}
+
+bool Page::render(GfxRenderer& renderer, const int fontId, const int xOffset, const int yOffset,
+                  const PageRenderCancellation* const cancellation) const {
+  return renderFilteredPageElements(elements, renderer, fontId, xOffset, yOffset, cancellation,
+                                    [](const PageElement&) { return true; });
+}
+
+bool Page::renderImages(GfxRenderer& renderer, const int fontId, const int xOffset, const int yOffset,
+                        const PageRenderCancellation* const cancellation) const {
+  return renderFilteredPageElements(elements, renderer, fontId, xOffset, yOffset, cancellation,
+                                    [](const PageElement& element) { return element.getTag() == TAG_PageImage; });
+}
+
+bool Page::renderWithImagePlaceholders(GfxRenderer& renderer, const int fontId, const int xOffset, const int yOffset,
+                                       const PageRenderCancellation* const cancellation) const {
   for (const auto& element : elements) {
-    element->collectCodepoints(out, max);
-    if (out.size() >= max) {
-      return;
+    if (cancellation && cancellation->requested()) {
+      return false;
+    }
+    if (element->getTag() == TAG_PageImage) {
+      static_cast<const PageImage&>(*element).renderPlaceholder(renderer, xOffset, yOffset);
+    } else if (!element->render(renderer, fontId, xOffset, yOffset, cancellation)) {
+      return false;
     }
   }
+  return !cancellation || !cancellation->requested();
 }
 
-bool Page::serialize(FsFile& file) const {
+bool Page::collectCodepoints(std::vector<uint32_t>& out, const size_t max,
+                             const PageRenderCancellation* const cancellation) const {
+  if (max == 0 || out.size() >= max) {
+    return !cancellation || !cancellation->requested();
+  }
+
+  for (const auto& element : elements) {
+    if (cancellation && cancellation->requested()) {
+      return false;
+    }
+    if (!element->collectCodepoints(out, max, cancellation)) {
+      return false;
+    }
+    if (out.size() >= max) {
+      return !cancellation || !cancellation->requested();
+    }
+  }
+  return !cancellation || !cancellation->requested();
+}
+
+bool Page::collectCodepoints(uint32_t* out, const size_t max, size_t& count,
+                             const PageRenderCancellation* const cancellation) const {
+  if (!out || max == 0 || count >= max) {
+    return !cancellation || !cancellation->requested();
+  }
+
+  for (const auto& element : elements) {
+    if (cancellation && cancellation->requested()) {
+      return false;
+    }
+    if (!element->collectCodepoints(out, max, count, cancellation)) {
+      return false;
+    }
+    if (count >= max) {
+      return !cancellation || !cancellation->requested();
+    }
+  }
+  return !cancellation || !cancellation->requested();
+}
+
+bool Page::serialize(HalFile& file) const {
   const uint16_t count = elements.size();
   serialization::writePod(file, count);
 
@@ -100,7 +240,7 @@ bool Page::serialize(FsFile& file) const {
   return true;
 }
 
-std::unique_ptr<Page> Page::deserialize(FsFile& file) {
+std::unique_ptr<Page> Page::deserialize(HalFile& file) {
   auto page = std::unique_ptr<Page>(new Page());
 
   uint16_t count;
@@ -112,10 +252,22 @@ std::unique_ptr<Page> Page::deserialize(FsFile& file) {
 
     if (tag == TAG_PageLine) {
       auto pl = PageLine::deserialize(file);
+      if (!pl) {
+        return nullptr;
+      }
       page->elements.push_back(std::move(pl));
     } else if (tag == TAG_PageImage) {
       auto pi = PageImage::deserialize(file);
+      if (!pi) {
+        return nullptr;
+      }
       page->elements.push_back(std::move(pi));
+    } else if (tag == TAG_PageHorizontalRule) {
+      auto rule = PageHorizontalRule::deserialize(file);
+      if (!rule) {
+        return nullptr;
+      }
+      page->elements.push_back(std::move(rule));
     } else {
       LOG_ERR("PGE", "Deserialization failed: Unknown tag %u", tag);
       return nullptr;

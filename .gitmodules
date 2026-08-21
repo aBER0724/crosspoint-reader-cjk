@@ -1,3 +1,4 @@
-[submodule "open-x4-sdk"]
-	path = open-x4-sdk
-	url = https://github.com/aBER0724/community-sdk.git
+[submodule "freeink-sdk"]
+	path = freeink-sdk
+	url = https://github.com/aBER0724/freeink-sdk.git
+	branch = codex/dark-redrive-freeink

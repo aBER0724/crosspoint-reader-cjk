@@ -5,6 +5,7 @@ Welcome to the **CrossPoint** firmware. This guide outlines the hardware control
 - [CrossPoint User Guide](#crosspoint-user-guide)
   - [1. Hardware Overview](#1-hardware-overview)
     - [Button Layout](#button-layout)
+    - [Taking a Screenshot](#taking-a-screenshot)
   - [2. Power \& Startup](#2-power--startup)
     - [Power On / Off](#power-on--off)
     - [First Launch](#first-launch)
@@ -14,7 +15,11 @@ Welcome to the **CrossPoint** firmware. This guide outlines the hardware control
     - [3.3 Browse Files Screen](#33-browse-files-screen)
     - [3.4 Recent Books Screen](#34-recent-books-screen)
     - [3.5 File Transfer Screen](#35-file-transfer-screen)
-      - [3.5.1 Calibre Wireless Transfers](#351-calibre-wireless-transfers)
+    - [3.5.1 Calibre Wireless Transfers](#351-calibre-wireless-transfers)
+      - [Installing the Plugin in Calibre](#installing-the-plugin-in-calibre)
+      - [Configuring the CrossPoint Plugin in Calibre](#configuring-the-crosspoint-plugin-in-calibre)
+      - [Uploading Books](#uploading-books)
+      - [Removing a Book](#removing-a-book)
     - [3.6 Settings](#36-settings)
       - [3.6.1 Display](#361-display)
       - [3.6.2 Reader](#362-reader)
@@ -237,9 +242,37 @@ You can also manage OPDS servers from the web interface while in File Transfer m
 CrossPoint can sync reading progress with KOReader-compatible sync servers.
 It also interoperates with KOReader apps/devices when they use the same server and credentials.
 
-##### Option A: Free Public Server (`sync.koreader.rocks`)
+##### Option A: CrossPoint Sync Server (`sync.crosspointreader.com`, default)
 
-1. Register a user once (only if needed):
+When **Sync Server URL** is left empty, CrossPoint uses the free CrossPoint sync server at `https://sync.crosspointreader.com`. It speaks the standard KOReader sync protocol (so KOReader apps can use it too) and additionally stores an exact spine/page position for lossless CrossPoint-to-CrossPoint sync.
+
+1. On each CrossPoint device:
+
+   - Go to **Settings -> System -> KOReader Sync**.
+
+   - Set **Username** and **Password** (enter the plain password; CrossPoint computes MD5 internally, and use the same values on all devices).
+
+   - Leave **Sync Server URL** empty (or set it to `https://sync.crosspointreader.com`).
+
+   - On the first device, run **Sign Up** once to create the account directly from the device. On every other device, just run **Authenticate**.
+
+Accounts are per server. Existing `sync.koreader.rocks` credentials do not exist on the CrossPoint server; either sign up again with the same username/password or use Option B to keep using the legacy server.
+
+##### Option B: Legacy Public KOReader Server (`sync.koreader.rocks`)
+
+Use this if you already sync KOReader devices against the official public server.
+
+1. On each CrossPoint device:
+
+   - Go to **Settings -> System -> KOReader Sync**.
+
+   - Set **Sync Server URL** to `https://sync.koreader.rocks` (required; an empty URL now points at the CrossPoint server instead).
+
+   - Set **Username** and **Password** to your existing KOReader Sync credentials.
+
+   - Run **Authenticate**.
+
+2. If you do not have an account yet, run **Sign Up** on the device, or register once with curl:
 
 ```bash
 USERNAME="user"
@@ -251,8 +284,6 @@ curl -i "https://sync.koreader.rocks/users/create" \
   -H "Content-Type: application/json" \
   --data "{\"username\":\"$USERNAME\",\"password\":\"$PASSWORD_MD5\"}"
 ```
-
-Already have KOReader Sync credentials? Skip registration; basic sync only requires using the same existing username/password on all devices.
 
 When this returns `HTTP 402` with `{"code":2002,"message":"Username is already registered."}`, pick a different username or use that existing account.
 
@@ -394,6 +425,8 @@ If the **Short Power Button Click** setting is set to "Page Turn", you can also 
 
 This feature can be disabled in the **[Controls Settings](#363-controls)** to help avoid changing chapters by mistake.
 
+
+If the device goes to sleep or you close the book while viewing a footnote, the book reopens to your original reading position, not the footnote.
 
 ### System Navigation
 * **Return to Home:** Press the **Back** button to close the book and return to the **[Home](#31-home-screen)** screen.

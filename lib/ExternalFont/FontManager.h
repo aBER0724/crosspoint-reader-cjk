@@ -51,14 +51,28 @@ class FontManager {
    * Select reader font (for book content)
    * @param index Font index, -1 means disable external font (use built-in)
    */
-  void selectFont(int index);
+  bool selectFont(int index);
 
   /**
    * Select UI font (for menus, titles, etc.)
    * @param index Font index, -1 means disable (fallback to reader font or
    * built-in)
    */
-  void selectUiFont(int index);
+  bool selectUiFont(int index);
+
+  /**
+   * Select reader and UI fonts as one transaction.
+   * @param readerIndex Font index, -1 means built-in reader font
+   * @param uiIndex Font index, -1 means built-in UI fallback
+   * @return true when both fonts were loaded and the selection was saved
+   */
+  bool selectFonts(int readerIndex, int uiIndex);
+
+  /**
+   * Clear legacy font slots after an explicit selection in Text Settings.
+   * Unselected slots remain active for backward compatibility.
+   */
+  bool clearSelections(bool reader, bool ui);
 
   /**
    * Temporarily load reader font without saving settings.
@@ -71,9 +85,10 @@ class FontManager {
   bool previewUiFont(int index);
 
   /**
-   * Restore reader/UI selections without saving settings.
+   * Restore reader/UI selections. Exact restores are not saved; if a missing
+   * or unreadable font forces a degraded selection, the actual state is saved.
    */
-  void restoreFontSelection(int readerIndex, int uiIndex);
+  bool restoreFontSelection(int readerIndex, int uiIndex);
 
   /**
    * Get currently selected reader font index
@@ -107,6 +122,8 @@ class FontManager {
 
   void setGlyphCachesSuspended(bool suspended);
   bool areGlyphCachesSuspended() const { return _glyphCachesSuspended; }
+  void setUiGlyphCacheSuspended(bool suspended);
+  bool isUiGlyphCacheSuspended() const { return _uiGlyphCacheSuspended; }
   bool isGlyphCacheSuspendedFor(const ExternalFont* font) const;
 
   class ScopedGlyphCacheSuspension {
@@ -171,9 +188,12 @@ class FontManager {
   int _selectedIndex = -1;    // -1 = built-in font (reader)
   int _selectedUiIndex = -1;  // -1 = fallback to reader font
 
-  ExternalFont _activeFont;    // Reader font
-  ExternalFont _activeUiFont;  // UI font
+  ExternalFont _activeFont;                                                // Reader font
+  ExternalFont _activeUiFont{ExternalFontCachePolicy::kUiGlyphCacheSize};  // UI font
+  char _activeFontFilename[sizeof(FontInfo::filename)] = {};
+  char _activeUiFontFilename[sizeof(FontInfo::filename)] = {};
   bool _glyphCachesSuspended = false;
+  bool _uiGlyphCacheSuspended = false;
 
   bool isUiSharingReaderFont() const { return _selectedUiIndex >= 0 && _selectedUiIndex == _selectedIndex; }
 
@@ -187,14 +207,24 @@ class FontManager {
    */
   bool loadSelectedUiFont();
 
+  bool applyFontSelection(int readerIndex, int uiIndex);
+  bool restoreAvailableSelection(int readerIndex, int uiIndex);
+  bool isReaderSelectionReady(int index) const;
+  bool isUiSelectionReady(int readerIndex, int uiIndex) const;
+  bool isValidSelectionIndex(int index) const { return index == -1 || (index >= 0 && index < _fontCount); }
+  int findFontIndex(const char* filename) const;
+  void unloadReaderFont();
+  void unloadUiFont();
+  void useBuiltinFonts();
+
   /// Writes (index, filename) for the font at `index` to `file`. Used by
   /// saveSettings() for both the reader and UI font slots.
   void writeFontChoice(HalFile& file, int index) const;
 
   /// Reads (savedIndex, savedFilename) from `file`, finds the matching font in
-  /// the scanned list, sets `outIndex` and invokes `loader`. `label` is used
-  /// for logging only ("reader" or "UI").
-  void readFontChoice(HalFile& file, const char* label, int& outIndex, bool (FontManager::*loader)());
+  /// the scanned list, and sets `outIndex`. Returns true when a saved selection
+  /// had to be discarded. `label` is used for logging only ("reader" or "UI").
+  bool readFontChoice(HalFile& file, const char* label, int& outIndex);
 };
 
 // Convenience macro

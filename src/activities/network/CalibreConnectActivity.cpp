@@ -4,7 +4,6 @@
 #include <GfxRenderer.h>
 #include <I18n.h>
 #include <WiFi.h>
-#include <esp_task_wdt.h>
 
 #include <string>
 
@@ -12,6 +11,7 @@
 #include "WifiSelectionActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "util/TaskWatchdog.h"
 
 namespace {
 constexpr const char* HOSTNAME = "crosspoint";
@@ -118,12 +118,12 @@ void CalibreConnectActivity::loop() {
       LOG_DBG("CAL", "WARNING: %lu ms gap since last handleClient", timeSinceLastHandleClient);
     }
 
-    esp_task_wdt_reset();
+    resetTaskWatchdogIfSubscribed();
     constexpr int MAX_ITERATIONS = 80;
     for (int i = 0; i < MAX_ITERATIONS && webServer->isRunning(); i++) {
       webServer->handleClient();
       if ((i & 0x07) == 0x07) {
-        esp_task_wdt_reset();
+        resetTaskWatchdogIfSubscribed();
       }
       if ((i & 0x0F) == 0x0F) {
         yield();
@@ -209,12 +209,13 @@ void CalibreConnectActivity::render(RenderLock&&) {
     const std::string token = webServer ? webServer->getAdminToken() : "";
     const std::string serverUrl = appendAdminToken("http://" + connectedIP + "/", token);
     const int lineWidth = pageWidth - metrics.contentSidePadding * 2;
-    const std::string urlLine = renderer.truncatedText(SMALL_FONT_ID, (std::string("URL: ") + serverUrl).c_str(),
-                                                       lineWidth, EpdFontFamily::REGULAR);
+    const std::string urlLine = renderer.truncatedText(
+        SMALL_FONT_ID, (std::string(tr(STR_URL_PREFIX)) + serverUrl).c_str(), lineWidth, EpdFontFamily::REGULAR);
     renderer.drawText(SMALL_FONT_ID, metrics.contentSidePadding, y, urlLine.c_str());
     y += height;
     if (!token.empty()) {
-      renderer.drawText(SMALL_FONT_ID, metrics.contentSidePadding, y, (std::string("Token: ") + token).c_str());
+      renderer.drawText(SMALL_FONT_ID, metrics.contentSidePadding, y,
+                        (std::string(tr(STR_TOKEN_PREFIX)) + token).c_str());
       y += height;
     }
 
@@ -225,7 +226,7 @@ void CalibreConnectActivity::render(RenderLock&&) {
     if (lastProgressTotal > 0 && lastProgressReceived <= lastProgressTotal) {
       std::string label = tr(STR_CALIBRE_RECEIVING);
       if (!currentUploadName.empty()) {
-        label += ": " + currentUploadName;
+        label += currentUploadName;
         label = renderer.truncatedText(SMALL_FONT_ID, label.c_str(), pageWidth - metrics.contentSidePadding * 2,
                                        EpdFontFamily::REGULAR);
       }

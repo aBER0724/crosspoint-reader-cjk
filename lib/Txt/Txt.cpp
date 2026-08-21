@@ -42,7 +42,7 @@ std::string Txt::getTitle() const {
 
   // Remove .txt extension
   if (FsHelpers::hasTxtExtension(filename)) {
-    filename = filename.substr(0, filename.length() - 4);
+    filename.resize(filename.length() - 4);
   }
 
   return filename;
@@ -55,6 +55,21 @@ void Txt::setupCacheDir() const {
   if (!Storage.exists(cachePath.c_str())) {
     Storage.mkdir(cachePath.c_str());
   }
+}
+
+bool Txt::clearCache() const {
+  if (!Storage.exists(cachePath.c_str())) {
+    LOG_DBG("TXT", "Cache does not exist, no action needed");
+    return true;
+  }
+
+  if (!Storage.removeDir(cachePath.c_str())) {
+    LOG_ERR("TXT", "Failed to clear cache");
+    return false;
+  }
+
+  LOG_DBG("TXT", "Cache cleared successfully");
+  return true;
 }
 
 std::string Txt::findCoverImage() const {
