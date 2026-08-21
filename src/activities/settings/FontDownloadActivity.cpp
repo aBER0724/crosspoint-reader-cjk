@@ -224,7 +224,7 @@ bool FontDownloadActivity::fetchAndParseManifests() {
   std::vector<std::string> urls;
   urls.push_back(FONT_MANIFEST_URL);
   for (const auto& repo : FONT_REPO_STORE.getRepositories()) {
-    urls.push_back(assembleManifestUrl(repo));
+    urls.push_back(assembleRepositoryUrl(repo));
   }
 
   std::vector<ManifestFamily> mergedFamilies;
