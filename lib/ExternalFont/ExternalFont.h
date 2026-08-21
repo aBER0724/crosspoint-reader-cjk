@@ -188,6 +188,31 @@ class ExternalFont {
   // object and repeated heap allocation while keeping full glyph cache suspended.
   mutable uint8_t _metricsScratch[MAX_GLYPH_BYTES] = {};
 
+  // Small metrics-only cache for the layout path (getGlyphMetricsForLayout). The
+  // bitmap glyph cache holds only kGlyphCacheSize (128) entries and thrashes across
+  // pages during a partial-cache rebuild: each page touches ~250 unique CJK glyphs,
+  // so the LRU evicts before the next page re-requests them and every page re-reads
+  // the SD font atlas for glyphs it already measured (≈1.8 ms/read * hundreds per
+  // page = the 500-900 ms layout cost). Layout only consumes the 12-byte metrics,
+  // so a compact dedicated cache that survives across pages removes those re-reads
+  // without a second full bitmap cache. Lazily allocated with nothrow and adaptive
+  // sizing (128 -> 64 -> disabled) so a tight heap still gets a small cache
+  // instead of an allocation that succeeds but starves the incremental builder;
+  // freed on unload().
+  struct GlyphMetricsEntry {
+    uint32_t codepoint = 0;
+    ExternalGlyphMetrics metrics = {};
+  };
+  GlyphMetricsEntry* _metricsCache = nullptr;
+  uint16_t _metricsCapacity = 0;  // Current capacity (0 = disabled)
+  uint16_t _metricsCount = 0;
+  uint16_t _metricsCursor = 0;  // Round-robin replacement position
+  bool _metricsAllocationFailed = false;
+
+  bool ensureMetricsCache();
+  bool findMetricsInCache(uint32_t codepoint, ExternalGlyphMetrics* out) const;
+  void storeMetricsInCache(uint32_t codepoint, const ExternalGlyphMetrics& metrics);
+
   // Sequential read fast path - stores the absolute file offset expected for
   // the next read, so adjacent glyph records/bitmaps can skip seek().
   mutable uint32_t _lastReadOffset = 0;

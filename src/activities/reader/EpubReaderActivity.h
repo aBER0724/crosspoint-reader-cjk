@@ -99,6 +99,12 @@ class EpubReaderActivity final : public Activity {
   // Set when the lazy extension start failed, so loop() doesn't retry (and log) every
   // tick; the blocking extension in render() remains the fallback past the watermark.
   bool partialRebuildStartFailed = false;
+  // Idle SD-font glyph prefetch: the next page whose glyphs were prewarmed by
+  // runDeferredReaderWork(), and the font those glyphs belong to. Guards against
+  // re-prewarming the same page on every loop pass and against warming glyphs for
+  // a stale font id. -1 = nothing prefetched yet.
+  int lastPrefetchedNextPage = -1;
+  int lastPrefetchedFontId = -1;
 
   void renderContents(std::unique_ptr<Page> page, int orientedMarginTop, int orientedMarginRight,
                       int orientedMarginBottom, int orientedMarginLeft, const RenderLock& lock);
@@ -107,12 +113,25 @@ class EpubReaderActivity final : public Activity {
   // main-loop path use a fixed parser budget so a sparse page cannot monopolize
   // RenderLock while the parser searches for its next page boundary.
   static constexpr int BUILD_PAGES_PER_CHUNK = 1;
-  static constexpr int FOREGROUND_BUILD_PARSE_STEPS_PER_TICK = 1;
-  static constexpr size_t FOREGROUND_BUILD_PARSE_BYTES_PER_TICK = 256;
+  // Foreground pump used when a page turn (or jump) lands past a partial cache's
+  // watermark: build the requested page within the same render instead of drawing a
+  // dead fallback frame and waiting for the idle loop to catch up. Bounded so a
+  // distant target cannot monopolize RenderLock; a superseded turn cancels via the
+  // stale lock.
+  static constexpr int BUILD_PAGES_PER_PUMP = 2;
+  static constexpr int FOREGROUND_BUILD_PARSE_STEPS_PER_PUMP = 32;
+  static constexpr size_t FOREGROUND_BUILD_PARSE_BYTES_PER_PUMP = 1024;
+  static constexpr unsigned long FOREGROUND_BUILD_TIME_BUDGET_MS = 2000;
   static constexpr unsigned long FOREGROUND_BUILD_INTERVAL_MS = 10;
+  // Waiting/idle catch-up parse budgets. Larger than the old 256-byte tick so the
+  // fallback path (pump budget exhausted, waiting on loop()) lands the requested
+  // page in a handful of iterations instead of dozens; still bounded so a sparse
+  // page cannot hog input for long.
+  static constexpr int FOREGROUND_BUILD_PARSE_STEPS_PER_TICK = 4;
+  static constexpr size_t FOREGROUND_BUILD_PARSE_BYTES_PER_TICK = 1024;
   static constexpr int BACKGROUND_BUILD_PAGES_PER_TICK = 1;
-  static constexpr int BACKGROUND_BUILD_PARSE_STEPS_PER_TICK = 1;
-  static constexpr size_t BACKGROUND_BUILD_PARSE_BYTES_PER_TICK = 256;
+  static constexpr int BACKGROUND_BUILD_PARSE_STEPS_PER_TICK = 8;
+  static constexpr size_t BACKGROUND_BUILD_PARSE_BYTES_PER_TICK = 1024;
   static constexpr unsigned long BACKGROUND_BUILD_INTERVAL_MS = 200;
   static constexpr unsigned long IDLE_READER_WORK_DELAY_MS = 900;
 
@@ -123,13 +142,19 @@ class EpubReaderActivity final : public Activity {
   // background tick under heap pressure). The tick is deferrable work:
   // page-turn transients free up between turns and the build resumes; the render
   // path still builds the page it actually needs regardless of this floor.
-  static constexpr size_t BACKGROUND_BUILD_MIN_FREE_HEAP = 32 * 1024;
-  // Fragmentation floor for the same gate: a tick passed the free-heap floor at
-  // 34.7 KB free but the largest block was ~11 KB, and a parse allocation inside the
-  // tick aborted anyway. Free heap says how much memory exists; maxAlloc says whether
-  // any single allocation can actually have it. 16 KB also keeps the advance-table
-  // batch path (16 KB scratch) viable during builds.
-  static constexpr size_t BACKGROUND_BUILD_MIN_MAX_ALLOC = 16 * 1024;
+  // Free-heap floor for the background-build gate. The historical 32 KB floor
+  // permanently gates off the incremental rebuild of a partial cache: the rebuild's
+  // retained context plus the EFT bitmap glyph cache (33 KB) hold free heap around
+  // 19-22 KB, so the tick could never run while idle and the reader only caught up
+  // inside the foreground page-turn pump (hence the 3 s turns). The foreground pump
+  // already runs un-gated at this heap level without crashing, so 12 KB keeps a
+  // safety margin against parse-time OOM aborts while letting the rebuild actually
+  // proceed. A failed build is handled gracefully (resetSection + build error).
+  static constexpr size_t BACKGROUND_BUILD_MIN_FREE_HEAP = 12 * 1024;
+  // Fragmentation floor for the same gate: free heap can look fine while the
+  // largest block is too small for a parse allocation. Keep 8 KB available for
+  // page structures and foreground page loads while retaining the rebuild win.
+  static constexpr size_t BACKGROUND_BUILD_MIN_MAX_ALLOC = 8 * 1024;
   // Gate for a background build tick: true when the heap can take parse allocations.
   // Updates buildHeapPaused as a side effect.
   bool buildTickHeapGate();
@@ -215,6 +240,14 @@ class EpubReaderActivity final : public Activity {
   }
   bool isReaderActivity() const override { return true; }
   bool needsReaderFontMemory() const override { return true; }
+  // While the incremental build is running the reader must stay at full CPU speed:
+  // the device otherwise drops to LOW_POWER_FREQ (10 MHz) after 3 s of input idle,
+  // and the rebuild — gated to small ticks — crawls so slowly that every page turn
+  // lands past the watermark and falls into the foreground pump (the 3 s turn).
+  // Returning true here resets the main loop's inactivity timer and re-asserts
+  // setPowerSaving(false) every iteration, so the CPU stays at 160 MHz for the
+  // whole rebuild. Non-building idle still sleeps normally.
+  bool preventAutoSleep() override { return section && section->isBuilding(); }
   bool handleForcedRefresh() override {
     {
       RenderLock lock(*this);
