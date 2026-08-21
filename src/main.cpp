@@ -226,9 +226,8 @@ bool handleSerialTestInputCommand(const String& command) {
     gpio.readButtonAdc(group1, group2);
     const int powerPin = BoardConfig::ACTIVE.input.power;
     const int powerRaw = powerPin >= 0 ? digitalRead(powerPin) : -1;
-    logSerial.printf("TEST_INPUT:ADC:G1=%d,B1=%d,G2=%d,B2=%d,PIN=%d,PWR=%d,ACTIVE_HIGH=%d\n", group1.raw,
-                     group1.button, group2.raw, group2.button, powerPin, powerRaw,
-                     BoardConfig::ACTIVE.input.powerActiveHigh);
+    logSerial.printf("TEST_INPUT:ADC:G1=%d,B1=%d,G2=%d,B2=%d,PIN=%d,PWR=%d,ACTIVE_HIGH=%d\n", group1.raw, group1.button,
+                     group2.raw, group2.button, powerPin, powerRaw, BoardConfig::ACTIVE.input.powerActiveHigh);
     return true;
   }
   if (command == "INPUT:CLEAR") {

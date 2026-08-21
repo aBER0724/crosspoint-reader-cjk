@@ -526,9 +526,7 @@ void HomeActivity::render(RenderLock&& lock) {
   lastRenderedSelectorIndex = renderedSelectorIndex;
   fullRedrawRequired = false;
 
-  if (!firstRenderDone) {
-    firstRenderDone = true;
-  }
+  firstRenderDone = true;
 }
 
 void HomeActivity::onSelectBook(const std::string& path) {

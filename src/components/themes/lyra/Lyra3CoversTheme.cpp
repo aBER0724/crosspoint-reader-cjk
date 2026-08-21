@@ -36,7 +36,7 @@ CoverTitleLayout getCoverTitleLayout(const GfxRenderer& renderer, const RecentBo
   return layout;
 }
 
-void drawCoverTitle(GfxRenderer& renderer, int tileX, int tileY, const CoverTitleLayout& layout) {
+void drawCoverTitle(const GfxRenderer& renderer, int tileX, int tileY, const CoverTitleLayout& layout) {
   int currentY = tileY + Lyra3CoversMetrics::values.homeCoverHeight + hPaddingInSelection + 5;
   for (const auto& line : layout.lines) {
     renderer.drawText(SMALL_FONT_ID, tileX + hPaddingInSelection, currentY, line.c_str(), true);
@@ -44,7 +44,7 @@ void drawCoverTitle(GfxRenderer& renderer, int tileX, int tileY, const CoverTitl
   }
 }
 
-void drawSelection(GfxRenderer& renderer, int tileX, int tileY, int tileWidth, int titleHeight) {
+void drawSelection(const GfxRenderer& renderer, int tileX, int tileY, int tileWidth, int titleHeight) {
   renderer.fillRoundedRect(tileX, tileY, tileWidth, hPaddingInSelection, cornerRadius, true, true, false, false,
                            Color::LightGray);
   renderer.fillRectDither(tileX, tileY + hPaddingInSelection, hPaddingInSelection,
@@ -79,7 +79,7 @@ bool Lyra3CoversTheme::buildSelectionBuffers([[maybe_unused]] GfxRenderer& rende
   selectionBuffersUnavailable = true;
   return false;
 }
-bool Lyra3CoversTheme::restoreSelectionBuffer(GfxRenderer& renderer, const int selectorIndex) const {
+bool Lyra3CoversTheme::restoreSelectionBuffer(const GfxRenderer& renderer, const int selectorIndex) const {
   if (!selectionBuffersReady || !selectionBuffer || selectorIndex < 0 || selectorIndex >= selectionBufferCount) {
     return false;
   }
