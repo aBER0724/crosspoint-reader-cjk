@@ -5,6 +5,7 @@
 #include <Memory.h>
 #include <base64.h>
 
+#include <cstring>
 #include <functional>
 #include <string>
 
@@ -34,6 +35,8 @@ constexpr int HTTP_TX_BUF = 512;
 constexpr int HTTP_TIMEOUT_MS = 60000;
 constexpr size_t READ_CHUNK = 1024;
 constexpr int MAX_REDIRECTS = 5;
+constexpr const char* GITHUB_RELEASE_PREFIX = "https://github.com/";
+constexpr const char* RELEASE_DOWNLOAD_SEGMENT = "/releases/download/";
 
 struct Sink {
   std::function<bool(const uint8_t*, size_t)> write;  // returns false to abort the transfer
@@ -53,6 +56,11 @@ bool isRedirect(int status) {
   return status == 301 || status == 302 || status == 303 || status == 307 || status == 308;
 }
 
+bool isGitHubReleaseUrl(const std::string& url) {
+  return url.compare(0, strlen(GITHUB_RELEASE_PREFIX), GITHUB_RELEASE_PREFIX) == 0 &&
+         url.find(RELEASE_DOWNLOAD_SEGMENT, strlen(GITHUB_RELEASE_PREFIX)) != std::string::npos;
+}
+
 bool isCancelled(Sink& sink) {
   if (sink.cancel && sink.cancel()) return true;
   return sink.cancelFlag && *sink.cancelFlag;
@@ -62,11 +70,21 @@ bool isCancelled(Sink& sink) {
 HttpDownloader::DownloadError runGetWolf(const std::string& startUrl, const std::string& username,
                                          const std::string& password, Sink& sink) {
   std::string url = startUrl;
+  // TLS 1.2 is decided once and kept for the whole GitHub Release chain. The
+  // first hop (github.com) redirects to the asset CDN, and that second
+  // handshake must also stay pinned to TLS 1.2 or it would waste its one heap
+  // budget on a failed higher-version attempt. Each hop runs in its own
+  // SecureHttpClient (constructed on a loop-local stack frame) so the next
+  // handshake starts from a clean heap budget: one client holding two live
+  // TLS sessions starves the X4 (observed: handshake ok, then second-handshake
+  // timeout at free heap 5040).
+  const bool pinTls12 = isGitHubReleaseUrl(url);
 
   for (int hop = 0; hop <= MAX_REDIRECTS; ++hop) {
     freeink::SecureHttpClient http;
     http.setTimeout(HTTP_TIMEOUT_MS);
     http.setInsecure();
+    http.setTls12Only(pinTls12);
     if (!http.begin(url)) {
       LOG_ERR("HTTP", "wolfSSL bad URL: %s", url.c_str());
       return HttpDownloader::HTTP_ERROR;
@@ -81,7 +99,8 @@ HttpDownloader::DownloadError runGetWolf(const std::string& startUrl, const std:
       http.addHeader("Authorization", std::string("Basic ") + encoded.c_str());
     }
 
-    LOG_DBG("HTTP", "wolfSSL GET: %s", url.c_str());
+    LOG_DBG("HTTP", "wolfSSL GET (hop %d/%d, tls1.2=%d): %s (free %u, max alloc %u)", hop, MAX_REDIRECTS, (int)pinTls12,
+            url.c_str(), (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMaxAllocHeap());
     resetTaskWatchdogIfSubscribed();
     const int status = http.GET(
         [&http, &sink](const uint8_t* data, size_t len) {
@@ -99,7 +118,8 @@ HttpDownloader::DownloadError runGetWolf(const std::string& startUrl, const std:
 
     if (http.aborted()) return HttpDownloader::ABORTED;
     if (status < 0) {
-      LOG_ERR("HTTP", "wolfSSL request failed: %s", url.c_str());
+      LOG_ERR("HTTP", "wolfSSL request failed at %s (hop %d, tls1.2=%d): %s", http.getFailureStage(), hop,
+              (int)pinTls12, url.c_str());
       return HttpDownloader::HTTP_ERROR;
     }
     if (isRedirect(status)) {
@@ -108,7 +128,7 @@ HttpDownloader::DownloadError runGetWolf(const std::string& startUrl, const std:
         LOG_ERR("HTTP", "wolfSSL bad redirect: %d", status);
         return HttpDownloader::HTTP_ERROR;
       }
-      continue;
+      continue;  // next hop; this client (and its TLS heap) is released on scope exit
     }
     if (status != 200) {
       LOG_ERR("HTTP", "wolfSSL unexpected status: %d", status);
@@ -125,7 +145,7 @@ HttpDownloader::DownloadError runGetWolf(const std::string& startUrl, const std:
     }
     return HttpDownloader::OK;
   }
-  LOG_ERR("HTTP", "too many redirects");
+  LOG_ERR("HTTP", "too many redirect hops");
   return HttpDownloader::HTTP_ERROR;
 }
 #endif
