@@ -84,12 +84,15 @@ class ManifestMetadataTest(unittest.TestCase):
         version = re.search(r"#define FONTS_MANIFEST_VERSION\s+(\d+)", header)
         self.assertIsNotNone(version)
         self.assertEqual(int(version.group(1)), self.module.FONTS_MANIFEST_VERSION)
-        self.assertIn('!fileObj["sha256"].is<const char*>()', source)
-        self.assertIn("parseSha256(fileObj[\"sha256\"].as<const char*>(), file.sha256)", source)
-        self.assertIn("DeserializationOption::Filter(filter)", source)
+        # Canonical v2 manifest: sha256 is REQUIRED per file — the streaming
+        # tokenizer rejects any file entry that lacks it (the legacy ArduinoJson
+        # parse allowed crc32-only entries; the OOM-safe rewrite does not).
+        self.assertIn("parseSha256(sha.c_str(), file.sha256)", source)
+        self.assertIn("fileHasSha", source)
+        self.assertIn("!fileHasName || !fileHasSize || !fileHasSha", source)
         self.assertIn("mbedtls_sha256_update", source)
         self.assertIn("actualSha256 != file.sha256", source)
-        self.assertNotIn('fileObj["crc32"]', source)
+        self.assertNotIn("crc32", source)
         self.assertNotIn("computeFileCrc32", source)
 
 
