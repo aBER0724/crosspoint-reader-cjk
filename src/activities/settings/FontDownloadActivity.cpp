@@ -32,7 +32,7 @@
 #include "util/TaskWatchdog.h"
 
 namespace {
-constexpr size_t MAX_MANIFEST_BYTES = 32 * 1024;
+constexpr size_t MAX_MANIFEST_BYTES = 64 * 1024;
 constexpr size_t MAX_MANIFEST_FAMILIES = 48;
 constexpr size_t MAX_FILES_PER_FAMILY = 32;
 constexpr uint64_t STORAGE_RESERVE_BYTES = 8ULL * 1024ULL * 1024ULL;
@@ -92,6 +92,422 @@ bool isValidBaseUrl(const std::string& url) {
   const size_t hostStart = isHttps ? 8 : 7;
   const size_t pathStart = url.find('/', hostStart);
   return pathStart != std::string::npos && pathStart > hostStart && url.find("..", pathStart) == std::string::npos;
+}
+
+// --- Streaming fonts.json parser -------------------------------------------
+//
+// The catalog is parsed with a tiny schema-tuned tokenizer instead of
+// ArduinoJson. Deserializing a 27-family x 7-file manifest materializes ~35 KB
+// of JSON pools in RAM; measured on device, only ~19 KB of heap was left right
+// after deserializeJson, and the family-vector construction then aborted with
+// std::bad_alloc. Streaming keeps the transient cost to a 512-byte read buffer
+// plus the parsed std::vector<ManifestFamily> (the exact long-term object the
+// caller needs anyway).
+
+bool parsePointSizeText(const char* filename, const char* familyName, uint8_t& pointSize) {
+  if (!filename || !familyName) return false;
+
+  const std::string name(filename);
+  const std::string prefix = std::string(familyName) + "_";
+  static constexpr const char* EXTENSION = ".cpfont";
+  const size_t extensionLength = strlen(EXTENSION);
+  if (name.compare(0, prefix.size(), prefix) != 0 || name.size() <= prefix.size() + extensionLength ||
+      name.compare(name.size() - extensionLength, extensionLength, EXTENSION) != 0) {
+    return false;
+  }
+
+  const std::string pointSizeText = name.substr(prefix.size(), name.size() - prefix.size() - extensionLength);
+  char* end = nullptr;
+  const unsigned long parsed = std::strtoul(pointSizeText.c_str(), &end, 10);
+  if (!end || *end != '\0' || parsed == 0 || parsed > UINT8_MAX) return false;
+
+  pointSize = static_cast<uint8_t>(parsed);
+  return true;
+}
+
+// Buffered char reader over HalFile with one-char pushback and whitespace skip.
+class Reader {
+ public:
+  explicit Reader(HalFile& file) : file_(file) {}
+
+  // Next non-whitespace char, or -1 at EOF.
+  int next() {
+    for (;;) {
+      const int c = take();
+      if (c < 0) return -1;
+      if (c == ' ' || c == '\t' || c == '\n' || c == '\r') continue;
+      return c;
+    }
+  }
+
+  int take() {
+    if (lookahead_ >= 0) {
+      const int c = lookahead_;
+      lookahead_ = -1;
+      return c;
+    }
+    if (pos_ >= n_) refill();
+    if (n_ == 0) return -1;
+    return static_cast<unsigned char>(buf_[pos_++]);
+  }
+
+  void putback(int c) { lookahead_ = c; }
+
+ private:
+  void refill() {
+    pos_ = 0;
+    n_ = static_cast<int>(file_.read(buf_, sizeof(buf_)));
+    if (n_ < 0) n_ = 0;
+  }
+
+  HalFile& file_;
+  char buf_[512];
+  int n_ = 0;
+  int pos_ = 0;
+  int lookahead_ = -1;
+};
+
+// Reads a string body. The caller must already have consumed the opening `"`
+// (e.g. from readString or the key-position check).
+bool readStringBody(Reader& r, std::string& out, size_t maxLen) {
+  out.clear();
+  for (;;) {
+    const int c = r.take();
+    if (c == '"') return true;
+    if (c < 0x20) return false;  // EOF or control character inside string
+    if (c != '\\') {
+      out.push_back(static_cast<char>(c));
+    } else {
+      const int e = r.take();
+      if (e < 0) return false;
+      switch (e) {
+        case '"':
+          out.push_back('"');
+          break;
+        case '\\':
+          out.push_back('\\');
+          break;
+        case '/':
+          out.push_back('/');
+          break;
+        case 'b':
+          out.push_back('\b');
+          break;
+        case 'f':
+          out.push_back('\f');
+          break;
+        case 'n':
+          out.push_back('\n');
+          break;
+        case 'r':
+          out.push_back('\r');
+          break;
+        case 't':
+          out.push_back('\t');
+          break;
+        case 'u': {
+          uint32_t codepoint = 0;
+          for (int i = 0; i < 4; ++i) {
+            const int h = r.take();
+            const int v = (h >= '0' && h <= '9')   ? (h - '0')
+                          : (h >= 'a' && h <= 'f') ? (h - 'a' + 10)
+                          : (h >= 'A' && h <= 'F') ? (h - 'A' + 10)
+                                                   : -1;
+            if (v < 0) return false;
+            codepoint = (codepoint << 4) | static_cast<uint32_t>(v);
+          }
+          if (codepoint < 0x80) {
+            out.push_back(static_cast<char>(codepoint));
+          } else if (codepoint < 0x800) {
+            out.push_back(static_cast<char>(0xC0 | (codepoint >> 6)));
+            out.push_back(static_cast<char>(0x80 | (codepoint & 0x3F)));
+          } else {
+            out.push_back(static_cast<char>(0xE0 | (codepoint >> 12)));
+            out.push_back(static_cast<char>(0x80 | ((codepoint >> 6) & 0x3F)));
+            out.push_back(static_cast<char>(0x80 | (codepoint & 0x3F)));
+          }
+          break;
+        }
+        default:
+          return false;
+      }
+    }
+    if (out.size() > maxLen) return false;
+  }
+}
+
+// Reads a JSON string, skipping whitespace up to the opening quote.
+bool readString(Reader& r, std::string& out, size_t maxLen) {
+  if (r.next() != '"') return false;
+  return readStringBody(r, out, maxLen);
+}
+
+bool readUInt64(Reader& r, uint64_t& out) {
+  const int c = r.next();
+  if (c < '0' || c > '9') return false;
+  out = 0;
+  int d = c;
+  while (d >= '0' && d <= '9') {
+    out = out * 10 + static_cast<uint64_t>(d - '0');
+    d = r.take();
+  }
+  r.putback(d);  // terminator (or -1) does not belong to the number
+  return true;
+}
+
+// Skips an arbitrary JSON value (unknown keys, e.g. sourceUrl/styles).
+bool skipValue(Reader& r) {
+  const int c = r.next();
+  if (c < 0) return false;
+  if (c == '"') {
+    std::string tmp;
+    return readStringBody(r, tmp, 1u << 20);
+  }
+  if (c == '{') {
+    for (;;) {
+      const int k = r.next();
+      if (k == '}') return true;
+      if (k != '"') return false;
+      std::string tmp;
+      if (!readStringBody(r, tmp, 1u << 20) || r.next() != ':') return false;
+      if (!skipValue(r)) return false;
+      const int sep = r.next();
+      if (sep == '}') return true;
+      if (sep != ',') return false;
+    }
+  }
+  if (c == '[') {
+    for (;;) {
+      const int e = r.next();
+      if (e == ']') return true;
+      r.putback(e);
+      if (!skipValue(r)) return false;
+      const int sep = r.next();
+      if (sep == ']') return true;
+      if (sep != ',') return false;
+    }
+  }
+  // Scalar (number / true / false / null): consume until a JSON delimiter.
+  for (;;) {
+    const int d = r.take();
+    if (d < 0 || d == ',' || d == '}' || d == ']' || d == ' ' || d == '\t' || d == '\n' || d == '\r') {
+      r.putback(d);
+      return true;
+    }
+  }
+}
+
+enum class ManifestParseStatus : uint8_t { Invalid = 0, Ok, Unsupported };
+
+struct ManifestParseResult {
+  ManifestParseStatus status = ManifestParseStatus::Invalid;
+  std::string baseUrl;
+  std::string updatedAt;
+  std::vector<ManifestFamily> families;
+};
+
+ManifestParseResult parseManifest(HalFile& file) {
+  ManifestParseResult result;
+  Reader reader(file);
+
+  if (reader.next() != '{') return result;
+
+  // Reserve the full allowed family count up-front so the std::vector never
+  // reallocates (avoiding doubling spikes that could OOM under -fno-exceptions,
+  // where an allocation failure aborts the device). Families beyond this limit
+  // are rejected later.
+  result.families.reserve(MAX_MANIFEST_FAMILIES);
+
+  bool seenVersion = false;
+  bool seenBaseUrl = false;
+  bool seenFamilies = false;
+  int version = 0;
+
+  // Top-level object members, accepted in any order.
+  for (;;) {
+    const int keyChar = reader.next();
+    if (keyChar == '}') break;
+    if (keyChar != '"') return result;
+    std::string key;
+    if (!readStringBody(reader, key, 64) || reader.next() != ':') return result;
+
+    if (key == "version") {
+      if (seenVersion) return result;
+      uint64_t num = 0;
+      if (!readUInt64(reader, num) || num > 0x7FFFFFFFULL) return result;
+      version = static_cast<int>(num);
+      seenVersion = true;
+    } else if (key == "baseUrl") {
+      if (seenBaseUrl || !readString(reader, result.baseUrl, MAX_BASE_URL_LENGTH)) return result;
+      seenBaseUrl = true;
+    } else if (key == "updatedAt") {
+      if (!result.updatedAt.empty() || !readString(reader, result.updatedAt, 64)) return result;
+    } else if (key == "families") {
+      if (seenFamilies || reader.next() != '[') return result;
+      seenFamilies = true;
+
+      for (;;) {
+        const int elem = reader.next();
+        if (elem == ']') break;
+        if (elem != '{') return result;
+
+        ManifestFamily family;
+        bool familyHasName = false;
+        bool familyHasFiles = false;
+        for (;;) {
+          const int fieldChar = reader.next();
+          if (fieldChar == '}') break;
+          if (fieldChar != '"') return result;
+          std::string field;
+          if (!readStringBody(reader, field, 64) || reader.next() != ':') return result;
+
+          if (field == "name") {
+            if (familyHasName || !readString(reader, family.name, MAX_DESCRIPTION_LENGTH)) return result;
+            familyHasName = true;
+          } else if (field == "description") {
+            if (!family.description.empty() || !readString(reader, family.description, MAX_DESCRIPTION_LENGTH))
+              return result;
+          } else if (field == "files") {
+            if (familyHasFiles || reader.next() != '[') return result;
+            familyHasFiles = true;
+            if (!familyHasName) return result;  // parsePointSize needs the family name
+
+            for (;;) {
+              const int fe = reader.next();
+              if (fe == ']') break;
+              if (fe != '{') return result;
+
+              ManifestFile file;
+              std::string fileName;
+              bool fileHasName = false;
+              bool fileHasSize = false;
+              bool fileHasSha = false;
+              for (;;) {
+                const int ffieldChar = reader.next();
+                if (ffieldChar == '}') break;
+                if (ffieldChar != '"') return result;
+                std::string ffield;
+                if (!readStringBody(reader, ffield, 64) || reader.next() != ':') return result;
+
+                if (ffield == "name") {
+                  if (fileHasName || !readString(reader, fileName, 160)) return result;
+                  fileHasName = true;
+                } else if (ffield == "size") {
+                  if (fileHasSize) return result;
+                  uint64_t num = 0;
+                  if (!readUInt64(reader, num) || num > 0xFFFFFFFFULL) return result;
+                  file.size = static_cast<size_t>(num);
+                  fileHasSize = true;
+                } else if (ffield == "sha256") {
+                  if (fileHasSha) return result;
+                  std::string sha;
+                  if (!readString(reader, sha, SHA256_BYTES * 2)) return result;
+                  if (!parseSha256(sha.c_str(), file.sha256)) return result;
+                  fileHasSha = true;
+                } else {
+                  if (!skipValue(reader)) return result;
+                }
+
+                const int sep = reader.next();
+                if (sep == '}') break;
+                if (sep != ',') return result;
+              }
+
+              if (!fileHasName || !fileHasSize || !fileHasSha || family.files.size() >= MAX_FILES_PER_FAMILY)
+                return result;
+
+              file.fingerprint = fingerprintBytes(fileName.data(), fileName.size());
+              file.fingerprint = fingerprintBytes(&file.size, sizeof(file.size), file.fingerprint);
+              file.fingerprint = fingerprintBytes(file.sha256.data(), file.sha256.size(), file.fingerprint);
+              if (!parsePointSizeText(fileName.c_str(), family.name.c_str(), file.pointSize)) {
+                LOG_ERR("FONT", "Font filename does not match family/size convention: %s", fileName.c_str());
+                return result;
+              }
+              if (!FontInstaller::isValidCpfontFilename(fileName.c_str()) || file.size == 0 ||
+                  file.size > MAX_FONT_FILE_BYTES ||
+                  file.size > std::numeric_limits<size_t>::max() - family.totalSize) {
+                LOG_ERR("FONT", "Invalid file entry in manifest: %s", fileName.c_str());
+                return result;
+              }
+              for (const auto& existing : family.files) {
+                if (existing.pointSize == file.pointSize) {
+                  LOG_ERR("FONT", "Duplicate point size in family %s: %u", family.name.c_str(), file.pointSize);
+                  return result;
+                }
+              }
+              char path[160];
+              if (!FontInstaller::buildFontPath(family.name.c_str(), fileName.c_str(), path, sizeof(path)))
+                return result;
+
+              family.totalSize += file.size;
+              family.files.push_back(std::move(file));
+
+              const int fsep = reader.next();
+              if (fsep == ']') break;
+              if (fsep != ',') return result;
+            }
+          } else {
+            if (!skipValue(reader)) return result;
+          }
+
+          const int sep = reader.next();
+          if (sep == '}') break;
+          if (sep != ',') return result;
+        }
+
+        if (!familyHasName || !familyHasFiles) return result;
+        const size_t fileCount = family.files.size();
+        if (fileCount == 0 || fileCount > MAX_FILES_PER_FAMILY) return result;
+
+        if (!FontInstaller::isValidFamilyName(family.name.c_str())) {
+          LOG_ERR("FONT", "Invalid family name in manifest");
+          return result;
+        }
+        for (const auto& existing : result.families) {
+          if (existing.name == family.name) {
+            LOG_ERR("FONT", "Duplicate family in manifest: %s", family.name.c_str());
+            return result;
+          }
+        }
+
+        std::sort(family.files.begin(), family.files.end(),
+                  [](const ManifestFile& a, const ManifestFile& b) { return a.pointSize < b.pointSize; });
+
+        uint32_t fingerprint = 2166136261U;
+        for (const auto& file : family.files) {
+          const std::string fileName = manifestFileName(family, file);
+          fingerprint = fingerprintBytes(fileName.data(), fileName.size(), fingerprint);
+          fingerprint = fingerprintBytes(&file.size, sizeof(file.size), fingerprint);
+          fingerprint = fingerprintBytes(file.sha256.data(), file.sha256.size(), fingerprint);
+        }
+        family.fingerprint = fingerprint;
+        result.families.push_back(std::move(family));
+        if (result.families.size() > MAX_MANIFEST_FAMILIES) {
+          LOG_ERR("FONT", "Too many font families");
+          return result;
+        }
+
+        const int sep = reader.next();
+        if (sep == ']') break;
+        if (sep != ',') return result;
+      }
+    } else {
+      if (!skipValue(reader)) return result;
+    }
+
+    const int sep = reader.next();
+    if (sep == '}') break;
+    if (sep != ',') return result;
+  }
+
+  if (!seenVersion || version != FONTS_MANIFEST_VERSION) {
+    result.status = ManifestParseStatus::Unsupported;
+    return result;
+  }
+  if (seenFamilies && seenBaseUrl && isValidBaseUrl(result.baseUrl)) {
+    result.status = ManifestParseStatus::Ok;
+  }
+  return result;
 }
 }  // namespace
 
@@ -182,24 +598,7 @@ void FontDownloadActivity::onWifiSelectionComplete(const bool success) {
 
 // --- Manifest fetching ---
 bool FontDownloadActivity::parsePointSize(const char* filename, const char* familyName, uint8_t& pointSize) {
-  if (!filename || !familyName) return false;
-
-  const std::string name(filename);
-  const std::string prefix = std::string(familyName) + "_";
-  static constexpr const char* EXTENSION = ".cpfont";
-  const size_t extensionLength = strlen(EXTENSION);
-  if (name.compare(0, prefix.size(), prefix) != 0 || name.size() <= prefix.size() + extensionLength ||
-      name.compare(name.size() - extensionLength, extensionLength, EXTENSION) != 0) {
-    return false;
-  }
-
-  const std::string pointSizeText = name.substr(prefix.size(), name.size() - prefix.size() - extensionLength);
-  char* end = nullptr;
-  const unsigned long parsed = std::strtoul(pointSizeText.c_str(), &end, 10);
-  if (!end || *end != '\0' || parsed == 0 || parsed > UINT8_MAX) return false;
-
-  pointSize = static_cast<uint8_t>(parsed);
-  return true;
+  return parsePointSizeText(filename, familyName, pointSize);
 }
 
 int FontDownloadActivity::defaultPreviewFileIndex(const ManifestFamily& family) const {
@@ -315,177 +714,33 @@ bool FontDownloadActivity::fetchAndParseOneManifest(const std::string& url, std:
     return false;
   }
 
-  JsonDocument filter;
-  filter["version"] = true;
-  filter["baseUrl"] = true;
-  filter["updatedAt"] = true;
-  filter["families"][0]["name"] = true;
-  filter["families"][0]["description"] = true;
-  filter["families"][0]["files"][0]["name"] = true;
-  filter["families"][0]["files"][0]["size"] = true;
-  filter["families"][0]["files"][0]["sha256"] = true;
-
-  JsonDocument doc;
-  const DeserializationError err = deserializeJson(doc, manifestFile, DeserializationOption::Filter(filter));
+  // Parse the catalog with the streaming tokenizer instead of ArduinoJson.
+  // ArduinoJson's memory pools retain ~35 KB of RAM for this manifest (27
+  // families x 7 files); on device this left only ~19 KB free right after
+  // deserializeJson and the C++ family-vector construction then aborted with
+  // std::bad_alloc. Streaming keeps the transient cost to a 512-byte read
+  // buffer on top of the parsed std::vector<ManifestFamily> the caller needs.
+  ManifestParseResult parseResult = parseManifest(manifestFile);
   manifestFile.close();
   Storage.remove(MANIFEST_TMP);
 
-  if (err) {
-    LOG_ERR("FONT", "Manifest parse error: %s", err.c_str());
-    errorMessage_ = tr(STR_FONT_MANIFEST_INVALID);
-    return false;
-  }
+  LOG_DBG("FONT", "manifest parsed families=%u free=%u max=%u", (unsigned)parseResult.families.size(),
+          (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMaxAllocHeap());
 
-  const int version = doc["version"] | 0;
-  if (version != FONTS_MANIFEST_VERSION) {
-    LOG_ERR("FONT", "Unsupported manifest version: %d", version);
+  if (parseResult.status == ManifestParseStatus::Unsupported) {
+    LOG_ERR("FONT", "Unsupported manifest version");
     errorMessage_ = tr(STR_FONT_MANIFEST_UNSUPPORTED);
     return false;
   }
-
-  if (!doc["baseUrl"].is<const char*>() || !doc["families"].is<JsonArray>()) {
+  if (parseResult.status != ManifestParseStatus::Ok) {
+    LOG_ERR("FONT", "Manifest parse error");
     errorMessage_ = tr(STR_FONT_MANIFEST_INVALID);
     return false;
   }
 
-  std::string parsedBaseUrl = doc["baseUrl"].as<const char*>();
-  if (!isValidBaseUrl(parsedBaseUrl)) {
-    LOG_ERR("FONT", "Invalid manifest base URL");
-    errorMessage_ = tr(STR_FONT_MANIFEST_INVALID);
-    return false;
-  }
-
-  // updatedAt is an optional top-level timestamp (ISO-8601). Older manifests
-  // without it are still valid; a present-but-malformed value is rejected.
-  outUpdatedAt.clear();
-  if (!doc["updatedAt"].isNull()) {
-    if (!doc["updatedAt"].is<const char*>()) {
-      errorMessage_ = tr(STR_FONT_MANIFEST_INVALID);
-      return false;
-    }
-    outUpdatedAt = doc["updatedAt"].as<const char*>();
-  }
-
-  JsonArray familiesArr = doc["families"].as<JsonArray>();
-  if (familiesArr.size() > MAX_MANIFEST_FAMILIES) {
-    LOG_ERR("FONT", "Too many font families: %zu", familiesArr.size());
-    errorMessage_ = tr(STR_FONT_MANIFEST_INVALID);
-    return false;
-  }
-
-  std::vector<ManifestFamily> parsedFamilies;
-  parsedFamilies.reserve(familiesArr.size());
-
-  for (JsonVariant familyValue : familiesArr) {
-    if (!familyValue.is<JsonObject>()) {
-      errorMessage_ = tr(STR_FONT_MANIFEST_INVALID);
-      return false;
-    }
-    JsonObject fObj = familyValue.as<JsonObject>();
-    if (!fObj["name"].is<const char*>() || !fObj["files"].is<JsonArray>()) {
-      errorMessage_ = tr(STR_FONT_MANIFEST_INVALID);
-      return false;
-    }
-
-    ManifestFamily family;
-    family.name = fObj["name"].as<const char*>();
-    if (!FontInstaller::isValidFamilyName(family.name.c_str())) {
-      LOG_ERR("FONT", "Invalid family name in manifest");
-      errorMessage_ = tr(STR_FONT_MANIFEST_INVALID);
-      return false;
-    }
-    for (const auto& existing : parsedFamilies) {
-      if (existing.name == family.name) {
-        LOG_ERR("FONT", "Duplicate family in manifest: %s", family.name.c_str());
-        errorMessage_ = tr(STR_FONT_MANIFEST_INVALID);
-        return false;
-      }
-    }
-
-    if (!fObj["description"].isNull()) {
-      if (!fObj["description"].is<const char*>()) {
-        errorMessage_ = tr(STR_FONT_MANIFEST_INVALID);
-        return false;
-      }
-      family.description = fObj["description"].as<const char*>();
-      if (family.description.size() > MAX_DESCRIPTION_LENGTH) {
-        errorMessage_ = tr(STR_FONT_MANIFEST_INVALID);
-        return false;
-      }
-    }
-
-    JsonArray files = fObj["files"].as<JsonArray>();
-    if (files.size() == 0 || files.size() > MAX_FILES_PER_FAMILY) {
-      errorMessage_ = tr(STR_FONT_MANIFEST_INVALID);
-      return false;
-    }
-    family.files.reserve(files.size());
-
-    for (JsonVariant fileValue : files) {
-      if (!fileValue.is<JsonObject>()) {
-        errorMessage_ = tr(STR_FONT_MANIFEST_INVALID);
-        return false;
-      }
-      JsonObject fileObj = fileValue.as<JsonObject>();
-      if (!fileObj["name"].is<const char*>() || !fileObj["size"].is<size_t>() || !fileObj["sha256"].is<const char*>()) {
-        errorMessage_ = tr(STR_FONT_MANIFEST_INVALID);
-        return false;
-      }
-
-      const char* fileName = fileObj["name"].as<const char*>();
-      ManifestFile file;
-      file.size = fileObj["size"].as<size_t>();
-      if (!parseSha256(fileObj["sha256"].as<const char*>(), file.sha256)) {
-        LOG_ERR("FONT", "Invalid SHA-256 in manifest: %s", fileName);
-        errorMessage_ = tr(STR_FONT_MANIFEST_INVALID);
-        return false;
-      }
-      file.fingerprint = fingerprintBytes(fileName, strlen(fileName));
-      file.fingerprint = fingerprintBytes(&file.size, sizeof(file.size), file.fingerprint);
-      file.fingerprint = fingerprintBytes(file.sha256.data(), file.sha256.size(), file.fingerprint);
-      if (!parsePointSize(fileName, family.name.c_str(), file.pointSize)) {
-        LOG_ERR("FONT", "Font filename does not match family/size convention: %s", fileName);
-        errorMessage_ = tr(STR_FONT_MANIFEST_INVALID);
-        return false;
-      }
-      if (!FontInstaller::isValidCpfontFilename(fileName) || file.size == 0 || file.size > MAX_FONT_FILE_BYTES ||
-          file.size > std::numeric_limits<size_t>::max() - family.totalSize) {
-        LOG_ERR("FONT", "Invalid file entry in manifest: %s", fileName);
-        errorMessage_ = tr(STR_FONT_MANIFEST_INVALID);
-        return false;
-      }
-      for (const auto& existing : family.files) {
-        if (existing.pointSize == file.pointSize) {
-          LOG_ERR("FONT", "Duplicate point size in family %s: %u", family.name.c_str(), file.pointSize);
-          errorMessage_ = tr(STR_FONT_MANIFEST_INVALID);
-          return false;
-        }
-      }
-      char path[160];
-      if (!FontInstaller::buildFontPath(family.name.c_str(), fileName, path, sizeof(path))) {
-        errorMessage_ = tr(STR_FONT_MANIFEST_INVALID);
-        return false;
-      }
-
-      family.totalSize += file.size;
-      family.files.push_back(std::move(file));
-    }
-    std::sort(family.files.begin(), family.files.end(),
-              [](const ManifestFile& a, const ManifestFile& b) { return a.pointSize < b.pointSize; });
-
-    uint32_t fingerprint = 2166136261U;
-    for (const auto& file : family.files) {
-      const std::string fileName = manifestFileName(family, file);
-      fingerprint = fingerprintBytes(fileName.data(), fileName.size(), fingerprint);
-      fingerprint = fingerprintBytes(&file.size, sizeof(file.size), fingerprint);
-      fingerprint = fingerprintBytes(file.sha256.data(), file.sha256.size(), fingerprint);
-    }
-    family.fingerprint = fingerprint;
-    parsedFamilies.push_back(std::move(family));
-  }
-
-  outBaseUrl = std::move(parsedBaseUrl);
-  outFamilies = std::move(parsedFamilies);
+  outBaseUrl = std::move(parseResult.baseUrl);
+  outUpdatedAt = std::move(parseResult.updatedAt);
+  outFamilies = std::move(parseResult.families);
   return true;
 }
 
