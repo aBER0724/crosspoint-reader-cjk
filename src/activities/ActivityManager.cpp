@@ -19,6 +19,7 @@
 #include "network/CrossPointWebServerActivity.h"
 #include "reader/EpubReaderUtils.h"
 #include "reader/ReaderActivity.h"
+#include "settings/FontDownloadActivity.h"
 #include "settings/OpdsServerListActivity.h"
 #include "settings/SettingsActivity.h"
 #include "util/FullScreenMessageActivity.h"
@@ -380,6 +381,10 @@ void ActivityManager::goToBrowser() {
 void ActivityManager::goToReader(std::string path) {
   LOG_DBG("ACT", "goToReader requested: %s", path.c_str());
   replaceActivity(std::make_unique<ReaderActivity>(renderer, mappedInput, std::move(path)));
+}
+
+void ActivityManager::goToFontDownload() {
+  replaceActivity(std::make_unique<FontDownloadActivity>(renderer, mappedInput));
 }
 
 void ActivityManager::goToSleep(bool fromTimeout) {

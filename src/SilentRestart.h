@@ -6,3 +6,4 @@
 
 void silentRestart();          // home screen
 void silentRestartToReader();  // currently-open EPUB (APP_STATE.openEpubPath)
+void silentRestartToFonts();   // font download activity (refetch manifest after defrag)

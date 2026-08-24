@@ -161,6 +161,19 @@ void FontDownloadActivity::onWifiSelectionComplete(const bool success) {
   }
   requestUpdateAndWait();
 
+  // A TLS handshake against GitHub needs a roughly contiguous ~20 KB with
+  // headroom on top of the released caches. Coming out of a long navigation
+  // chain (Home -> Settings -> ...) the heap is fragmented enough that the
+  // manifest fetch fails with wolfSSL -125 (MEMORY_E). A silent restart
+  // defrags the heap and resumes straight back into this activity, where the
+  // fetch then succeeds with a clean ~130 KB arena.
+  if (!heapSufficientForNetworkTransfer()) {
+    LOG_DBG("FONT", "Heap too fragmented for manifest fetch: free=%d max=%d; silent-restarting", ESP.getFreeHeap(),
+            ESP.getMaxAllocHeap());
+    silentRestartToFonts();
+    return;
+  }
+
   if (!fetchAndParseManifests()) {
     if (cancelRequested_) {
       finish();
@@ -178,6 +191,9 @@ void FontDownloadActivity::onWifiSelectionComplete(const bool success) {
     state_ = FAMILY_LIST;
     selectedIndex_ = 0;
   }
+  LOG_DBG("FONT", "Manifest complete: families=%u free=%u max=%u firstFamily='%s'",
+          static_cast<unsigned>(families_.size()), ESP.getFreeHeap(), ESP.getMaxAllocHeap(),
+          families_.empty() ? "" : families_[0].name.c_str());
 }
 
 // --- Manifest fetching ---
@@ -792,6 +808,15 @@ void FontDownloadActivity::returnToFamilyList() {
   closePreview();
   state_ = FAMILY_LIST;
   errorAction_ = ErrorAction::None;
+  // Rendering the 27-family list needs the UI glyph caches rebuilt plus row
+  // buffers; right after a preview the heap is at its most fragmented (~3 KB
+  // max alloc). Restart instead of aborting on an allocation failure.
+  if (ESP.getFreeHeap() < 16 * 1024 || ESP.getMaxAllocHeap() < 8 * 1024) {
+    LOG_DBG("FONT", "Heap too fragmented to draw family list after preview: free=%d max=%d; silent-restarting",
+            ESP.getFreeHeap(), ESP.getMaxAllocHeap());
+    silentRestartToFonts();
+    return;
+  }
 }
 
 void FontDownloadActivity::downloadPreview(int familyIndex, int fileIndex) {
@@ -802,11 +827,29 @@ void FontDownloadActivity::downloadPreview(int familyIndex, int fileIndex) {
   ManifestFamily family = families_[familyIndex];
   if (fileIndex < 0 || fileIndex >= static_cast<int>(family.files.size())) return;
   const auto& file = family.files[fileIndex];
+  LOG_DBG("FONT", "DOWNLOAD_PREVIEW: family=%d name='%s' file=%d pt=%u free=%u max=%u", familyIndex,
+          family.name.c_str(), fileIndex, static_cast<unsigned>(file.pointSize), ESP.getFreeHeap(),
+          ESP.getMaxAllocHeap());
   const std::string fileName = manifestFileName(family, file);
   const bool hadPreview = previewFontId_ != 0;
   const int previousFamilyIndex = activePreviewFamilyIndex_;
   const int previousFileIndex = activePreviewFileIndex_;
-
+  // Drop any on-screen preview BEFORE rendering the DOWNLOADING_PREVIEW
+  // screen: keeping its glyph data (~14 KB worth of group buffers) resident
+  // while the reader UI font is (re)loaded would exhaust max-alloc and
+  // abort the MCU (BMP coverage allocation failure).
+  closePreview();
+  // Safety net: rendering this screen must (re)load the reader UI font; a
+  // heavily fragmented heap here previously aborted the device. The preview
+  // glyphs are gone at this point (closePreview above), so this only fires
+  // when the whole UI cache is starved; calibrate below the cold-boot
+  // baseline (free ~14.5 KB / max ~5 KB).
+  if (ESP.getFreeHeap() < 9 * 1024 || ESP.getMaxAllocHeap() < 3 * 1024) {
+    LOG_DBG("FONT", "Heap too fragmented to show preview download screen: free=%d max=%d; silent-restarting",
+            ESP.getFreeHeap(), ESP.getMaxAllocHeap());
+    silentRestartToFonts();
+    return;
+  }
   {
     RenderLock lock(*this);
     state_ = DOWNLOADING_PREVIEW;
@@ -825,8 +868,8 @@ void FontDownloadActivity::downloadPreview(int familyIndex, int fileIndex) {
     RenderLock lock(*this);
     if (cancelled) {
       if (hadPreview) {
-        previewFamilyIndex_ = activePreviewFamilyIndex_;
-        previewFileIndex_ = activePreviewFileIndex_;
+        previewFamilyIndex_ = previousFamilyIndex;
+        previewFileIndex_ = previousFileIndex;
         state_ = FONT_PREVIEW;
       } else {
         state_ = FAMILY_LIST;
@@ -851,7 +894,20 @@ void FontDownloadActivity::downloadPreview(int familyIndex, int fileIndex) {
     return;
   }
 
+  // The heap guard for the download itself is checked AFTER
+  // beginNetworkTransfer below, once the glyph caches and families_ have been
+  // released. Checking earlier would measure families_ still resident (~5 KB
+  // max alloc) and false-trigger an endless silent-restart loop.
   beginNetworkTransfer(familyIndex);
+  // Safety net: at this point the heap is the real TLS arena; a fragmented
+  // heap here means the handshake would fail with wolfSSL -125, so restart
+  // (a fresh boot defrags and retries from the family list).
+  if (ESP.getFreeHeap() < 32 * 1024 || ESP.getMaxAllocHeap() < 21 * 1024) {
+    LOG_DBG("FONT", "Heap too fragmented for preview transfer: free=%d max=%d; silent-restarting", ESP.getFreeHeap(),
+            ESP.getMaxAllocHeap());
+    silentRestartToFonts();
+    return;
+  }
   const auto result = HttpDownloader::downloadToFile(
       file.baseUrl + fileName, PREVIEW_NEXT_PATH,
       [this](size_t downloaded, size_t total) { updateDownloadProgress(downloaded, total); }, &cancelRequested_, "", "",
@@ -1000,10 +1056,20 @@ void FontDownloadActivity::downloadPreview(int familyIndex, int fileIndex) {
 }
 
 void FontDownloadActivity::installPreviewedFamily() {
-  if (previewFamilyIndex_ < 0 || previewFamilyIndex_ >= static_cast<int>(families_.size())) return;
+  if (previewFamilyIndex_ < 0 || previewFamilyIndex_ >= static_cast<int>(families_.size())) {
+    LOG_DBG("FONT", "INSTALL skip: bad family index %d (families=%d)", previewFamilyIndex_,
+            static_cast<int>(families_.size()));
+    return;
+  }
   const int familyIndex = previewFamilyIndex_;
   const int fileIndex = previewFileIndex_;
-  if (fileIndex < 0 || fileIndex >= static_cast<int>(families_[familyIndex].files.size())) return;
+  if (fileIndex < 0 || fileIndex >= static_cast<int>(families_[familyIndex].files.size())) {
+    LOG_DBG("FONT", "INSTALL skip: bad file index %d (files=%d)", fileIndex,
+            static_cast<int>(families_[familyIndex].files.size()));
+    return;
+  }
+  LOG_DBG("FONT", "INSTALL_PREVIEW: fam=%d file=%d tmp=%d next=%d previewFontId=%d", familyIndex, fileIndex,
+          Storage.exists(PREVIEW_TMP_PATH), Storage.exists(PREVIEW_NEXT_PATH), previewFontId_);
   {
     RenderLock lock(*this);
     if (previewFontId_ != 0) {
@@ -1125,6 +1191,8 @@ void FontDownloadActivity::downloadFamily(int familyIndex, int fileIndex, const 
     }
 
     const bool useStagedFile = !completeFamily && stagedFilePath && Storage.exists(stagedFilePath);
+    LOG_DBG("FONT", "DLFAMILY decide: fam=%d file=%d staged='%s' useStaged=%d complete=%d", familyIndex,
+            static_cast<int>(i), stagedFilePath ? stagedFilePath : "", useStagedFile, completeFamily);
     if (useStagedFile) {
       if (!Storage.rename(stagedFilePath, partPath.c_str())) {
         failTransaction(tr(STR_FONT_REPLACEMENT_FAILED), false);
@@ -1248,7 +1316,7 @@ void FontDownloadActivity::downloadFamily(int familyIndex, int fileIndex, const 
     sdFontSystem.ensureLoaded(renderer);
   }
   refreshFamilyState(families_[familyIndex]);
-
+  LOG_DBG("FONT", "DLFAMILY complete: fam=%d installed", familyIndex);
   {
     RenderLock lock(*this);
     state_ = COMPLETE;
@@ -1256,18 +1324,42 @@ void FontDownloadActivity::downloadFamily(int familyIndex, int fileIndex, const 
   }
 }
 
-void FontDownloadActivity::promptDeleteSelectedFamily() {
-  const int pendingDeleteFamilyIndex = familyIndexFromList(selectedIndex_);
-  if (pendingDeleteFamilyIndex < 0 || pendingDeleteFamilyIndex >= static_cast<int>(families_.size())) {
+bool FontDownloadActivity::heapSufficientForNetworkTransfer() const {
+  // TLS manifests and font files need a roughly contiguous arena. Thresholds
+  // sit just below the worst successful transfer measured on-device
+  // (35232/21492) so normal post-manifest runs never trip; cold-boot entries
+  // with a fragmented heap do.
+  return ESP.getFreeHeap() >= 32 * 1024 && ESP.getMaxAllocHeap() >= 21 * 1024;
+}
+
+bool FontDownloadActivity::detailHasDeleteRow() const {
+  if (detailFamilyIndex_ < 0 || detailFamilyIndex_ >= static_cast<int>(families_.size())) return false;
+  const auto& family = families_[detailFamilyIndex_];
+  return family.installed && !family.partial && !family.hasUpdate;
+}
+
+int FontDownloadActivity::detailRowCount() const {
+  if (detailFamilyIndex_ < 0 || detailFamilyIndex_ >= static_cast<int>(families_.size())) return 0;
+  const auto& family = families_[detailFamilyIndex_];
+  int rows = static_cast<int>(family.files.size());
+  if (detailHasDeleteRow()) rows += 1;  // delete row
+  return rows;
+}
+
+void FontDownloadActivity::promptDeleteFamily(int familyIndex) {
+  if (familyIndex < 0 || familyIndex >= static_cast<int>(families_.size())) {
     return;
   }
-
+  LOG_DBG("FONT", "PROMPT_DELETE: family=%d name='%s'", familyIndex, families_[familyIndex].name.c_str());
+  detailFamilyIndex_ = familyIndex;  // reused as the pending-delete slot
   std::string heading = tr(STR_DELETE);
-  const auto& family = families_[pendingDeleteFamilyIndex];
+  const auto& family = families_[familyIndex];
   std::string body = family.name;
   startActivityForResult(std::make_unique<ConfirmationActivity>(renderer, mappedInput, heading, body),
                          [this](const ActivityResult& result) { onDeleteConfirmationResult(result); });
 }
+
+void FontDownloadActivity::promptDeleteSelectedFamily() { promptDeleteFamily(familyIndexFromList(selectedIndex_)); }
 
 void FontDownloadActivity::onDeleteConfirmationResult(const ActivityResult& result) {
   if (result.isCancelled) {
@@ -1275,7 +1367,10 @@ void FontDownloadActivity::onDeleteConfirmationResult(const ActivityResult& resu
     return;
   }
 
-  auto& family = families_[familyIndexFromList(selectedIndex_)];
+  // Deletion can originate from the family list or the family detail
+  // (point-size) list; the target index is captured before the confirmation
+  // dialog is pushed.
+  auto& family = families_[detailFamilyIndex_];
 
   if (fontInstaller_.deleteFamily(family.name.c_str()) != FontInstaller::Error::OK) {
     RenderLock lock(*this);
@@ -1330,12 +1425,16 @@ void FontDownloadActivity::loop() {
         updateAll();
       } else {
         const int familyIndex = familyIndexFromList(selectedIndex_);
-        auto& family = families_[familyIndex];
-        if (!family.installed || family.partial || family.hasUpdate) {
-          downloadPreview(familyIndex, defaultPreviewFileIndex(family));
-        } else {
-          promptDeleteSelectedFamily();
-          return;
+        // Open the family's point-size list instead of downloading a default
+        // size up front, so the user can pick which size(s) to install.
+        detailFamilyIndex_ = familyIndex;
+        selectedIndex_ = defaultPreviewFileIndex(families_[familyIndex]);
+        LOG_DBG("FONT", "FAMILY_DETAIL enter: family=%d name='%s' files=%u defaultIdx=%d free=%u max=%u", familyIndex,
+                families_[familyIndex].name.c_str(), static_cast<unsigned>(families_[familyIndex].files.size()),
+                selectedIndex_, ESP.getFreeHeap(), ESP.getMaxAllocHeap());
+        {
+          RenderLock lock(*this);
+          state_ = FAMILY_DETAIL;
         }
       }
       requestUpdateAndWait();
@@ -1439,6 +1538,68 @@ void FontDownloadActivity::loop() {
           changePreviewFile(ButtonNavigator::nextIndex(previewFileIndex_, fileCount));
         });
       }
+    }
+  } else if (state_ == FAMILY_DETAIL) {
+    auto activateDetail = [this] {
+      if (detailFamilyIndex_ < 0 || detailFamilyIndex_ >= static_cast<int>(families_.size())) return;
+      const int deleteRow = detailRowCount() - 1;
+      if (detailHasDeleteRow() && selectedIndex_ == deleteRow) {
+        promptDeleteFamily(detailFamilyIndex_);
+        return;
+      }
+      downloadPreview(detailFamilyIndex_, selectedIndex_);
+    };
+
+    if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
+      LOG_DBG("FONT", "FAMILY_DETAIL back -> FAMILY_LIST (detailFamily=%d)", detailFamilyIndex_);
+      {
+        RenderLock lock(*this);
+        state_ = FAMILY_LIST;
+      }
+      requestUpdate();
+      return;
+    }
+
+    const int detailRows = detailRowCount();
+    if (detailRows > 0) {
+      const auto& metrics = UITheme::getInstance().getMetrics();
+      const int contentTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
+      const int contentHeight =
+          renderer.getScreenHeight() - contentTop - metrics.buttonHintsHeight - metrics.verticalSpacing;
+      switch (handleListTouch(selectedIndex_, detailRows, contentTop, contentHeight, true)) {
+        case ListTouchResult::Activated:
+          activateDetail();
+          return;
+        case ListTouchResult::Consumed:
+          return;
+        case ListTouchResult::None:
+          break;
+      }
+
+      const auto swipe = mappedInput.wasSwipe();
+      if (swipe == MappedInputManager::SwipeDir::Up) {
+        selectedIndex_ = ButtonNavigator::previousIndex(selectedIndex_, detailRows);
+        requestUpdate();
+        return;
+      }
+      if (swipe == MappedInputManager::SwipeDir::Down) {
+        selectedIndex_ = ButtonNavigator::nextIndex(selectedIndex_, detailRows);
+        requestUpdate();
+        return;
+      }
+    }
+
+    buttonNavigator_.onNextRelease([this, detailRows] {
+      selectedIndex_ = ButtonNavigator::nextIndex(selectedIndex_, detailRows);
+      requestUpdate();
+    });
+    buttonNavigator_.onPreviousRelease([this, detailRows] {
+      selectedIndex_ = ButtonNavigator::previousIndex(selectedIndex_, detailRows);
+      requestUpdate();
+    });
+
+    if (mappedInput.wasPressed(MappedInputManager::Button::Confirm)) {
+      activateDetail();
     }
   } else if (state_ == COMPLETE) {
     int x = 0;
@@ -1599,6 +1760,49 @@ void FontDownloadActivity::render(RenderLock&&) {
                                                 : isUpdateAllRow(selectedIndex_)   ? tr(STR_UPDATE)
                                                                                    : tr(STR_PREVIEW),
                                                 tr(STR_DIR_UP), tr(STR_DIR_DOWN));
+      GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+    }
+  } else if (state_ == FAMILY_DETAIL) {
+    if (detailFamilyIndex_ < 0 || detailFamilyIndex_ >= static_cast<int>(families_.size())) {
+      return;
+    }
+    const auto& detailFamily = families_[detailFamilyIndex_];
+    const int detailRows = detailRowCount();
+    if (detailRows == 0) {
+      renderer.drawCenteredText(UI_10_FONT_ID, centerY, tr(STR_NO_FONTS_AVAILABLE));
+      const auto labels = mappedInput.mapLabels(tr(STR_BACK), "", "", "");
+      GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+    } else {
+      GUI.drawList(
+          renderer,
+          Rect{0, contentTop, pageWidth, pageHeight - contentTop - metrics.buttonHintsHeight - metrics.verticalSpacing},
+          detailRows, selectedIndex_,
+          [this, &detailFamily, detailRows](int index) -> std::string {
+            const bool isDeleteRow = detailHasDeleteRow() && index == detailRows - 1;
+            if (isDeleteRow) {
+              return std::string(tr(STR_DELETE)) + " " + detailFamily.name;
+            }
+            char buf[32];
+            snprintf(buf, sizeof(buf), "%u pt", static_cast<unsigned>(detailFamily.files[index].pointSize));
+            return std::string(buf);
+          },
+          [this, &detailFamily, detailRows](int index) -> std::string {
+            if (detailHasDeleteRow() && index == detailRows - 1) return "";
+            return formatSize(detailFamily.files[index].size);
+          },
+          nullptr,
+          [this, &detailFamily, detailRows](int index) -> std::string {
+            if (detailHasDeleteRow() && index == detailRows - 1) return "";
+            const auto& file = detailFamily.files[index];
+            if (detailFamily.hasUpdate) return tr(STR_UPDATE_AVAILABLE);
+            if (detailFamily.installed && file.installed) return tr(STR_INSTALLED);
+            return "";
+          },
+          true);
+
+      const auto labels = mappedInput.mapLabels(
+          tr(STR_BACK), detailHasDeleteRow() && selectedIndex_ == detailRows - 1 ? tr(STR_DELETE) : tr(STR_PREVIEW),
+          tr(STR_DIR_UP), tr(STR_DIR_DOWN));
       GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
     }
   } else if (state_ == DOWNLOADING_PREVIEW) {

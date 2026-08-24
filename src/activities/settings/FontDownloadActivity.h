@@ -55,6 +55,7 @@ class FontDownloadActivity : public Activity {
     DOWNLOADING,
     COMPLETE,
     ERROR,
+    FAMILY_DETAIL,
   };
 
   enum class ErrorAction { None, Preview, Install };
@@ -79,6 +80,7 @@ class FontDownloadActivity : public Activity {
 
   int previewFamilyIndex_ = -1;
   int previewFileIndex_ = -1;
+  int detailFamilyIndex_ = -1;
   int activePreviewFamilyIndex_ = -1;
   int activePreviewFileIndex_ = -1;
   int previewFontId_ = 0;
@@ -128,6 +130,10 @@ class FontDownloadActivity : public Activity {
   bool isDownloadAllRow(int index) const;
   bool isUpdateAllRow(int index) const;
   bool isSelectedFamilyDeletable() const;
+  bool heapSufficientForNetworkTransfer() const;
+  bool detailHasDeleteRow() const;
+  int detailRowCount() const;
+  void promptDeleteFamily(int familyIndex);
   void promptDeleteSelectedFamily();
   void onDeleteConfirmationResult(const ActivityResult& result);
   int familyIndexFromList(int listIndex) const { return listIndex - specialRowCount(); }
