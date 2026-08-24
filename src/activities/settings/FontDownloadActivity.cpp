@@ -279,7 +279,7 @@ bool FontDownloadActivity::fetchAndParseManifests() {
     std::vector<ManifestFamily> parsedFamilies;
     std::string parsedBaseUrl;
     std::string parsedUpdatedAt;
-    if (!parseManifestFile(manifestFiles_[i].c_str(), parsedFamilies, parsedBaseUrl, parsedUpdatedAt)) {
+    if (!parseManifestFile(manifestFiles_[i].c_str(), parsedFamilies, parsedBaseUrl, parsedUpdatedAt, true)) {
       errorMessage_ = tr(STR_FONT_LIST_READ_FAILED);
       return false;
     }
@@ -309,7 +309,7 @@ void FontDownloadActivity::restoreManifestData() {
     std::vector<ManifestFamily> parsedFamilies;
     std::string parsedBaseUrl;
     std::string parsedUpdatedAt;
-    if (!parseManifestFile(path.c_str(), parsedFamilies, parsedBaseUrl, parsedUpdatedAt)) {
+    if (!parseManifestFile(path.c_str(), parsedFamilies, parsedBaseUrl, parsedUpdatedAt, false)) {
       LOG_ERR("FONT", "Failed to restore manifest from %s", path.c_str());
       continue;
     }
@@ -356,7 +356,8 @@ bool FontDownloadActivity::downloadManifestToFile(const std::string& url, const 
 }
 
 bool FontDownloadActivity::parseManifestFile(const char* path, std::vector<ManifestFamily>& outFamilies,
-                                             std::string& outBaseUrl, std::string& outUpdatedAt) {
+                                             std::string& outBaseUrl, std::string& outUpdatedAt,
+                                             const bool allowSelfHealRestart) {
   // HTTP client is now closed and TLS buffers are freed. Parse JSON from file.
   HalFile manifestFile;
   if (!Storage.openFileForRead("FONT", path, manifestFile)) {
@@ -373,6 +374,18 @@ bool FontDownloadActivity::parseManifestFile(const char* path, std::vector<Manif
     return false;
   }
 
+  // ArduinoJson materializes the whole filtered document (~manifest size) as
+  // one contiguous block. Coming in via Home->Settings->Fonts the largest free
+  // block can be just under the manifest size (e.g. 40,948 B vs 41,457 B
+  // manifest) and deserializeJson aborts the MCU. Silent-restart instead: the
+  // reboot goes straight back into this activity on a fresh ~130 KB arena.
+  if (allowSelfHealRestart && ESP.getMaxAllocHeap() < static_cast<long>(manifestSize) + 4096) {
+    LOG_DBG("FONT", "Heap too fragmented to parse manifest: size=%zu max=%d; silent-restarting", manifestSize,
+            ESP.getMaxAllocHeap());
+    manifestFile.close();
+    silentRestartToFonts();
+    return false;
+  }
   JsonDocument filter;
   filter["version"] = true;
   filter["baseUrl"] = true;
@@ -834,14 +847,19 @@ void FontDownloadActivity::downloadPreview(int familyIndex, int fileIndex) {
   const bool hadPreview = previewFontId_ != 0;
   const int previousFamilyIndex = activePreviewFamilyIndex_;
   const int previousFileIndex = activePreviewFileIndex_;
-  // Drop any on-screen preview BEFORE rendering the DOWNLOADING_PREVIEW
-  // screen: keeping its glyph data (~14 KB worth of group buffers) resident
-  // while the reader UI font is (re)loaded would exhaust max-alloc and
-  // abort the MCU (BMP coverage allocation failure).
-  closePreview();
+  // Unload the on-screen preview BEFORE restoring the reader UI font or
+  // rendering DOWNLOADING_PREVIEW. Preserve PREVIEW_TMP_PATH: after the new
+  // file downloads, the activation transaction renames this current preview
+  // to PREVIEW_BACKUP_PATH so it can roll back safely on failure.
+  if (previewFontId_ != 0) {
+    sdFontSystem.endPreview(renderer, false);
+    previewFontId_ = 0;
+  }
+  activePreviewFamilyIndex_ = -1;
+  activePreviewFileIndex_ = -1;
   // Safety net: rendering this screen must (re)load the reader UI font; a
   // heavily fragmented heap here previously aborted the device. The preview
-  // glyphs are gone at this point (closePreview above), so this only fires
+  // glyphs are gone at this point, so this only fires
   // when the whole UI cache is starved; calibrate below the cold-boot
   // baseline (free ~14.5 KB / max ~5 KB).
   if (ESP.getFreeHeap() < 9 * 1024 || ESP.getMaxAllocHeap() < 3 * 1024) {
@@ -870,6 +888,18 @@ void FontDownloadActivity::downloadPreview(int familyIndex, int fileIndex) {
       if (hadPreview) {
         previewFamilyIndex_ = previousFamilyIndex;
         previewFileIndex_ = previousFileIndex;
+        if (previousFamilyIndex >= 0 && previousFamilyIndex < static_cast<int>(families_.size()) &&
+            previousFileIndex >= 0 &&
+            previousFileIndex < static_cast<int>(families_[previousFamilyIndex].files.size()) &&
+            Storage.exists(PREVIEW_TMP_PATH)) {
+          previewFontId_ =
+              sdFontSystem.beginPreview(renderer, PREVIEW_TMP_PATH, families_[previousFamilyIndex].name.c_str(),
+                                        families_[previousFamilyIndex].files[previousFileIndex].pointSize);
+          if (previewFontId_ != 0) {
+            activePreviewFamilyIndex_ = previousFamilyIndex;
+            activePreviewFileIndex_ = previousFileIndex;
+          }
+        }
         state_ = FONT_PREVIEW;
       } else {
         state_ = FAMILY_LIST;
@@ -1334,8 +1364,7 @@ bool FontDownloadActivity::heapSufficientForNetworkTransfer() const {
 
 bool FontDownloadActivity::detailHasDeleteRow() const {
   if (detailFamilyIndex_ < 0 || detailFamilyIndex_ >= static_cast<int>(families_.size())) return false;
-  const auto& family = families_[detailFamilyIndex_];
-  return family.installed && !family.partial && !family.hasUpdate;
+  return families_[detailFamilyIndex_].installed;
 }
 
 int FontDownloadActivity::detailRowCount() const {
@@ -1395,8 +1424,7 @@ bool FontDownloadActivity::isSelectedFamilyDeletable() const {
     return false;
   }
   if (selectedIndex_ < specialRowCount() || selectedIndex_ >= listItemCount()) return false;
-  const auto& family = families_[familyIndexFromList(selectedIndex_)];
-  return family.installed && !family.partial && !family.hasUpdate;
+  return families_[familyIndexFromList(selectedIndex_)].installed;
 }
 
 // --- Input handling ---

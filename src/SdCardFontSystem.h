@@ -27,9 +27,9 @@ class SdCardFontSystem {
   /// online preview. The caller must hold RenderLock while calling this.
   int beginPreview(GfxRenderer& renderer, const char* filePath, const char* familyName, uint8_t pointSize);
 
-  /// End a temporary preview and restore the configured reader/UI fonts.
-  /// The caller must hold RenderLock while calling this.
-  void endPreview(GfxRenderer& renderer);
+  /// End a temporary preview, optionally restoring the configured reader/UI
+  /// fonts immediately. The caller must hold RenderLock while calling this.
+  void endPreview(GfxRenderer& renderer, bool restoreConfiguredFonts = true);
 
   /// Resolve an SD card font ID from family name + fontSize enum.
   /// Returns 0 if not found. Used by CrossPointSettings::getReaderFontId().

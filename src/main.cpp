@@ -122,6 +122,7 @@ constexpr uint32_t SILENT_REBOOT_MAGIC = 0xC1EAB007;
 constexpr uint32_t SILENT_REBOOT_TARGET_HOME = 0;
 constexpr uint32_t SILENT_REBOOT_TARGET_READER = 1;
 constexpr uint32_t SILENT_REBOOT_TARGET_FONTS = 2;
+RTC_NOINIT_ATTR uint32_t silentFontRestartCount;
 
 // How the device is coming back to life, resolved once at boot. Both resume
 // flows suppress the splash and leave the panel holding its pre-boot frame; a
@@ -377,6 +378,11 @@ void setup() {
       (isSilentReboot && silentRebootTarget <= SILENT_REBOOT_TARGET_FONTS) ? silentRebootTarget : 0;
   silentRebootMagic = 0;
   silentRebootTarget = 0;
+  if (!isSilentReboot) {
+    // A normal (non self-healing-restart) boot resets the font self-heal loop
+    // counter so a crash dump can always surface after ordinary user boots.
+    silentFontRestartCount = 0;
+  }
 
   gpio.begin();
   powerManager.begin();
@@ -502,16 +508,20 @@ void setup() {
     // Skip normal home/reader routing: jump straight into the SD firmware picker.
     activityManager.replaceActivity(
         std::make_unique<SdFirmwareUpdateActivity>(renderer, mappedInputManager, /*recoveryMode=*/true));
+  } else if (resume == BootResume::Silent && snapshotTarget == SILENT_REBOOT_TARGET_FONTS &&
+             silentFontRestartCount < 3) {
+    // Font download restarted itself out of a fragmented heap; land straight
+    // back in the activity so a clean manifest fetch happens automatically.
+    // Capped at 3 attempts: a persistent crash then falls through to the crash
+    // report screen instead of looping forever.
+    silentFontRestartCount++;
+    activityManager.goToFontDownload();
   } else if (HalSystem::isRebootFromPanic()) {
     // If we rebooted from a panic, go to crash report screen to show the panic info
     activityManager.goToCrashReport();
   } else if (resume == BootResume::Silent && snapshotTarget == SILENT_REBOOT_TARGET_READER &&
              !APP_STATE.openEpubPath.empty()) {
     activityManager.goToReader(APP_STATE.openEpubPath);
-  } else if (resume == BootResume::Silent && snapshotTarget == SILENT_REBOOT_TARGET_FONTS) {
-    // Font download restarted itself out of a fragmented heap; land straight
-    // back in the activity so a clean manifest fetch happens automatically.
-    activityManager.goToFontDownload();
   } else if (resume == BootResume::Silent) {
     // target == home (or reader with no open book): land on home — don't fall
     // through to the sleep-wake "resume reader" logic, which fires on stale
