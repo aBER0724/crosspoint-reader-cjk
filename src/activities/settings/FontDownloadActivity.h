@@ -103,7 +103,7 @@ class FontDownloadActivity : public Activity {
   bool fetchAndParseManifests();
   bool downloadManifestToFile(const std::string& url, const char* path);
   bool parseManifestFile(const char* path, std::vector<ManifestFamily>& outFamilies, std::string& outBaseUrl,
-                         std::string& outUpdatedAt);
+                         std::string& outUpdatedAt, bool allowSelfHealRestart);
   void restoreManifestData();
   void openFontRepositories();
   bool pollDownloadCancellation();

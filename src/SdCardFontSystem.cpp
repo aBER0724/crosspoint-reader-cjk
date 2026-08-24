@@ -162,14 +162,14 @@ int SdCardFontSystem::beginPreview(GfxRenderer& renderer, const char* filePath, 
   return fontId;
 }
 
-void SdCardFontSystem::endPreview(GfxRenderer& renderer) {
+void SdCardFontSystem::endPreview(GfxRenderer& renderer, const bool restoreConfiguredFonts) {
   if (!previewActive_) return;
 
   if (manager_.hasLoadedFonts()) manager_.unloadAll(renderer);
   loadedUiFamilyName_.clear();
   previewActive_ = false;
   residentFontsDirty_.store(true, std::memory_order_release);
-  ensureLoaded(renderer);
+  if (restoreConfiguredFonts) ensureLoaded(renderer);
 }
 
 bool SdCardFontSystem::setupUiFallbacks(GfxRenderer& renderer, const SdCardFontFamilyInfo& family) {
