@@ -32,7 +32,7 @@
 #include "util/TaskWatchdog.h"
 
 namespace {
-constexpr size_t MAX_MANIFEST_BYTES = 32 * 1024;
+constexpr size_t MAX_MANIFEST_BYTES = 128 * 1024;
 constexpr size_t MAX_MANIFEST_FAMILIES = 48;
 constexpr size_t MAX_FILES_PER_FAMILY = 32;
 constexpr uint64_t STORAGE_RESERVE_BYTES = 8ULL * 1024ULL * 1024ULL;
@@ -233,11 +233,14 @@ bool FontDownloadActivity::fetchAndParseManifests() {
 
   fontInstaller_.refreshRegistry();
 
+  // Download every repository manifest to SD first (kept for later restore),
+  // then parse + merge. Splitting the passes keeps the TLS/memory-heavy
+  // download phase separate from the JSON parsing phase.
+  manifestFiles_.clear();
+  std::vector<std::string> downloadedPaths;
   for (size_t i = 0; i < urls.size(); ++i) {
-    std::vector<ManifestFamily> parsedFamilies;
-    std::string parsedBaseUrl;
-    std::string parsedUpdatedAt;
-    if (!fetchAndParseOneManifest(urls[i], parsedFamilies, parsedBaseUrl, parsedUpdatedAt)) {
+    const std::string path = "/fonts_manifest_" + std::to_string(i) + ".tmp";
+    if (!downloadManifestToFile(urls[i], path.c_str())) {
       if (cancelRequested_) return false;
       if (i == 0) {
         // The default repository is authoritative; a failure there is fatal.
@@ -246,7 +249,24 @@ bool FontDownloadActivity::fetchAndParseManifests() {
       someFailed = true;
       continue;
     }
+    downloadedPaths.push_back(path);
     anySuccess = true;
+  }
+
+  if (!anySuccess) {
+    errorMessage_ = tr(STR_FONT_LIST_FETCH_FAILED);
+    return false;
+  }
+  manifestFiles_ = std::move(downloadedPaths);
+
+  for (size_t i = 0; i < manifestFiles_.size(); ++i) {
+    std::vector<ManifestFamily> parsedFamilies;
+    std::string parsedBaseUrl;
+    std::string parsedUpdatedAt;
+    if (!parseManifestFile(manifestFiles_[i].c_str(), parsedFamilies, parsedBaseUrl, parsedUpdatedAt)) {
+      errorMessage_ = tr(STR_FONT_LIST_READ_FAILED);
+      return false;
+    }
     for (auto& family : parsedFamilies) {
       for (auto& file : family.files) file.baseUrl = parsedBaseUrl;
     }
@@ -254,11 +274,6 @@ bool FontDownloadActivity::fetchAndParseManifests() {
     if (!parsedUpdatedAt.empty() && parsedUpdatedAt > catalogUpdatedAt_) {
       catalogUpdatedAt_ = parsedUpdatedAt;
     }
-  }
-
-  if (!anySuccess) {
-    errorMessage_ = tr(STR_FONT_LIST_FETCH_FAILED);
-    return false;
   }
 
   for (auto& family : mergedFamilies) refreshFamilyState(family);
@@ -269,13 +284,38 @@ bool FontDownloadActivity::fetchAndParseManifests() {
   return true;
 }
 
-bool FontDownloadActivity::fetchAndParseOneManifest(const std::string& url, std::vector<ManifestFamily>& outFamilies,
-                                                    std::string& outBaseUrl, std::string& outUpdatedAt) {
-  // Download manifest to a temp file on SD card to avoid holding both
-  // TLS buffers and the full JSON string in RAM simultaneously.
-  static constexpr const char* MANIFEST_TMP = "/fonts_manifest.tmp";
+void FontDownloadActivity::restoreManifestData() {
+  // Re-parse the kept per-repo manifest files and rebuild families_. Mirror of
+  // the parse+merge pass in fetchAndParseManifests: same files, same order, so
+  // family indexes are preserved across a transfer.
+  std::vector<ManifestFamily> mergedFamilies;
+  for (const auto& path : manifestFiles_) {
+    std::vector<ManifestFamily> parsedFamilies;
+    std::string parsedBaseUrl;
+    std::string parsedUpdatedAt;
+    if (!parseManifestFile(path.c_str(), parsedFamilies, parsedBaseUrl, parsedUpdatedAt)) {
+      LOG_ERR("FONT", "Failed to restore manifest from %s", path.c_str());
+      continue;
+    }
+    for (auto& family : parsedFamilies) {
+      for (auto& file : family.files) file.baseUrl = parsedBaseUrl;
+    }
+    mergeManifestFamilies(mergedFamilies, std::move(parsedFamilies));
+    if (!parsedUpdatedAt.empty() && parsedUpdatedAt > catalogUpdatedAt_) {
+      catalogUpdatedAt_ = parsedUpdatedAt;
+    }
+  }
+  for (auto& family : mergedFamilies) refreshFamilyState(family);
+  LOG_DBG("FONT", "Restored %zu families from storage", mergedFamilies.size());
+  families_ = std::move(mergedFamilies);
+}
 
-  if (Storage.exists(MANIFEST_TMP) && !Storage.remove(MANIFEST_TMP)) {
+bool FontDownloadActivity::downloadManifestToFile(const std::string& url, const char* path) {
+  // Download the raw manifest to a file on SD card to avoid holding both
+  // TLS buffers and the full JSON string in RAM simultaneously. The file is
+  // kept so families_ can be released during large font-file transfers and
+  // restored (re-parsed) afterwards without re-downloading.
+  if (Storage.exists(path) && !Storage.remove(path)) {
     LOG_ERR("FONT", "Failed to remove stale font manifest");
     errorMessage_ = tr(STR_FONT_LIST_READ_FAILED);
     return false;
@@ -283,25 +323,28 @@ bool FontDownloadActivity::fetchAndParseOneManifest(const std::string& url, std:
 
   beginNetworkTransfer();
   const auto result = HttpDownloader::downloadToFile(
-      url.c_str(), MANIFEST_TMP, [this](size_t, size_t) { pollDownloadCancellation(); }, &cancelRequested_, "", "",
+      url.c_str(), path, [this](size_t, size_t) { pollDownloadCancellation(); }, &cancelRequested_, "", "",
       [this] { return pollDownloadCancellation(); }, MAX_MANIFEST_BYTES);
   endNetworkTransfer();
   if (result == HttpDownloader::ABORTED) {
-    Storage.remove(MANIFEST_TMP);
+    Storage.remove(path);
     return false;
   }
   if (result != HttpDownloader::OK) {
     LOG_ERR("FONT", "Failed to fetch manifest from %s", url.c_str());
     errorMessage_ = tr(STR_FONT_LIST_FETCH_FAILED);
-    Storage.remove(MANIFEST_TMP);
+    Storage.remove(path);
     return false;
   }
+  return true;
+}
 
+bool FontDownloadActivity::parseManifestFile(const char* path, std::vector<ManifestFamily>& outFamilies,
+                                             std::string& outBaseUrl, std::string& outUpdatedAt) {
   // HTTP client is now closed and TLS buffers are freed. Parse JSON from file.
   HalFile manifestFile;
-  if (!Storage.openFileForRead("FONT", MANIFEST_TMP, manifestFile)) {
+  if (!Storage.openFileForRead("FONT", path, manifestFile)) {
     LOG_ERR("FONT", "Failed to open temp manifest");
-    Storage.remove(MANIFEST_TMP);
     errorMessage_ = tr(STR_FONT_LIST_READ_FAILED);
     return false;
   }
@@ -310,7 +353,6 @@ bool FontDownloadActivity::fetchAndParseOneManifest(const std::string& url, std:
   if (manifestSize == 0 || manifestSize > MAX_MANIFEST_BYTES) {
     LOG_ERR("FONT", "Manifest size is invalid: %zu", manifestSize);
     manifestFile.close();
-    Storage.remove(MANIFEST_TMP);
     errorMessage_ = tr(STR_FONT_MANIFEST_INVALID);
     return false;
   }
@@ -328,7 +370,6 @@ bool FontDownloadActivity::fetchAndParseOneManifest(const std::string& url, std:
   JsonDocument doc;
   const DeserializationError err = deserializeJson(doc, manifestFile, DeserializationOption::Filter(filter));
   manifestFile.close();
-  Storage.remove(MANIFEST_TMP);
 
   if (err) {
     LOG_ERR("FONT", "Manifest parse error: %s", err.c_str());
@@ -525,7 +566,7 @@ bool FontDownloadActivity::pollDownloadCancellation() {
   return cancelRequested_;
 }
 
-void FontDownloadActivity::beginNetworkTransfer() {
+void FontDownloadActivity::beginNetworkTransfer(int activeFamilyIndex) {
   RenderLock lock(*this);
   lowMemoryDownload_ = true;
   lastProgressPercent_ = -1;
@@ -536,9 +577,28 @@ void FontDownloadActivity::beginNetworkTransfer() {
     cache->clearCache();
   }
   LOG_DBG("FONT", "Heap before network transfer: free=%d max=%d", ESP.getFreeHeap(), ESP.getMaxAllocHeap());
+
+  // For font-file transfers (not the manifest fetch) release the parsed family
+  // list: the caller keeps the active family as a local copy, and ~25-30KB of
+  // dead-weight strings (URLs/sha256/descriptions for every other family) gives
+  // the TLS handshake and 4.5MB+ stream the headroom it needs. Restored in
+  // endNetworkTransfer from the kept manifest files.
+  if (activeFamilyIndex >= 0 && activeFamilyIndex < static_cast<int>(families_.size()) && !manifestFiles_.empty() &&
+      !manifestReleasedForTransfer_) {
+    LOG_DBG("FONT", "Releasing manifest data before transfer: free=%d", ESP.getFreeHeap());
+    std::vector<ManifestFamily>().swap(families_);
+    manifestReleasedForTransfer_ = true;
+    LOG_DBG("FONT", "Manifest data released: free=%d max=%d", ESP.getFreeHeap(), ESP.getMaxAllocHeap());
+  }
 }
 
 void FontDownloadActivity::endNetworkTransfer() {
+  if (manifestReleasedForTransfer_) {
+    manifestReleasedForTransfer_ = false;
+    LOG_DBG("FONT", "Restoring manifest data after transfer: free=%d", ESP.getFreeHeap());
+    restoreManifestData();
+    LOG_DBG("FONT", "Manifest restored: free=%d max=%d", ESP.getFreeHeap(), ESP.getMaxAllocHeap());
+  }
   RenderLock lock(*this);
   lowMemoryDownload_ = false;
 }
@@ -575,7 +635,7 @@ void FontDownloadActivity::downloadAll() {
   cancelRequested_ = false;
   for (size_t i = 0; i < families_.size(); i++) {
     if (families_[i].installed && !families_[i].partial) continue;
-    downloadFamily(families_[i]);
+    downloadFamily(static_cast<int>(i));
     if (state_ == ERROR || cancelRequested_) return;
   }
 
@@ -589,7 +649,7 @@ void FontDownloadActivity::updateAll() {
   cancelRequested_ = false;
   for (size_t i = 0; i < families_.size(); i++) {
     if (!families_[i].hasUpdate) continue;
-    downloadFamily(families_[i]);
+    downloadFamily(static_cast<int>(i));
     if (state_ == ERROR || cancelRequested_) return;
   }
 
@@ -737,7 +797,9 @@ void FontDownloadActivity::returnToFamilyList() {
 void FontDownloadActivity::downloadPreview(int familyIndex, int fileIndex) {
   if (state_ == DOWNLOADING_PREVIEW || state_ == DOWNLOADING) return;
   if (familyIndex < 0 || familyIndex >= static_cast<int>(families_.size())) return;
-  auto& family = families_[familyIndex];
+  // Work from a copy: beginNetworkTransfer(familyIndex) releases families_ for
+  // the duration of the transfer, and this copy stays valid throughout.
+  ManifestFamily family = families_[familyIndex];
   if (fileIndex < 0 || fileIndex >= static_cast<int>(family.files.size())) return;
   const auto& file = family.files[fileIndex];
   const std::string fileName = manifestFileName(family, file);
@@ -789,7 +851,7 @@ void FontDownloadActivity::downloadPreview(int familyIndex, int fileIndex) {
     return;
   }
 
-  beginNetworkTransfer();
+  beginNetworkTransfer(familyIndex);
   const auto result = HttpDownloader::downloadToFile(
       file.baseUrl + fileName, PREVIEW_NEXT_PATH,
       [this](size_t downloaded, size_t total) { updateDownloadProgress(downloaded, total); }, &cancelRequested_, "", "",
@@ -955,17 +1017,21 @@ void FontDownloadActivity::installPreviewedFamily() {
   }
   currentFileIndex_ = 0;
   currentFileTotal_ = 1;
-  downloadFamily(families_[familyIndex], fileIndex, PREVIEW_TMP_PATH);
+  downloadFamily(familyIndex, fileIndex, PREVIEW_TMP_PATH);
   requestUpdateAndWait();
 }
 
-void FontDownloadActivity::downloadFamily(ManifestFamily& family, int fileIndex, const char* stagedFilePath) {
+void FontDownloadActivity::downloadFamily(int familyIndex, int fileIndex, const char* stagedFilePath) {
+  if (familyIndex < 0 || familyIndex >= static_cast<int>(families_.size())) return;
+  // Work from a copy: beginNetworkTransfer(familyIndex) releases families_ for
+  // the duration of each file transfer, and this copy stays valid throughout.
+  ManifestFamily family = families_[familyIndex];
   const bool completeFamily = fileIndex < 0;
   if (fileIndex < -1 || (!completeFamily && fileIndex >= static_cast<int>(family.files.size()))) return;
   {
     RenderLock lock(*this);
     state_ = DOWNLOADING;
-    downloadingFamilyIndex_ = static_cast<int>(&family - families_.data());
+    downloadingFamilyIndex_ = familyIndex;
     downloadingFileIndex_ = fileIndex;
     fileProgress_ = 0;
     fileTotal_ = 0;
@@ -1007,7 +1073,7 @@ void FontDownloadActivity::downloadFamily(ManifestFamily& family, int fileIndex,
   auto failTransaction = [&](const std::string& message, const bool cancelled) {
     const bool rollbackSucceeded = fontInstaller_.rollbackFamilyInstall(family.name.c_str());
     fontInstaller_.refreshRegistry();
-    refreshFamilyState(family);
+    refreshFamilyState(families_[familyIndex]);
     RenderLock lock(*this);
     if (cancelled && rollbackSucceeded) {
       state_ = FAMILY_LIST;
@@ -1069,7 +1135,7 @@ void FontDownloadActivity::downloadFamily(ManifestFamily& family, int fileIndex,
     } else {
       std::string url = file.baseUrl + fileName;
 
-      beginNetworkTransfer();
+      beginNetworkTransfer(familyIndex);
       auto result = HttpDownloader::downloadToFile(
           url, partPath.c_str(), [this](size_t downloaded, size_t total) { updateDownloadProgress(downloaded, total); },
           &cancelRequested_, "", "", [this] { return pollDownloadCancellation(); }, file.size);
@@ -1181,7 +1247,7 @@ void FontDownloadActivity::downloadFamily(ManifestFamily& family, int fileIndex,
     RenderLock lock(*this);
     sdFontSystem.ensureLoaded(renderer);
   }
-  refreshFamilyState(family);
+  refreshFamilyState(families_[familyIndex]);
 
   {
     RenderLock lock(*this);
@@ -1407,7 +1473,7 @@ void FontDownloadActivity::loop() {
           if (downloadingFamilyIndex_ >= 0 && downloadingFamilyIndex_ < static_cast<int>(families_.size())) {
             const char* stagedFilePath =
                 downloadingFileIndex_ >= 0 && Storage.exists(PREVIEW_TMP_PATH) ? PREVIEW_TMP_PATH : nullptr;
-            downloadFamily(families_[downloadingFamilyIndex_], downloadingFileIndex_, stagedFilePath);
+            downloadFamily(downloadingFamilyIndex_, downloadingFileIndex_, stagedFilePath);
             requestUpdateAndWait();
             return;
           }

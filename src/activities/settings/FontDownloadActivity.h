@@ -65,6 +65,11 @@ class FontDownloadActivity : public Activity {
 
   // Manifest data
   std::vector<ManifestFamily> families_;
+  // Raw per-repo manifest files kept on SD so families_ can be released during
+  // large font-file transfers and restored (re-parsed) afterwards. Indexes and
+  // merge order are preserved, so family indexes remain valid across a transfer.
+  std::vector<std::string> manifestFiles_;
+  bool manifestReleasedForTransfer_ = false;
   bool partialManifestFailure_ = false;
   int selectedIndex_ = 0;
 
@@ -94,16 +99,18 @@ class FontDownloadActivity : public Activity {
 
   void onWifiSelectionComplete(bool success);
   bool fetchAndParseManifests();
-  bool fetchAndParseOneManifest(const std::string& url, std::vector<ManifestFamily>& outFamilies,
-                                std::string& outBaseUrl, std::string& outUpdatedAt);
+  bool downloadManifestToFile(const std::string& url, const char* path);
+  bool parseManifestFile(const char* path, std::vector<ManifestFamily>& outFamilies, std::string& outBaseUrl,
+                         std::string& outUpdatedAt);
+  void restoreManifestData();
   void openFontRepositories();
   bool pollDownloadCancellation();
-  void beginNetworkTransfer();
+  void beginNetworkTransfer(int activeFamilyIndex = -1);
   void endNetworkTransfer();
   void updateDownloadProgress(size_t downloaded, size_t total);
   void renderLowMemoryProgress();
   void refreshFamilyState(ManifestFamily& family);
-  void downloadFamily(ManifestFamily& family, int fileIndex = -1, const char* stagedFilePath = nullptr);
+  void downloadFamily(int familyIndex, int fileIndex = -1, const char* stagedFilePath = nullptr);
   void downloadAll();
   static bool parsePointSize(const char* filename, const char* familyName, uint8_t& pointSize);
   int defaultPreviewFileIndex(const ManifestFamily& family) const;
