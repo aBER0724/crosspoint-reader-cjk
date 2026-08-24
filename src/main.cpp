@@ -121,6 +121,7 @@ RTC_NOINIT_ATTR uint32_t silentRebootTarget;
 constexpr uint32_t SILENT_REBOOT_MAGIC = 0xC1EAB007;
 constexpr uint32_t SILENT_REBOOT_TARGET_HOME = 0;
 constexpr uint32_t SILENT_REBOOT_TARGET_READER = 1;
+constexpr uint32_t SILENT_REBOOT_TARGET_FONTS = 2;
 
 // How the device is coming back to life, resolved once at boot. Both resume
 // flows suppress the splash and leave the panel holding its pre-boot frame; a
@@ -158,6 +159,16 @@ void silentRestartToReader() {
   silentRebootTarget = SILENT_REBOOT_TARGET_READER;
   silentRebootMagic = SILENT_REBOOT_MAGIC;
   LOG_DBG("MAIN", "Silent restart (target=reader)");
+  GUI.drawPopup(renderer, tr(STR_LOADING_POPUP));
+  delay(50);
+  ESP.restart();
+}
+
+void silentRestartToFonts() {
+  if (deepSleepInProgress) return;  // sleeping supersedes the heap-defrag reboot
+  silentRebootTarget = SILENT_REBOOT_TARGET_FONTS;
+  silentRebootMagic = SILENT_REBOOT_MAGIC;
+  LOG_DBG("MAIN", "Silent restart (target=fonts)");
   GUI.drawPopup(renderer, tr(STR_LOADING_POPUP));
   delay(50);
   ESP.restart();
@@ -226,9 +237,8 @@ bool handleSerialTestInputCommand(const String& command) {
     gpio.readButtonAdc(group1, group2);
     const int powerPin = BoardConfig::ACTIVE.input.power;
     const int powerRaw = powerPin >= 0 ? digitalRead(powerPin) : -1;
-    logSerial.printf("TEST_INPUT:ADC:G1=%d,B1=%d,G2=%d,B2=%d,PIN=%d,PWR=%d,ACTIVE_HIGH=%d\n", group1.raw,
-                     group1.button, group2.raw, group2.button, powerPin, powerRaw,
-                     BoardConfig::ACTIVE.input.powerActiveHigh);
+    logSerial.printf("TEST_INPUT:ADC:G1=%d,B1=%d,G2=%d,B2=%d,PIN=%d,PWR=%d,ACTIVE_HIGH=%d\n", group1.raw, group1.button,
+                     group2.raw, group2.button, powerPin, powerRaw, BoardConfig::ACTIVE.input.powerActiveHigh);
     return true;
   }
   if (command == "INPUT:CLEAR") {
@@ -364,7 +374,7 @@ void setup() {
   // Bound the target range too — RTC_NOINIT memory is uninitialized on cold boot.
   const bool isSilentReboot = (silentRebootMagic == SILENT_REBOOT_MAGIC);
   const uint32_t snapshotTarget =
-      (isSilentReboot && silentRebootTarget <= SILENT_REBOOT_TARGET_READER) ? silentRebootTarget : 0;
+      (isSilentReboot && silentRebootTarget <= SILENT_REBOOT_TARGET_FONTS) ? silentRebootTarget : 0;
   silentRebootMagic = 0;
   silentRebootTarget = 0;
 
@@ -498,6 +508,10 @@ void setup() {
   } else if (resume == BootResume::Silent && snapshotTarget == SILENT_REBOOT_TARGET_READER &&
              !APP_STATE.openEpubPath.empty()) {
     activityManager.goToReader(APP_STATE.openEpubPath);
+  } else if (resume == BootResume::Silent && snapshotTarget == SILENT_REBOOT_TARGET_FONTS) {
+    // Font download restarted itself out of a fragmented heap; land straight
+    // back in the activity so a clean manifest fetch happens automatically.
+    activityManager.goToFontDownload();
   } else if (resume == BootResume::Silent) {
     // target == home (or reader with no open book): land on home — don't fall
     // through to the sleep-wake "resume reader" logic, which fires on stale
