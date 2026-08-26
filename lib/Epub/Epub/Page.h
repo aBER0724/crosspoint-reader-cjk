@@ -75,6 +75,7 @@ class PageImage final : public PageElement {
   bool serialize(HalFile& file) override;
   PageElementTag getTag() const override { return TAG_PageImage; }
   static std::unique_ptr<PageImage> deserialize(HalFile& file);
+  ImageBlock& getImageBlock() { return *imageBlock; }
   const ImageBlock& getImageBlock() const { return *imageBlock; }
 };
 
@@ -134,6 +135,19 @@ class Page {
       return element->getTag() == TAG_PageImage &&
              static_cast<const PageImage&>(*element).getImageBlock().needsDecode();
     });
+  }
+
+  bool prepareImages(const PageRenderCancellation* cancellation = nullptr) {
+    for (const auto& element : elements) {
+      if (cancellation && cancellation->requested()) {
+        return false;
+      }
+      if (element->getTag() == TAG_PageImage &&
+          !static_cast<PageImage&>(*element).getImageBlock().prepareSource(cancellation)) {
+        return false;
+      }
+    }
+    return !cancellation || !cancellation->requested();
   }
 
   // Get bounding box of all images on the page (union of image rects)

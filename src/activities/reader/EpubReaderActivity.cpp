@@ -442,6 +442,11 @@ void EpubReaderActivity::runDeferredReaderWork() {
     // cppcheck-suppress knownConditionTrueFalse
     if (section->isBuilding() && (waiting || buildTickHeapGate())) {
       lastBackgroundBuildMs = now;
+      // Image tags can appear in any parser slice, not only startBuild(). Header probing
+      // uses a streaming ZIP inflate (~43 KB state + window), so lend the framebuffer
+      // for each bounded layout slice. The e-ink panel retains the currently displayed
+      // page while the storage is lent, and requestUpdate() redraws when a target arrives.
+      GfxRenderer::FrameBufferLoan loan(renderer);
       const Section::BuildResult buildResult =
           waiting ? section->buildSomeMore(BUILD_PAGES_PER_CHUNK, FOREGROUND_BUILD_PARSE_STEPS_PER_TICK,
                                            FOREGROUND_BUILD_PARSE_BYTES_PER_TICK, [&lock] { return lock.isStale(); })
@@ -598,6 +603,8 @@ void EpubReaderActivity::loop() {
   const bool inputActive = mappedInput.wasAnyPressed() || mappedInput.wasAnyReleased() ||
                            mappedInput.isPressed(MappedInputManager::Button::Back) ||
                            mappedInput.isPressed(MappedInputManager::Button::Confirm) ||
+                           mappedInput.isPressed(MappedInputManager::Button::Left) ||
+                           mappedInput.isPressed(MappedInputManager::Button::Right) ||
                            mappedInput.isPressed(MappedInputManager::Button::PageBack) ||
                            mappedInput.isPressed(MappedInputManager::Button::PageForward) ||
                            mappedInput.isPressed(MappedInputManager::Button::Power) || gpio.wasTouchActivity() ||
@@ -1479,6 +1486,7 @@ void EpubReaderActivity::render(RenderLock&& lock) {
     }
   }
   if (section->isBuilding() && section->currentPage >= static_cast<int>(section->pageCount)) {
+    GfxRenderer::FrameBufferLoan loan(renderer);
     const Section::BuildResult buildResult =
         section->buildSomeMore(BUILD_PAGES_PER_CHUNK, FOREGROUND_BUILD_PARSE_STEPS_PER_TICK,
                                FOREGROUND_BUILD_PARSE_BYTES_PER_TICK, [&lock] { return lock.isStale(); });
@@ -1524,6 +1532,7 @@ void EpubReaderActivity::render(RenderLock&& lock) {
         // RenderLock; if we run out, fall back to the watermark page below and
         // let loop() finish the catch-up (which now runs at a far larger parse
         // budget, so it lands quickly).
+        GfxRenderer::FrameBufferLoan loan(renderer);
         const uint32_t pumpStart = millis();
         LOG_DBG("ERS", "PUMP start target=%d pc=%d built=%d isBuilding=%d", turnTarget, section->pageCount,
                 section->builtPageCount(), section->isBuilding() ? 1 : 0);
@@ -1760,6 +1769,24 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
     LOG_DBG("ERS", "Interactive page render (generation %lu)", static_cast<unsigned long>(lock.generation()));
   }
 
+  const bool pageHasImages = page->hasImages();
+  if (pageHasImages && page->hasImagesNeedingDecode()) {
+    // Release rebuildable font arenas before JPEG/ZIP work, then run the normal
+    // page prewarm afterwards. Clearing them after prewarm would force the real
+    // draw through per-glyph SD reads and can monopolize pagination/input.
+    if (auto* fcm = renderer.getFontCacheManager()) {
+      fcm->clearCache();
+    }
+    GfxRenderer::FrameBufferLoan loan(renderer);
+    if (!page->prepareImages(&cancellation)) {
+      return;
+    }
+    loan.end();
+    if (lock.isStale()) {
+      return;
+    }
+  }
+
   // External fonts keep glyphs on the SD card. Batch the current page's
   // distinct glyph reads before drawing so CJK page turns avoid hundreds of
   // random SD seeks. This scan does not lay out the page a second time, and
@@ -1800,16 +1827,23 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
         prewarmScope->cancel();
         return;
       }
-      if (!prewarmScope->endScanAndPrewarm(cancellation.isCancelled, cancellation.context) || lock.isStale()) {
+      const bool prewarmCompleted = prewarmScope->endScanAndPrewarm(cancellation.isCancelled, cancellation.context);
+      if (lock.isStale() || cancellation.requested()) {
         prewarmScope->cancel();
         return;
+      }
+      if (!prewarmCompleted) {
+        // Keep the selected SD font so every EPUB glyph remains available. Rendering
+        // through the bounded overflow cache is slower, but avoids missing characters.
+        prewarmScope->cancel();
+        prewarmScope.reset();
+        LOG_INF("ERS", "SD font prewarm unavailable; rendering page through bounded overflow cache");
       }
     }
   }
   const auto tPrewarm = millis();
 
   const bool darkMode = renderer.isDarkMode();
-  const bool pageHasImages = page->hasImages();
   forcedRefreshPending = false;
   const bool usingSdCardFont = renderer.isSdCardFont(fontId);
   const bool lowMemory =

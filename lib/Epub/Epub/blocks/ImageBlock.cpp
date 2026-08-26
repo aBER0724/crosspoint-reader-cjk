@@ -59,11 +59,9 @@ bool readValidCacheHeader(HalFile& cacheFile, const int expectedWidth, const int
   return cacheFile.size() >= expectedSize;
 }
 
-// Pages are deserialized afresh on each visit. Keep a bounded, allocation-free
-// record so an image that failed renders its placeholder directly for the rest
-// of the reader session instead of paying another placeholder refresh and
-// decode. The reader clears this on entry so transient memory/storage failures
-// are retried.
+// Keep a bounded, allocation-free record for diagnostics. Decode failures can be
+// transient under SD-font heap pressure, so render() retries them on later visits
+// instead of treating the record as a permanent session blacklist.
 constexpr size_t MAX_SESSION_IMAGE_FAILURES = 16;
 uint64_t failedImageHashes[MAX_SESSION_IMAGE_FAILURES];
 size_t failedImageCount = 0;
@@ -90,6 +88,14 @@ void rememberImageFailure(const std::string& path) {
   failedImageHashes[failedImageCount++] = imagePathHash(path);
 }
 
+void clearRememberedImageFailure(const std::string& path) {
+  const uint64_t hash = imagePathHash(path);
+  for (size_t i = 0; i < failedImageCount; i++) {
+    if (failedImageHashes[i] != hash) continue;
+    failedImageHashes[i] = failedImageHashes[--failedImageCount];
+    return;
+  }
+}
 // --- Per-page-render RAM slot for the pixel cache ----------------------------
 // The tiled grayscale flow re-renders an image page once for the BW
 // double-refresh and again for every band of both gray planes, and each pass
@@ -319,8 +325,26 @@ bool ImageBlock::hasValidCache() const {
   return readValidCacheHeader(cacheFile, width, height, cachedWidth, cachedHeight);
 }
 
-bool ImageBlock::needsDecode() const { return !imageFailedThisSession(imagePath) && !hasValidCache(); }
+bool ImageBlock::needsDecode() const { return !hasValidCache(); }
 
+bool ImageBlock::prepareSource(const PageRenderCancellation* cancellation) {
+  if (srcPath.empty() || Storage.exists(imagePath.c_str())) {
+    return true;
+  }
+  if (cancellation && cancellation->requested()) {
+    return false;
+  }
+
+  LOG_DBG("IMG", "Lazy-extracting %s -> %s", srcPath.c_str(), imagePath.c_str());
+  if (!extractFn || !extractFn(extractCtx, srcPath.c_str(), imagePath.c_str())) {
+    if (cancellation && cancellation->requested()) {
+      return false;
+    }
+    LOG_ERR("IMG", "Lazy extraction failed: %s", srcPath.c_str());
+    return true;  // Render will show a placeholder, but page navigation remains available.
+  }
+  return !cancellation || !cancellation->requested();
+}
 void ImageBlock::clearSessionRenderFailures() { failedImageCount = 0; }
 
 void ImageBlock::releaseRenderCache() { releasePxcSlot(); }
@@ -368,29 +392,27 @@ bool ImageBlock::render(GfxRenderer& renderer, const int x, const int y, const P
   }
 
   if (imageFailedThisSession(imagePath)) {
-    renderPlaceholder(renderer, x, y);
-    return true;
+    // Decode failures are often transient heap pressure from an adjacent SD-font
+    // page. Do not permanently suppress retries for the rest of the reader session.
+    // A later visit may have enough contiguous heap or an already-generated cache.
+    LOG_DBG("IMG", "Retrying image after an earlier render failure: %s", imagePath.c_str());
   }
 
   // Try to render from cache first
   std::string cachePath = getCachePath(imagePath);
   if (renderFromCache(renderer, cachePath, x, y, width, height, cancellation)) {
+    clearRememberedImageFailure(imagePath);
     return true;  // Successfully rendered from cache
   }
   if (cancellation && cancellation->requested()) {
     return false;
   }
 
-  // The build only header-probed the image for dimensions; pull the actual
-  // file out of the book now, on first visit to the page.
-  if (!srcPath.empty() && extractFn && !Storage.exists(imagePath.c_str())) {
-    LOG_DBG("IMG", "Lazy-extracting %s -> %s", srcPath.c_str(), imagePath.c_str());
-    if (!extractFn(extractCtx, srcPath.c_str(), imagePath.c_str())) {
-      LOG_ERR("IMG", "Lazy extraction failed: %s", srcPath.c_str());
-    }
-    if (cancellation && cancellation->requested()) {
-      return false;
-    }
+  // Normally prepareSource() extracts before framebuffer rendering while the
+  // framebuffer is available as ZIP inflate scratch. Keep this fallback for
+  // callers outside the reader; it may fail gracefully under low memory.
+  if (!prepareSource(cancellation)) {
+    return false;
   }
 
   // No cache - need to decode the image
@@ -451,6 +473,7 @@ bool ImageBlock::render(GfxRenderer& renderer, const int x, const int y, const P
     return true;
   }
 
+  clearRememberedImageFailure(imagePath);
   LOG_DBG("IMG", "Decode successful");
   return true;
 }
