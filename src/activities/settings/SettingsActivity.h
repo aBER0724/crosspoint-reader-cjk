@@ -170,6 +170,8 @@ class SettingsActivity final : public Activity {
   bool preserveQuickResumeTimeoutOn = false;
   bool quickResumeTimeoutAutoEnabled = false;
   bool forceFullSettingsRefresh = false;
+  int lastRenderedSettingIndex = -1;
+  int lastRenderedCategoryIndex = -1;
 
   OptionPopup optionPopup;
 
@@ -178,6 +180,7 @@ class SettingsActivity final : public Activity {
 
   void enterCategory(int categoryIndex);
   void toggleCurrentSetting();
+  void applySettingImmediately(uint8_t CrossPointSettings::* valuePtr);
   void openSleepTimeoutPicker();
   void rebuildSettingsLists();
   void syncQuickResumeTimeoutForSleepScreen(bool sleepScreenChanged, bool quickResumeTimeoutChanged);
