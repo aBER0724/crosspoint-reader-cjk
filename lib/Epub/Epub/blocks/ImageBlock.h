@@ -19,6 +19,10 @@ class ImageBlock final : public Block {
   bool imageExists() const;
   bool hasValidCache() const;
   bool needsDecode() const;
+  // Extract the compressed source from the EPUB before framebuffer rendering.
+  // This is called while the reader lends its framebuffer as inflate scratch,
+  // avoiding the 32 KB ZIP window allocation failure seen under SD-font load.
+  bool prepareSource(const PageRenderCancellation* cancellation = nullptr);
   void renderPlaceholder(GfxRenderer& renderer, int x, int y) const;
   static void clearSessionRenderFailures();
 

@@ -26,7 +26,9 @@ namespace {
 //      (lazy extraction: images are header-probed at build time and extracted on
 //      first render).
 // v34: first-line indentation is part of the render spec and cache key.
-constexpr uint8_t SECTION_FILE_VERSION = 34;
+// v35: section layout image probing runs with deterministic inflate scratch; invalidate
+//      caches that may have silently omitted images after a low-memory probe failure.
+constexpr uint8_t SECTION_FILE_VERSION = 35;
 // Written into the version field while a build is in progress; patched to
 // SECTION_FILE_VERSION only when the build is finalized. An abandoned /
 // crash-interrupted .bin therefore carries version 0, which loadSectionFile rejects
