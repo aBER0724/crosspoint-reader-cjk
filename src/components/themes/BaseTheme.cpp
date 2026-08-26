@@ -908,8 +908,11 @@ void BaseTheme::drawStatusBar(GfxRenderer& renderer, const float bookProgress, c
     // Right aligned text for progress counter
     char progressStr[32];
 
-    // Prefix the page count with "~" while a still-building spine only yields an estimated total.
-    const char* estimatePrefix = pageCountEstimated ? "~" : "";
+    // Keep the counter numeric while a spine is still being indexed. A leading
+    // approximation glyph can be rendered as a minus by some external UI fonts,
+    // making a valid page number look negative.
+    (void)pageCountEstimated;
+    const char* estimatePrefix = "";
 
     if (sb.showBookProgressPercent && sb.showChapterPageCount) {
       snprintf(progressStr, sizeof(progressStr), "%s%d/%d  %.0f%%", estimatePrefix, currentPage, pageCount,
