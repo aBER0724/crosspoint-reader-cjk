@@ -112,8 +112,11 @@ void LyraTheme::drawHeader(const GfxRenderer& renderer, Rect rect, const char* t
       SETTINGS.hideBatteryPercentage != CrossPointSettings::HIDE_BATTERY_PERCENTAGE::HIDE_ALWAYS;
   // Position icon at right edge, drawBatteryRight will place text to the left
   const int batteryX = rect.x + rect.width - 12 - LyraMetrics::values.batteryWidth;
+  const int batteryY = renderer.getOrientation() == GfxRenderer::Orientation::PortraitInverted
+                           ? renderer.getScreenHeight() - LyraMetrics::values.batteryHeight - 35
+                           : rect.y + 5;
   drawBatteryRight(renderer,
-                   Rect{batteryX, rect.y + 5, LyraMetrics::values.batteryWidth, LyraMetrics::values.batteryHeight},
+                   Rect{batteryX, batteryY, LyraMetrics::values.batteryWidth, LyraMetrics::values.batteryHeight},
                    showBatteryPercentage);
 
   int maxTitleWidth = title != nullptr ? renderer.getTextWidth(UI_12_FONT_ID, title, EpdFontFamily::BOLD) : 0;
