@@ -68,9 +68,6 @@ class GfxRenderer {
   mutable std::map<int, SdCardFont*> sdCardFonts_;
   // Dark mode: true = black background, false = white background
   bool darkMode = false;
-  mutable bool darkUiRedrivePrimed = false;
-  mutable unsigned long lastDarkUiRedriveMs = 0;
-  mutable uint8_t darkUiFastRefreshesSinceRedrive = 0;
   // Whether to invert images in dark mode (user preference)
   bool invertImagesInDarkMode = false;
   // Extra spacing (in pixels) for ASCII letters/digits when using external reader font.
@@ -144,6 +141,8 @@ class GfxRenderer {
     int sourceBaselineOffset = 0;
     int cellClipWidth = -1;
     int sourceCellClipWidth = -1;
+    uint8_t builtinCjkSize = 0;
+    bool builtinCjkBold = false;
   };
 
   bool resolveTextFallback(int fontId, const EpdFontFamily& fontFamily, EpdFontFamily::Style style, uint32_t cp,
@@ -165,7 +164,7 @@ class GfxRenderer {
   void renderExternalGlyph(const uint8_t* bitmap, ExternalFont* font, int* x, int lineTopY, bool pixelState,
                            const ExternalGlyphMetrics& metrics, int advanceOverride = -1, int cellClipWidth = -1) const;
   // Render CJK character using built-in UI font (from PROGMEM)
-  void renderBuiltinCjkGlyph(uint32_t cp, int* x, int y, bool pixelState) const;
+  void renderBuiltinCjkGlyph(uint32_t cp, int* x, int y, bool pixelState, uint8_t size = 12, bool bold = false) const;
   // Check if fontId is a reader font (should use external Chinese font)
   bool isReaderFont(int fontId) const;
   // Get effective font ID, handling fallback for external reader font IDs
@@ -242,13 +241,7 @@ class GfxRenderer {
   void setFadingFix(const bool enabled) { fadingFix = enabled; }
 
   // Dark mode control
-  void setDarkMode(bool darkMode) {
-    if (this->darkMode != darkMode) {
-      darkUiRedrivePrimed = false;
-      darkUiFastRefreshesSinceRedrive = 0;
-    }
-    this->darkMode = darkMode;
-  }
+  void setDarkMode(bool darkMode) { this->darkMode = darkMode; }
   bool isDarkMode() const { return darkMode; }
   // When true, images are inverted along with text in dark mode.
   // When false (default), image rendering skips dark mode inversion.

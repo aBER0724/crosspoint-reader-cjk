@@ -14,7 +14,11 @@ from generate_cjk_ui_font import build_ui_chars, collect_translation_chars, get_
 
 
 TRANSLATIONS_DIR = ROOT / "lib" / "I18n" / "translations"
-FONT_HEADER = ROOT / "lib" / "GfxRenderer" / "cjk_ui_font_20.h"
+FONT_HEADERS = [
+    ROOT / "lib" / "GfxRenderer" / f"cjk_ui_font_{size}_{style}.h"
+    for size in (8, 10, 12)
+    for style in ("regular", "bold")
+]
 SHIPPING_CJK_LANGUAGES = ["CHINESE_SIMPLIFIED", "CHINESE_TRADITIONAL", "JAPANESE"]
 
 
@@ -27,7 +31,7 @@ def read_generated_codepoints(path: Path) -> set[int]:
 
 
 def verify_shipping_translations() -> bool:
-    generated = read_generated_codepoints(FONT_HEADER)
+    generated_by_header = {path: read_generated_codepoints(path) for path in FONT_HEADERS}
     failed = False
 
     for language in SHIPPING_CJK_LANGUAGES:
@@ -36,18 +40,19 @@ def verify_shipping_translations() -> bool:
             for char in collect_translation_chars(TRANSLATIONS_DIR, [language])
             if ord(char) >= 0x80
         }
-        missing = sorted(required - generated)
-        if not missing:
-            continue
+        for path, generated in generated_by_header.items():
+            missing = sorted(required - generated)
+            if not missing:
+                continue
 
-        failed = True
-        print(f"{language}: built-in CJK UI font is missing {len(missing)} translated characters:")
-        # Keep diagnostics printable on Windows consoles that still use a
-        # non-UTF-8 code page. The codepoint is sufficient to locate the glyph.
-        print("  " + " ".join(f"U+{codepoint:04X}" for codepoint in missing))
-
+            failed = True
+            print(f"{language}: {path.name} is missing {len(missing)} translated characters:")
+            # Keep diagnostics printable on Windows consoles that still use a
+            # non-UTF-8 code page. The codepoint is sufficient to locate the glyph.
+            print("  " + " ".join(f"U+{codepoint:04X}" for codepoint in missing))
     if not failed:
-        print(f"Built-in CJK UI font covers all shipping translations ({len(generated)} glyphs).")
+        glyph_count = min(len(generated) for generated in generated_by_header.values())
+        print(f"All built-in CJK UI fonts cover shipping translations ({glyph_count} glyphs each).")
     return not failed
 
 

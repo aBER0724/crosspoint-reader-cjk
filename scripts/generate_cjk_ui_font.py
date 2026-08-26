@@ -96,43 +96,43 @@ def write_wrapped_values(file_obj, values, formatter, values_per_line=16):
         file_obj.write(" ".join(formatter(value) for value in chunk))
         file_obj.write("\n")
 
-
-def load_font_fitting_cell(font_path, pixel_size):
-    """Load a font and shrink it until ascent+descent fits the cell height."""
+def load_font_for_point_size(font_path, point_size):
+    """Load a font using the same 150 DPI point-size convention as fontconvert.py."""
     try:
         from PIL import ImageFont
     except ImportError:
         print("Error: PIL/Pillow not installed. Run: pip3 install Pillow")
         sys.exit(1)
 
-    pt_size = max(1, int(pixel_size))
-    while pt_size > 0:
-        try:
-            font = ImageFont.truetype(font_path, pt_size)
-        except Exception as e:
-            print(f"Error loading font: {e}")
-            return None, None, None, None
-        ascent, descent = font.getmetrics()
-        if ascent + descent <= pixel_size:
-            return font, pt_size, ascent, descent
-        pt_size -= 1
-    return None, None, None, None
+    raster_size = max(1, round(point_size * 150 / 72))
+    try:
+        font = ImageFont.truetype(font_path, raster_size)
+    except Exception as e:
+        print(f"Error loading font: {e}")
+        return None, None, None, None
+    ascent, descent = font.getmetrics()
+    return font, raster_size, ascent, descent
 
-
-def generate_font_header(font_path, pixel_size, output_path, chars_text=None):
-    """Generate CJK UI font header file."""
+def generate_font_header(
+    font_path, point_size, output_path, chars_text=None, namespace=None, cell_size=None, baseline=None, threshold=96
+):
+    """Generate a CJK UI font using the built-in EpdFont 150 DPI size convention."""
     try:
         from PIL import Image, ImageDraw
     except ImportError:
         print("Error: PIL/Pillow not installed. Run: pip3 install Pillow")
         sys.exit(1)
 
-    font, pt_size, ascent, descent = load_font_fitting_cell(font_path, pixel_size)
+    font, raster_size, ascent, descent = load_font_for_point_size(font_path, point_size)
     if font is None:
         return False
+    pixel_size = cell_size or (ascent + descent)
 
     chars = get_unique_chars(chars_text if chars_text is not None else BASE_UI_CHARS)
-    print(f"Generating {pixel_size}x{pixel_size} font with {len(chars)} characters...")
+    print(
+        f"Generating {point_size}pt ({raster_size}px raster in {pixel_size}x{pixel_size}px cell) "
+        f"font with {len(chars)} characters..."
+    )
 
     # Collect glyph data
     codepoints = []
@@ -142,13 +142,13 @@ def generate_font_header(font_path, pixel_size, output_path, chars_text=None):
     # Get font metrics for consistent vertical alignment
     font_height = ascent + descent
     # Fixed baseline (from top): align all glyphs to the same baseline to avoid jitter
-    baseline = pixel_size - descent
+    baseline = baseline if baseline is not None else min(ascent, pixel_size - descent)
 
     for char in chars:
         cp = ord(char)
 
         # Create image for character
-        img = Image.new('1', (pixel_size, pixel_size), 0)
+        img = Image.new('L', (pixel_size, pixel_size), 0)
         draw = ImageDraw.Draw(img)
 
         # Get character bounding box
@@ -171,11 +171,10 @@ def generate_font_header(font_path, pixel_size, output_path, chars_text=None):
 
         # Draw character
         try:
-            # Use left-baseline anchor: y is the baseline position
-            draw.text((x, y), char, font=font, fill=1, anchor="ls")
+            draw.text((x, y), char, font=font, fill=255, anchor="ls", stroke_width=0)
         except TypeError:
-            # Fallback for older Pillow: approximate baseline by shifting up
-            draw.text((x, y - ascent), char, font=font, fill=1)
+            # Fallback for older Pillow: approximate baseline by shifting up.
+            draw.text((x, y - ascent), char, font=font, fill=255)
 
         # Convert to bytes
         bytes_per_row = (pixel_size + 7) // 8
@@ -187,7 +186,7 @@ def generate_font_header(font_path, pixel_size, output_path, chars_text=None):
                     px = byte_idx * 8 + bit
                     if px < pixel_size:
                         pixel = img.getpixel((px, row))
-                        if pixel:
+                        if pixel >= threshold:
                             byte_val |= (1 << (7 - bit))
                 bitmap_bytes.append(byte_val)
 
@@ -197,20 +196,25 @@ def generate_font_header(font_path, pixel_size, output_path, chars_text=None):
             # ASCII: use actual width + small padding
             widths.append(min(char_width + 2, pixel_size))
         else:
-            # CJK: use full width
-            widths.append(pixel_size)
+            # Keep vertical line-height padding out of horizontal CJK spacing. Noto CJK glyphs use a square em whose
+            # advance matches the 150 DPI raster size, while pixel_size may be a taller line-height cell.
+            try:
+                advance = round(font.getlength(char))
+            except AttributeError:
+                advance = raster_size
+            widths.append(max(1, min(advance, raster_size)))
         bitmaps.append(bitmap_bytes)
 
     # Generate header file
     bytes_per_row = (pixel_size + 7) // 8
     bytes_per_char = bytes_per_row * pixel_size
     font_name = Path(font_path).stem
-
+    namespace = namespace or f"CjkUiFont{point_size}"
     with open(output_path, 'w', encoding='utf-8', newline='\n') as f:
         f.write(f'''/**
  * Auto-generated CJK UI font data (optimized - UI characters only)
  * Font: {font_name}
- * Size: {pt_size}pt
+ * Size: {point_size}pt ({raster_size}px raster at 150 DPI)
  * Dimensions: {pixel_size}x{pixel_size}
  * Characters: {len(chars)}
  * Total size: {len(chars) * bytes_per_char} bytes ({len(chars) * bytes_per_char / 1024:.1f} KB)
@@ -220,7 +224,7 @@ def generate_font_header(font_path, pixel_size, output_path, chars_text=None):
  * Supports proportional spacing for English characters.
  */
 #pragma once
-namespace CjkUiFont{pixel_size} {{
+namespace {namespace} {{
 
 #include <cstdint>
 #include <pgmspace.h>
@@ -228,6 +232,7 @@ namespace CjkUiFont{pixel_size} {{
 // Font parameters
 static constexpr uint8_t CJK_UI_FONT_WIDTH = {pixel_size};
 static constexpr uint8_t CJK_UI_FONT_HEIGHT = {pixel_size};
+static constexpr uint8_t CJK_UI_FONT_BASELINE = {baseline};
 static constexpr uint8_t CJK_UI_FONT_BYTES_PER_ROW = {bytes_per_row};
 static constexpr uint8_t CJK_UI_FONT_BYTES_PER_CHAR = {bytes_per_char};
 static constexpr uint16_t CJK_UI_FONT_GLYPH_COUNT = {len(chars)};
@@ -287,7 +292,8 @@ inline uint8_t getCjkUiGlyphWidth(uint32_t codepoint) {
     return pgm_read_byte(&CJK_UI_GLYPH_WIDTHS[idx]);
 }
 
-} // namespace CjkUiFont''' + str(pixel_size) + '\n')
+} // namespace {namespace}
+''')
 
     print(f"Generated: {output_path}")
     print(f"  - {len(chars)} characters")
@@ -297,9 +303,13 @@ inline uint8_t getCjkUiGlyphWidth(uint32_t codepoint) {
 
 def main():
     parser = argparse.ArgumentParser(description='Generate CJK UI font header')
-    parser.add_argument('--size', type=int, default=26, help='Pixel size (default: 26)')
+    parser.add_argument('--size', type=int, default=12, help='Point size at 150 DPI (default: 12)')
+    parser.add_argument('--cell-size', type=int, help='Bitmap cell size in pixels (default: font line height)')
+    parser.add_argument('--baseline', type=int, help='Baseline offset from the top of the bitmap cell')
+    parser.add_argument('--threshold', type=int, default=96, help='Antialias threshold from 0 to 255 (default: 96)')
     parser.add_argument('--font', type=str, required=True, help='Path to Source Han Sans font file')
     parser.add_argument('--output', type=str, help='Output path (default: lib/GfxRenderer/cjk_ui_font_SIZE.h)')
+    parser.add_argument('--namespace', type=str, help='Generated C++ namespace (default: CjkUiFontSIZE)')
     parser.add_argument(
         '--translations-dir',
         type=str,
@@ -334,7 +344,16 @@ def main():
 
     chars_text = build_ui_chars(translations_dir, language_filter)
 
-    if generate_font_header(args.font, args.size, output_path, chars_text):
+    if generate_font_header(
+        args.font,
+        args.size,
+        output_path,
+        chars_text,
+        args.namespace,
+        args.cell_size,
+        args.baseline,
+        args.threshold,
+    ):
         print("Success!")
     else:
         print("Failed!")

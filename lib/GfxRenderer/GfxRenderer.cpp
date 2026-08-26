@@ -13,22 +13,77 @@
 #include "ExternalFontHelpers.h"
 #include "FontCacheManager.h"
 
-// Built-in CJK UI font (embedded in flash) - 20px only
-#include "cjk_ui_font_20.h"
-
+// Sparse Noto Sans CJK UI fonts generated from shipping translations.
+#include "cjk_ui_font_10_bold.h"
+#include "cjk_ui_font_10_regular.h"
+#include "cjk_ui_font_12_bold.h"
+#include "cjk_ui_font_12_regular.h"
+#include "cjk_ui_font_20.h"  // Legacy reader fallback for non-UI paths.
+#include "cjk_ui_font_8_bold.h"
+#include "cjk_ui_font_8_regular.h"
 // Reader font IDs (from fontIds.h) - used to determine when to use external
 // Chinese font UI fonts should NOT use external font
 namespace {
 // UI font IDs that should NOT use external reader font
 // Values must match src/fontIds.h
-constexpr int UI_FONT_IDS[] = {
-    22918846,     // UI_10_FONT_ID - for status display (battery, page number,
-                  // etc.)
-    1635686837,   // UI_12_FONT_ID - for status display
-    -2089201234,  // UI_20_FONT_ID - primary UI font (menus, titles, settings)
-    674098198     // SMALL_FONT_ID
-};
+constexpr int UI_FONT_IDS[] = {-2146690791, 394198869, -2089201234, -740048259};
 constexpr int UI_FONT_COUNT = sizeof(UI_FONT_IDS) / sizeof(UI_FONT_IDS[0]);
+
+struct BuiltinCjkFontView {
+  const uint8_t* (*glyph)(uint32_t);
+  uint8_t (*width)(uint32_t);
+  bool (*hasGlyph)(uint32_t);
+  uint8_t size;
+  uint8_t baseline;
+  uint8_t bytesPerRow;
+  uint8_t bytesPerChar;
+};
+
+template <typename Tag>
+BuiltinCjkFontView makeBuiltinCjkFontView();
+
+#define DEFINE_CJK_VIEW(TAG, NS)                     \
+  struct TAG {};                                     \
+  template <>                                        \
+  BuiltinCjkFontView makeBuiltinCjkFontView<TAG>() { \
+    return {NS::getCjkUiGlyph,                       \
+            NS::getCjkUiGlyphWidth,                  \
+            NS::hasCjkUiGlyph,                       \
+            NS::CJK_UI_FONT_HEIGHT,                  \
+            NS::CJK_UI_FONT_BASELINE,                \
+            NS::CJK_UI_FONT_BYTES_PER_ROW,           \
+            NS::CJK_UI_FONT_BYTES_PER_CHAR};         \
+  }
+
+DEFINE_CJK_VIEW(Cjk8RegularTag, CjkUiFont8Regular)
+DEFINE_CJK_VIEW(Cjk8BoldTag, CjkUiFont8Bold)
+DEFINE_CJK_VIEW(Cjk10RegularTag, CjkUiFont10Regular)
+DEFINE_CJK_VIEW(Cjk10BoldTag, CjkUiFont10Bold)
+DEFINE_CJK_VIEW(Cjk12RegularTag, CjkUiFont12Regular)
+DEFINE_CJK_VIEW(Cjk12BoldTag, CjkUiFont12Bold)
+
+#undef DEFINE_CJK_VIEW
+
+BuiltinCjkFontView getBuiltinCjkFont(const uint8_t size, const bool bold) {
+  if (size == 8 || size == CjkUiFont8Regular::CJK_UI_FONT_HEIGHT) {
+    return bold ? makeBuiltinCjkFontView<Cjk8BoldTag>() : makeBuiltinCjkFontView<Cjk8RegularTag>();
+  }
+  if (size == 10 || size == CjkUiFont10Regular::CJK_UI_FONT_HEIGHT) {
+    return bold ? makeBuiltinCjkFontView<Cjk10BoldTag>() : makeBuiltinCjkFontView<Cjk10RegularTag>();
+  }
+  return bold ? makeBuiltinCjkFontView<Cjk12BoldTag>() : makeBuiltinCjkFontView<Cjk12RegularTag>();
+}
+
+BuiltinCjkFontView getBuiltinCjkFont(const int fontId, const EpdFontFamily::Style style) {
+  const bool bold = style == EpdFontFamily::BOLD || style == EpdFontFamily::BOLD_ITALIC;
+  if (fontId == -740048259) {  // SMALL_FONT_ID
+    return bold ? makeBuiltinCjkFontView<Cjk8BoldTag>() : makeBuiltinCjkFontView<Cjk8RegularTag>();
+  }
+  if (fontId == -2146690791) {  // UI_10_FONT_ID
+    return bold ? makeBuiltinCjkFontView<Cjk10BoldTag>() : makeBuiltinCjkFontView<Cjk10RegularTag>();
+  }
+  return bold ? makeBuiltinCjkFontView<Cjk12BoldTag>() : makeBuiltinCjkFontView<Cjk12RegularTag>();
+}
 
 // Reader font IDs - values must match src/fontIds.h
 constexpr int READER_FONT_IDS[] = {
@@ -72,8 +127,6 @@ int scalePositiveTextAdvance(const int advance, const bool halfScale) {
 // baseline for non-rich external font glyphs must be shifted down by this
 // descent amount so both paths share the same visual baseline.
 static constexpr int CJK_UI_FONT_DESCENT = 4;
-constexpr unsigned long DARK_UI_REDRIVE_MIN_INTERVAL_MS = 30000;
-constexpr uint8_t DARK_UI_FAST_REFRESHES_PER_REDRIVE = 32;
 
 // Check if a Unicode codepoint is CJK (Chinese/Japanese/Korean)
 // Only these characters should use the external font width
@@ -803,14 +856,17 @@ bool GfxRenderer::resolveTextFallback(const int fontId, const EpdFontFamily& fon
   };
 
   const auto useBuiltinCjk = [&]() {
-    if (!CjkUiFont20::hasCjkUiGlyph(cp)) return false;
+    const auto builtin = getBuiltinCjkFont(fontId, style);
+    if (!builtin.hasGlyph(cp)) return false;
     out->kind = TextFallbackGlyph::Kind::BuiltinCjk;
-    out->advance = CjkUiFont20::getCjkUiGlyphWidth(cp);
-    out->metrics.width = CjkUiFont20::CJK_UI_FONT_WIDTH;
-    out->metrics.height = CjkUiFont20::CJK_UI_FONT_HEIGHT;
+    out->builtinCjkSize = builtin.size;
+    out->builtinCjkBold = style == EpdFontFamily::BOLD || style == EpdFontFamily::BOLD_ITALIC;
+    out->advance = builtin.width(cp);
+    out->metrics.width = builtin.size;
+    out->metrics.height = builtin.size;
     out->metrics.advanceX = out->advance;
-    out->metrics.top = CjkUiFont20::CJK_UI_FONT_HEIGHT - CJK_UI_FONT_DESCENT;
-    applyScale(CjkUiFont20::CJK_UI_FONT_HEIGHT, out->metrics.top, CjkUiFont20::CJK_UI_FONT_HEIGHT);
+    out->metrics.top = builtin.baseline;
+    applyScale(builtin.baseline, builtin.baseline, builtin.size);
     return out->advance > 0;
   };
 
@@ -843,22 +899,22 @@ void GfxRenderer::renderTextFallback(const TextFallbackGlyph& fallback, const ui
       renderExternalGlyph(fallback.bitmap, fallback.font, x, baselineY + fallback.baselineOffset, pixelState,
                           fallback.metrics, fallback.advance, fallback.cellClipWidth);
     } else if (fallback.kind == TextFallbackGlyph::Kind::BuiltinCjk) {
-      renderBuiltinCjkGlyph(cp, x, baselineY, pixelState);
+      renderBuiltinCjkGlyph(cp, x, baselineY, pixelState, fallback.builtinCjkSize, fallback.builtinCjkBold);
     }
     return;
   }
 
   const bool builtin = fallback.kind == TextFallbackGlyph::Kind::BuiltinCjk;
-  const uint8_t* bitmap = builtin ? CjkUiFont20::getCjkUiGlyph(cp) : fallback.bitmap;
+  const auto builtinFont = getBuiltinCjkFont(fallback.builtinCjkSize, fallback.builtinCjkBold);
+  const uint8_t* bitmap = builtin ? builtinFont.glyph(cp) : fallback.bitmap;
   if (!bitmap || (!builtin && !fallback.font)) return;
 
-  const int srcWidth = fallback.sourceMetrics.width > 0
-                           ? fallback.sourceMetrics.width
-                           : (builtin ? CjkUiFont20::CJK_UI_FONT_WIDTH : fallback.font->getCharWidth());
+  const int srcWidth = fallback.sourceMetrics.width > 0 ? fallback.sourceMetrics.width
+                                                        : (builtin ? builtinFont.size : fallback.font->getCharWidth());
   const int srcHeight = fallback.sourceMetrics.height > 0
                             ? fallback.sourceMetrics.height
-                            : (builtin ? CjkUiFont20::CJK_UI_FONT_HEIGHT : fallback.font->getCharHeight());
-  const int bytesPerRow = (srcWidth + 7) / 8;
+                            : (builtin ? builtinFont.size : fallback.font->getCharHeight());
+  const int bytesPerRow = builtin ? builtinFont.bytesPerRow : (srcWidth + 7) / 8;
   const TextFallbackScale scale = composeHalfScale(fallback.scale, halfScale);
   const int drawX = *x + scaleTextFallbackMetric(fallback.sourceMetrics.left, scale);
   const int drawY = baselineY + scaleTextFallbackMetric(fallback.sourceBaselineOffset, scale) -
@@ -1017,11 +1073,10 @@ void GfxRenderer::renderTextFallbackRotated90CW(const TextFallbackGlyph& fallbac
                  fallback.sourceAscender + fallback.sourceBaselineOffset, fallback.sourceMetrics.top,
                  fallback.sourceMetrics.left, fallback.sourceCellClipWidth, false);
   } else if (fallback.kind == TextFallbackGlyph::Kind::BuiltinCjk) {
-    const uint8_t* bitmap = CjkUiFont20::getCjkUiGlyph(cp);
-    const int srcWidth = CjkUiFont20::CJK_UI_FONT_WIDTH;
-    const int srcHeight = CjkUiFont20::CJK_UI_FONT_HEIGHT;
-    const int top = srcHeight - CJK_UI_FONT_DESCENT;
-    renderBitmap(bitmap, srcWidth, srcHeight, CjkUiFont20::CJK_UI_FONT_BYTES_PER_ROW, top, top, 0, -1, true);
+    const auto builtin = getBuiltinCjkFont(fallback.builtinCjkSize, fallback.builtinCjkBold);
+    const uint8_t* bitmap = builtin.glyph(cp);
+    const int top = fallback.sourceMetrics.top > 0 ? fallback.sourceMetrics.top : builtin.size;
+    renderBitmap(bitmap, builtin.size, builtin.size, builtin.bytesPerRow, top, top, 0, -1, true);
   }
 }
 
@@ -1548,19 +1603,21 @@ void GfxRenderer::fillRectImpl(const int x, const int y, const int width, const 
   const int32_t panelStride = static_cast<int32_t>(panelWidthBytes);
 
   if constexpr (C == Color::Black || C == Color::White) {
-    // Solid fill. Framebuffer: 0 = black, 1 = white.
-    const uint8_t fillByte = (C == Color::Black) ? 0x00u : 0xFFu;
+    // Solid colors are logical UI colors. Dark mode inverts them just like
+    // drawPixel(); the optimized byte fill must preserve that semantic.
+    const bool fillBlack = (C == Color::Black) != darkMode;
+    const uint8_t fillByte = fillBlack ? 0x00u : 0xFFu;
     for (int py = phyY0; py <= phyY1; ++py) {
       uint8_t* row = target + static_cast<int32_t>(py - originY) * panelStride;
       if (byteStart == byteEnd) {
         const uint8_t mask = headMask & tailMask;
-        if constexpr (C == Color::Black) {
+        if (fillBlack) {
           row[byteStart] &= static_cast<uint8_t>(~mask);
         } else {
           row[byteStart] |= mask;
         }
       } else {
-        if constexpr (C == Color::Black) {
+        if (fillBlack) {
           row[byteStart] &= static_cast<uint8_t>(~headMask);
           if (byteEnd > byteStart + 1) {
             memset(row + byteStart + 1, fillByte, byteEnd - byteStart - 1);
@@ -1576,10 +1633,8 @@ void GfxRenderer::fillRectImpl(const int x, const int y, const int width, const 
       }
     }
   } else {
-    // Dither (LightGray / DarkGray). Both patterns have period 2 in logical
-    // (x, y), so per physical row we precompute one byte that represents the
-    // pattern across an 8-pixel stretch — every full byte in the row uses
-    // that same value.
+    // Dithered grays. Patterns repeat within an 8-pixel byte and have a
+    // two-row period, so precompute one byte for each physical-row parity.
     //
     // dlxPerPhyX / dlyPerPhyX: how logical (x, y) change as phyX increments
     // along a physical row. Derived from inverting rotateCoordinates.
@@ -1646,8 +1701,12 @@ void GfxRenderer::fillRectImpl(const int x, const int y, const int width, const 
     }
 
     for (int py = phyY0; py <= phyY1; ++py) {
-      const uint8_t blackMask = blackMasks[py & 1];
-      const uint8_t whiteMask = static_cast<uint8_t>(~blackMask);
+      const uint8_t logicalBlackMask = blackMasks[py & 1];
+      // Match drawPixelDither(): logical dither colors are inverted in dark
+      // mode. The old optimized path skipped this and gave the rectangle
+      // interior the opposite density from its rounded per-pixel corners.
+      const uint8_t physicalBlackMask = darkMode ? static_cast<uint8_t>(~logicalBlackMask) : logicalBlackMask;
+      const uint8_t whiteMask = static_cast<uint8_t>(~physicalBlackMask);
 
       // Dither writes BOTH inks (the slow path called drawPixel for every
       // pixel — setting or clearing — so we must do the same). Inside the
@@ -1887,8 +1946,9 @@ void GfxRenderer::drawBitmap(const Bitmap& bitmap, const int x, const int y, con
 
   if (fontCacheManager_ && fontCacheManager_->isScanning()) return;
   // Cover art and images should keep their original colors in dark mode
+  const bool previousSkipDarkMode = skipDarkModeForImages;
   skipDarkModeForImages = true;
-  auto cleanup = [this]() { skipDarkModeForImages = false; };
+  auto cleanup = [this, previousSkipDarkMode]() { skipDarkModeForImages = previousSkipDarkMode; };
 
   // For 1-bit bitmaps, use optimized 1-bit rendering path (no crop support for 1-bit)
   if (bitmap.is1Bit() && cropX == 0.0f && cropY == 0.0f) {
@@ -1940,6 +2000,7 @@ void GfxRenderer::drawBitmap(const Bitmap& bitmap, const int x, const int y, con
   BitmapRowBuffers buffers(outputRowSize, bitmap.getRowBytes());
   if (!buffers.ok()) {
     LOG_ERR("GFX", "!! Failed to allocate BMP row buffers");
+    cleanup();
     return;
   }
 
@@ -2008,8 +2069,9 @@ void GfxRenderer::drawBitmap1Bit(const Bitmap& bitmap, const int x, const int y,
   if (isCancelled && isCancelled()) return;
 
   // Cover art and images should keep their original colors in dark mode
+  const bool previousSkipDarkMode = skipDarkModeForImages;
   skipDarkModeForImages = true;
-  auto cleanup = [this]() { skipDarkModeForImages = false; };
+  auto cleanup = [this, previousSkipDarkMode]() { skipDarkModeForImages = previousSkipDarkMode; };
 
   float scale = 1.0f;
   bool isScaled = false;
@@ -2035,6 +2097,7 @@ void GfxRenderer::drawBitmap1Bit(const Bitmap& bitmap, const int x, const int y,
   BitmapRowBuffers buffers(outputRowSize, bitmap.getRowBytes());
   if (!buffers.ok()) {
     LOG_ERR("GFX", "!! Failed to allocate 1-bit BMP row buffers");
+    cleanup();
     return;
   }
 
@@ -2237,11 +2300,14 @@ void GfxRenderer::displayBuffer(const HalDisplay::RefreshMode refreshMode) const
   // older frame that had been deferred while the panel was busy.
   deferredRefreshPending_ = false;
 
-  const bool hasPartialUpdate = partialW_ > 0 && partialH_ > 0;
+  bool hasPartialUpdate = partialW_ > 0 && partialH_ > 0;
   if (hasPartialUpdate) {
     PhysicalRect physicalWindow;
+    // Dark FAST updates must keep the original full-frame redrive policy.
+    // Windowed dark diffs fade the unchanged black background, while inverse-RED
+    // window redrives visibly invert this X4 panel.
     const bool hasPhysicalWindow =
-        effectiveRefreshMode == HalDisplay::FAST_REFRESH &&
+        !darkMode && effectiveRefreshMode == HalDisplay::FAST_REFRESH &&
         logicalRectToPhysicalWindow(orientation, partialX_, partialY_, partialW_, partialH_, getScreenWidth(),
                                     getScreenHeight(), panelWidth, panelHeight, &physicalWindow);
 #if defined(SSD1677_PROBE_DEBUG) && SSD1677_PROBE_DEBUG
@@ -2250,19 +2316,14 @@ void GfxRenderer::displayBuffer(const HalDisplay::RefreshMode refreshMode) const
 #endif
     partialX_ = partialY_ = partialW_ = partialH_ = 0;
     if (hasPhysicalWindow) {
-      if (darkMode) {
-        display.displayWindowDarkRedrive(physicalWindow.x, physicalWindow.y, physicalWindow.width,
-                                         physicalWindow.height, fadingFix);
-      } else {
-        display.displayWindow(physicalWindow.x, physicalWindow.y, physicalWindow.width, physicalWindow.height,
-                              fadingFix);
-      }
+      display.displayWindow(physicalWindow.x, physicalWindow.y, physicalWindow.width, physicalWindow.height, fadingFix);
       return;
     }
   }
 
   if (darkMode &&
-      (effectiveRefreshMode == HalDisplay::FAST_REFRESH || effectiveRefreshMode == HalDisplay::HALF_REFRESH)) {
+      (effectiveRefreshMode == HalDisplay::FAST_REFRESH || effectiveRefreshMode == HalDisplay::HALF_REFRESH ||
+       effectiveRefreshMode == HalDisplay::DARK_REDRIVE)) {
     display.displayBuffer(HalDisplay::DARK_REDRIVE, fadingFix);
     return;
   }
@@ -3544,14 +3605,15 @@ void GfxRenderer::renderExternalGlyph(const uint8_t* bitmap, ExternalFont* font,
   *x += layout.advanceX;
 }
 
-void GfxRenderer::renderBuiltinCjkGlyph(const uint32_t cp, int* x, const int y, const bool pixelState) const {
-  // Use built-in 20px CJK UI font
-  const uint8_t* bitmap = CjkUiFont20::getCjkUiGlyph(cp);
-  const uint8_t fontWidth = CjkUiFont20::CJK_UI_FONT_WIDTH;
-  const uint8_t fontHeight = CjkUiFont20::CJK_UI_FONT_HEIGHT;
-  const uint8_t bytesPerRow = CjkUiFont20::CJK_UI_FONT_BYTES_PER_ROW;
-  const uint8_t bytesPerChar = CjkUiFont20::CJK_UI_FONT_BYTES_PER_CHAR;
-  const uint8_t actualWidth = CjkUiFont20::getCjkUiGlyphWidth(cp);
+void GfxRenderer::renderBuiltinCjkGlyph(const uint32_t cp, int* x, const int y, const bool pixelState,
+                                        const uint8_t size, const bool bold) const {
+  const auto font = getBuiltinCjkFont(size, bold);
+  const uint8_t* bitmap = font.glyph(cp);
+  const uint8_t fontWidth = font.size;
+  const uint8_t fontHeight = font.size;
+  const uint8_t bytesPerRow = font.bytesPerRow;
+  const uint8_t bytesPerChar = font.bytesPerChar;
+  const uint8_t actualWidth = font.width(cp);
 
   if (!bitmap || actualWidth == 0) {
     return;
@@ -3568,7 +3630,7 @@ void GfxRenderer::renderBuiltinCjkGlyph(const uint32_t cp, int* x, const int y, 
   }
 
   if (hasContent) {
-    const int startY = y - fontHeight + 4;  // 4px descent for CJK characters
+    const int startY = y - font.baseline;
 
     for (int glyphY = 0; glyphY < fontHeight; glyphY++) {
       const int screenY = startY + glyphY;
