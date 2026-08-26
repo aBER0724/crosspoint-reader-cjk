@@ -628,8 +628,10 @@ void FontDownloadActivity::endNetworkTransfer() {
     restoreManifestData();
     LOG_DBG("FONT", "Manifest restored: free=%d max=%d", ESP.getFreeHeap(), ESP.getMaxAllocHeap());
   }
-  RenderLock lock(*this);
-  lowMemoryDownload_ = false;
+  // Keep the low-memory progress renderer active until the entire install
+  // transaction, including registry discovery, has completed. The normal
+  // renderer may read the selected external UI font from SD concurrently.
+  // Switching it back here caused SPI ownership assertions after downloads.
 }
 
 void FontDownloadActivity::updateDownloadProgress(const size_t downloaded, const size_t total) {
@@ -1171,6 +1173,7 @@ void FontDownloadActivity::downloadFamily(int familyIndex, int fileIndex, const 
     fontInstaller_.refreshRegistry();
     refreshFamilyState(families_[familyIndex]);
     RenderLock lock(*this);
+    lowMemoryDownload_ = false;
     if (cancelled && rollbackSucceeded) {
       state_ = FAMILY_LIST;
       return;
@@ -1349,6 +1352,7 @@ void FontDownloadActivity::downloadFamily(int familyIndex, int fileIndex, const 
   LOG_DBG("FONT", "DLFAMILY complete: fam=%d installed", familyIndex);
   {
     RenderLock lock(*this);
+    lowMemoryDownload_ = false;
     state_ = COMPLETE;
     errorAction_ = ErrorAction::None;
   }
