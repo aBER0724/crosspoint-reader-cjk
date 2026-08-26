@@ -325,6 +325,9 @@ void SettingsActivity::toggleCurrentSetting() {
     // Toggle the boolean value using the member pointer
     const bool currentValue = SETTINGS.*(setting.valuePtr);
     SETTINGS.*(setting.valuePtr) = !currentValue;
+    if (setting.valuePtr == &CrossPointSettings::invertImages) {
+      renderer.setInvertImagesInDarkMode(SETTINGS.invertImages);
+    }
   } else if (setting.type == SettingType::ENUM && setting.valuePtr != nullptr) {
     const uint8_t currentValue = SETTINGS.*(setting.valuePtr);
     if (setting.enumValues.size() > 2) {

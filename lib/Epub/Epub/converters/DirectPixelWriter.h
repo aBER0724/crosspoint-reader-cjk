@@ -24,7 +24,8 @@ struct DirectPixelWriter {
   // (originY 0, clipRows panelHeight) so the clip doubles as a bounds guard.
   int originY;
   int clipRows;
-
+  bool darkMode;
+  bool invertImagesInDarkMode;
   // Orientation is collapsed into a linear transform:
   //   phyX = phyXBase + x * phyXStepX + y * phyXStepY
   //   phyY = phyYBase + x * phyYStepX + y * phyYStepY
@@ -41,6 +42,8 @@ struct DirectPixelWriter {
     clipRows = renderer.getWriteRows();
     mode = renderer.getRenderMode();
     displayWidthBytes = renderer.getDisplayWidthBytes();
+    darkMode = renderer.isDarkMode();
+    invertImagesInDarkMode = renderer.shouldInvertImagesInDarkMode();
 
     const int phyW = renderer.getDisplayWidth();
     const int phyH = renderer.getDisplayHeight();
@@ -150,8 +153,13 @@ struct DirectPixelWriter {
     bool state;
     switch (mode) {
       case GfxRenderer::BW:
-        draw = (pixelValue < 3);
-        state = true;
+        // BW must write both source black and source white pixels. The page was
+        // already cleared to its theme background; skipping white pixels makes an
+        // image inherit that background and makes normal/inverted images identical
+        // in dark mode.
+        draw = true;
+        state = (pixelValue < 3);
+        if (darkMode && invertImagesInDarkMode) state = !state;
         break;
       case GfxRenderer::GRAYSCALE_MSB:
         draw = (pixelValue == 1 || pixelValue == 2);
