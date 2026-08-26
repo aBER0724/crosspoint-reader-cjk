@@ -1,11 +1,9 @@
 #!/usr/bin/env python3
-"""Upload one firmware image to both OTA application slots.
+"""Upload one firmware image to the factory application partition.
 
-This intentionally preserves the bootloader, partition table, OTA selection data,
-NVS, SPIFFS, SD-card data, and coredump partition. Both application slots receive
-the same image so the firmware boots regardless of which slot the preserved OTA
-metadata currently selects. Changing the partition layout requires an explicit
-recovery/full-flash procedure instead.
+This routine update preserves the bootloader, partition table, NVS, SPIFFS,
+SD-card data, and coredump partition. Partition-layout changes require an
+explicit erase followed by a full flash.
 """
 
 from __future__ import annotations
@@ -15,9 +13,8 @@ from pathlib import Path
 import subprocess
 import sys
 
-APP0_OFFSET = 0x10000
-APP1_OFFSET = 0x690000
-APP_SLOT_SIZE = 0x680000
+FACTORY_OFFSET = 0x10000
+FACTORY_SIZE = 0xD00000
 
 
 def parse_args() -> argparse.Namespace:
@@ -36,9 +33,9 @@ def main() -> int:
         return 2
 
     image_size = firmware.stat().st_size
-    if image_size > APP_SLOT_SIZE:
+    if image_size > FACTORY_SIZE:
         print(
-            f"Firmware is too large for an OTA slot: {image_size} > {APP_SLOT_SIZE} bytes",
+            f"Firmware is too large for the factory partition: {image_size} > {FACTORY_SIZE} bytes",
             file=sys.stderr,
         )
         return 2
@@ -53,17 +50,22 @@ def main() -> int:
         args.port,
         "--baud",
         str(args.baud),
+        "--before",
+        "default-reset",
+        "--after",
+        "hard-reset",
         "write-flash",
-        str(APP0_OFFSET),
-        str(firmware),
-        str(APP1_OFFSET),
+        "--flash-mode",
+        "keep",
+        "--flash-freq",
+        "keep",
+        "--flash-size",
+        "keep",
+        str(FACTORY_OFFSET),
         str(firmware),
     ]
-    print(
-        f"Safe OTA upload: {firmware} ({image_size} bytes) -> "
-        f"app0 0x{APP0_OFFSET:x}, app1 0x{APP1_OFFSET:x}"
-    )
-    print("Preserving bootloader, partitions, otadata, NVS, SPIFFS, and coredump")
+    print(f"Safe factory upload: {firmware} ({image_size} bytes) -> factory 0x{FACTORY_OFFSET:x}")
+    print("Preserving bootloader, partitions, NVS, SPIFFS, and coredump")
     return subprocess.run(command, check=False).returncode
 
 
