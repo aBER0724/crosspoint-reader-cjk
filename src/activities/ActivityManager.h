@@ -160,7 +160,11 @@ class ActivityManager {
 
   // Trigger a render and block until it completes.
   // Must NOT be called from the render task or while holding a RenderLock.
-  void requestUpdateAndWait();
+  // timeoutMs == 0 waits indefinitely (default); otherwise returns after the
+  // given timeout even if the paint has not landed (caller must retry or
+  // proceed — used on the boot path so a stuck first paint can never strand
+  // the device before input handling starts).
+  void requestUpdateAndWait(uint32_t timeoutMs = 0);
 };
 
 extern ActivityManager activityManager;  // singleton, to be defined in main.cpp

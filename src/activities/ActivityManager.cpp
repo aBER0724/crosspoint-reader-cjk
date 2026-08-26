@@ -458,16 +458,17 @@ void ActivityManager::requestUpdate(bool immediate) {
     requestedUpdate = true;
   }
 }
-void ActivityManager::requestUpdateAndWait() {
+void ActivityManager::requestUpdateAndWait(const uint32_t timeoutMs) {
   invalidateRender();
   const uint32_t waitRenderSerial = renderRequestSerial.fetch_add(1, std::memory_order_relaxed) + 1;
   if (!renderTaskHandle) {
     return;
   }
 
+  const auto currTaskHandler = xTaskGetCurrentTaskHandle();
+
   // Atomic section to perform checks
   taskENTER_CRITICAL(&activityManagerSpinlock);
-  auto currTaskHandler = xTaskGetCurrentTaskHandle();
   auto mutexHolder = xSemaphoreGetMutexHolder(renderingMutex);
   bool isRenderTask = (currTaskHandler == renderTaskHandle);
   bool alreadyWaiting = (waitingTaskHandle != nullptr);
@@ -488,7 +489,21 @@ void ActivityManager::requestUpdateAndWait() {
   assert(!holdingRenderLock && "Cannot call requestUpdateAndWait() while holding RenderLock");
 
   notifyRenderTask();
-  ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+
+  const TickType_t waitTicks = (timeoutMs == 0) ? portMAX_DELAY : pdMS_TO_TICKS(timeoutMs);
+  if (ulTaskNotifyTake(pdTRUE, waitTicks) == pdFALSE) {
+    // Timed out before the paint landed. Drop our waiter registration so the
+    // render task does not keep treating every later render as a
+    // must-wait-for-display paint and so the next requestUpdateAndWait() does
+    // not trip the "already waiting" assert. A late notify from the render
+    // task is then a no-op (waitingTaskHandle is null by then).
+    taskENTER_CRITICAL(&activityManagerSpinlock);
+    if (waitingTaskHandle == currTaskHandler && waitingRenderSerial == waitRenderSerial) {
+      waitingTaskHandle = nullptr;
+      waitingRenderSerial = 0;
+    }
+    taskEXIT_CRITICAL(&activityManagerSpinlock);
+  }
 }
 
 // RenderLock
