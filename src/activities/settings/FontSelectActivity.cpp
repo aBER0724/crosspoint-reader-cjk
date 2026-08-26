@@ -216,7 +216,7 @@ void FontSelectActivity::render(RenderLock&&) {
           }
         } else {
           if (i == 0) {
-            return std::string(tr(STR_BUILTIN_DISABLED));
+            return std::string("Noto Sans (") + tr(STR_BUILTIN_DISABLED) + ")";
           }
           const FontInfo* info = FontMgr.getFontInfo(i - 1);
           if (info) {
