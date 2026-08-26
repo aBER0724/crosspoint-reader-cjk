@@ -15,6 +15,10 @@
 #include "fontIds.h"
 
 namespace {
+Color selectedFillColor(const GfxRenderer& renderer, const bool active = true) {
+  if (!active) return Color::DarkGray;
+  return renderer.isDarkMode() ? Color::DarkGray : Color::Black;
+}
 constexpr int kCoverRadius = 18;
 constexpr int kMenuRadius = 30;
 constexpr int kBottomRadius = 15;
@@ -80,10 +84,10 @@ void RoundedRaffTheme::drawHeader(const GfxRenderer& renderer, Rect rect, const 
   const int maxTitleWidth = std::max(0, batteryGroupLeftX - 20 - titleX);
   auto headerTitle = renderer.truncatedText(kTitleFontId, title, maxTitleWidth, EpdFontFamily::BOLD);
   renderer.drawText(kTitleFontId, titleX, titleY, headerTitle.c_str(), true, EpdFontFamily::BOLD);
-  drawBatteryRight(renderer,
-                   Rect{batteryIconX, batteryY, RoundedRaffMetrics::values.batteryWidth,
-                        RoundedRaffMetrics::values.batteryHeight},
-                   showBatteryPercentage);
+  drawBatteryRight(
+      renderer,
+      Rect{batteryIconX, batteryY, RoundedRaffMetrics::values.batteryWidth, RoundedRaffMetrics::values.batteryHeight},
+      showBatteryPercentage);
 }
 
 void RoundedRaffTheme::drawTabBar(const GfxRenderer& renderer, Rect rect, const std::vector<TabInfo>& tabs,
@@ -103,13 +107,14 @@ void RoundedRaffTheme::drawTabBar(const GfxRenderer& renderer, Rect rect, const 
     const auto& tab = tabs[i];
 
     if (tab.selected) {
-      renderer.fillRoundedRect(tabX, tabY, tabWidth, tabHeight, 18, selected ? Color::Black : Color::DarkGray);
+      renderer.fillRoundedRect(tabX, tabY, tabWidth, tabHeight, 18, selectedFillColor(renderer, selected));
     }
 
     const int textWidth = renderer.getTextWidth(kTitleFontId, tab.label, EpdFontFamily::BOLD);
     const int textX = slotX + (slotWidth - textWidth) / 2;
     const int textY = tabY + (tabHeight - renderer.getLineHeight(kTitleFontId)) / 2;
-    renderer.drawText(kTitleFontId, textX, textY, tab.label, !(tab.selected), EpdFontFamily::BOLD);
+    const bool textBlack = !tab.selected;
+    renderer.drawText(kTitleFontId, textX, textY, tab.label, textBlack, EpdFontFamily::BOLD);
   }
 
   // Full-width divider between tabs and setting rows.
@@ -242,14 +247,12 @@ void RoundedRaffTheme::drawButtonMenu(GfxRenderer& renderer, Rect rect, int butt
     const int rowWidth = std::min(
         menuMaxWidth, renderer.getTextWidth(kTitleFontId, truncatedLabel.c_str(), EpdFontFamily::BOLD) + kRowPaddingX);
     const bool isSelected = selectedIndex == i;
-    renderer.fillRoundedRect(rowX, rowY, rowWidth, rowHeight, kMenuRadius, isSelected ? Color::Black : Color::White);
+    renderer.fillRoundedRect(rowX, rowY, rowWidth, rowHeight, kMenuRadius,
+                             isSelected ? selectedFillColor(renderer) : Color::White);
     const int textY = rowY + (rowHeight - textLineHeight) / 2;
     const int textX = rowX + kInteractiveInsetX;
-    if (selectedIndex == i) {
-      renderer.drawText(kTitleFontId, textX, textY, truncatedLabel.c_str(), false, EpdFontFamily::BOLD);
-    } else {
-      renderer.drawText(kTitleFontId, textX, textY, truncatedLabel.c_str(), true, EpdFontFamily::BOLD);
-    }
+    const bool textBlack = !isSelected;
+    renderer.drawText(kTitleFontId, textX, textY, truncatedLabel.c_str(), textBlack, EpdFontFamily::BOLD);
   }
 
   drawScrollBar(renderer, rect, buttonCount, pageStartIndex, pageItems);
@@ -312,8 +315,9 @@ void RoundedRaffTheme::drawList(const GfxRenderer& renderer, Rect rect, int item
   for (int i = pageStartIndex; i < itemCount && i < pageStartIndex + pageItems; i++) {
     const int rowY = rect.y + (i % pageItems) * rowStep;
     const bool isSelected = i == selectedIndex;
-    renderer.fillRoundedRect(rowX, rowY, rowWidth, rowHeight, kRowRadius, isSelected ? Color::Black : Color::White);
-
+    const bool textBlack = !isSelected;
+    renderer.fillRoundedRect(rowX, rowY, rowWidth, rowHeight, kRowRadius,
+                             isSelected ? selectedFillColor(renderer) : Color::White);
     constexpr int kMinTitleWidth = 40;
     constexpr int kMinValueGap = kInteractiveInsetX;
     int textAreaWidth = rowWidth - kInteractiveInsetX * 2;
@@ -327,7 +331,7 @@ void RoundedRaffTheme::drawList(const GfxRenderer& renderer, Rect rect, int item
           const int valueW = renderer.getTextWidth(kTitleFontId, truncatedValue.c_str(), EpdFontFamily::REGULAR);
           renderer.drawText(kTitleFontId, rowX + rowWidth - kInteractiveInsetX - valueW,
                             rowY + (rowHeight - renderer.getLineHeight(kTitleFontId)) / 2, truncatedValue.c_str(),
-                            !isSelected, EpdFontFamily::REGULAR);
+                            textBlack, EpdFontFamily::REGULAR);
           textAreaWidth = std::max(0, textAreaWidth - valueW - kMinValueGap);
         }
       }
@@ -340,22 +344,22 @@ void RoundedRaffTheme::drawList(const GfxRenderer& renderer, Rect rect, int item
       if (subtitleRaw.empty()) {
         // If there is no subtitle/author, center title vertically in the full row.
         const int centeredTitleY = rowY + (rowHeight - titleLineHeight) / 2;
-        renderer.drawText(kTitleFontId, rowX + kInteractiveInsetX, centeredTitleY, title.c_str(), !isSelected,
+        renderer.drawText(kTitleFontId, rowX + kInteractiveInsetX, centeredTitleY, title.c_str(), textBlack,
                           EpdFontFamily::BOLD);
       } else {
         const int titleY = rowY + subtitleTopPadding;
         const int subtitleY = titleY + titleLineHeight + subtitleInterLineGap;
         auto subtitle =
             renderer.truncatedText(kSubtitleFontId, subtitleRaw.c_str(), textAreaWidth, EpdFontFamily::REGULAR);
-        renderer.drawText(kTitleFontId, rowX + kInteractiveInsetX, titleY, title.c_str(), !isSelected,
+        renderer.drawText(kTitleFontId, rowX + kInteractiveInsetX, titleY, title.c_str(), textBlack,
                           EpdFontFamily::BOLD);
-        renderer.drawText(kSubtitleFontId, rowX + kInteractiveInsetX, subtitleY, subtitle.c_str(), !isSelected,
+        renderer.drawText(kSubtitleFontId, rowX + kInteractiveInsetX, subtitleY, subtitle.c_str(), textBlack,
                           EpdFontFamily::REGULAR);
       }
     } else {
       auto title = renderer.truncatedText(kTitleFontId, rowTitle(i).c_str(), textAreaWidth, EpdFontFamily::BOLD);
       renderer.drawText(kTitleFontId, rowX + kInteractiveInsetX,
-                        rowY + (rowHeight - renderer.getLineHeight(kTitleFontId)) / 2, title.c_str(), !isSelected,
+                        rowY + (rowHeight - renderer.getLineHeight(kTitleFontId)) / 2, title.c_str(), textBlack,
                         EpdFontFamily::BOLD);
     }
   }
