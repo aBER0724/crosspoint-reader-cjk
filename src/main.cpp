@@ -100,15 +100,16 @@ EpdFontFamily notosans18FontFamily(&notosans18RegularFont, &notosans18BoldFont, 
 
 #endif  // OMIT_FONTS
 
-EpdFont smallFont(&notosans_8_regular);
-EpdFontFamily smallFontFamily(&smallFont);
+EpdFont smallRegularFont(&notosans_ui_8_regular);
+EpdFont smallBoldFont(&notosans_ui_8_bold);
+EpdFontFamily smallFontFamily(&smallRegularFont, &smallBoldFont);
 
-EpdFont ui10RegularFont(&ubuntu_10_regular);
-EpdFont ui10BoldFont(&ubuntu_10_bold);
+EpdFont ui10RegularFont(&notosans_ui_10_regular);
+EpdFont ui10BoldFont(&notosans_ui_10_bold);
 EpdFontFamily ui10FontFamily(&ui10RegularFont, &ui10BoldFont);
 
-EpdFont ui12RegularFont(&ubuntu_12_regular);
-EpdFont ui12BoldFont(&ubuntu_12_bold);
+EpdFont ui12RegularFont(&notosans_ui_12_regular);
+EpdFont ui12BoldFont(&notosans_ui_12_bold);
 EpdFontFamily ui12FontFamily(&ui12RegularFont, &ui12BoldFont);
 
 // measurement of power button press duration calibration value
@@ -373,7 +374,9 @@ void setup() {
 
   // Read-and-clear so a panic later in setup() doesn't loop into silent reboot.
   // Bound the target range too — RTC_NOINIT memory is uninitialized on cold boot.
-  const bool isSilentReboot = (silentRebootMagic == SILENT_REBOOT_MAGIC);
+  // RTC_NOINIT survives esptool hard resets, so stale self-heal state
+  // is valid only for the software restart that intentionally set it.
+  const bool isSilentReboot = (silentRebootMagic == SILENT_REBOOT_MAGIC) && (esp_reset_reason() == ESP_RST_SW);
   const uint32_t snapshotTarget =
       (isSilentReboot && silentRebootTarget <= SILENT_REBOOT_TARGET_FONTS) ? silentRebootTarget : 0;
   silentRebootMagic = 0;
@@ -501,6 +504,11 @@ void setup() {
       break;
     case BootResume::Splash:
       activityManager.goToBoot();
+      // BootActivity queues its paint asynchronously. Do not replace it with
+      // Home/Reader below until the splash has physically reached the panel;
+      // otherwise the next activity can overwrite the shared framebuffer first
+      // and make a successful flash appear to have skipped the boot screen.
+      activityManager.requestUpdateAndWait(3000);
       break;
   }
 
@@ -547,7 +555,8 @@ void setup() {
     // new activity. Without the wait, an edge captured by gpio.update()
     // during boot dispatches against an invisible Home and the default
     // selectorIndex=0 opens the most-recent book.
-    activityManager.requestUpdateAndWait();
+    // Do not let a blocked first paint prevent input initialization forever.
+    activityManager.requestUpdateAndWait(3000);
     // Absorb any button held at this point into currentState as a non-edge:
     // two gpio.update() calls separated by > InputManager's 5ms debounce
     // transition the held bit through lastDebounceTime into currentState
