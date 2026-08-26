@@ -20,6 +20,7 @@
 #include "LanguageSelectActivity.h"
 #include "MappedInputManager.h"
 #include "OpdsServerListActivity.h"
+#include "OrientationHelper.h"
 #include "OtaUpdateActivity.h"
 #include "SdCardFontSystem.h"
 #include "SdFirmwareUpdateActivity.h"
@@ -123,6 +124,9 @@ void SettingsActivity::onEnter() {
   syncQuickResumeTimeoutForSleepScreen(/*sleepScreenChanged=*/true, /*quickResumeTimeoutChanged=*/false);
 
   rebuildSettingsLists();
+
+  lastRenderedSettingIndex = -1;
+  lastRenderedCategoryIndex = -1;
 
   // Trigger first update
   requestUpdate();
@@ -306,6 +310,25 @@ void SettingsActivity::loop() {
   }
 }
 
+void SettingsActivity::applySettingImmediately(uint8_t CrossPointSettings::* valuePtr) {
+  if (valuePtr == &CrossPointSettings::colorMode) {
+    renderer.setDarkMode(SETTINGS.colorMode == CrossPointSettings::COLOR_MODE::DARK_MODE);
+    forceFullSettingsRefresh = true;
+  }
+  if (valuePtr == &CrossPointSettings::invertImages) {
+    renderer.setInvertImagesInDarkMode(SETTINGS.invertImages);
+    forceFullSettingsRefresh = true;
+  }
+  if (valuePtr == &CrossPointSettings::uiTheme) {
+    UITheme::getInstance().reload();
+    forceFullSettingsRefresh = true;
+  }
+  if (valuePtr == &CrossPointSettings::uiOrientation) {
+    OrientationHelper::applyOrientation(renderer, mappedInput, this);
+    forceFullSettingsRefresh = true;
+  }
+}
+
 void SettingsActivity::toggleCurrentSetting() {
   int selectedSetting = selectedSettingIndex - 1;
   if (selectedSetting < 0 || selectedSetting >= settingsCount) {
@@ -325,9 +348,6 @@ void SettingsActivity::toggleCurrentSetting() {
     // Toggle the boolean value using the member pointer
     const bool currentValue = SETTINGS.*(setting.valuePtr);
     SETTINGS.*(setting.valuePtr) = !currentValue;
-    if (setting.valuePtr == &CrossPointSettings::invertImages) {
-      renderer.setInvertImagesInDarkMode(SETTINGS.invertImages);
-    }
   } else if (setting.type == SettingType::ENUM && setting.valuePtr != nullptr) {
     const uint8_t currentValue = SETTINGS.*(setting.valuePtr);
     if (setting.enumValues.size() > 2) {
@@ -335,6 +355,7 @@ void SettingsActivity::toggleCurrentSetting() {
       optionPopup.show(setting.nameId, setting.enumValues.data(), static_cast<int>(setting.enumValues.size()),
                        currentValue, [this, valuePtr, sleepScreenChanged, quickResumeTimeoutChanged](int idx) {
                          SETTINGS.*valuePtr = idx;
+                         applySettingImmediately(valuePtr);
                          syncQuickResumeTimeoutForSleepScreen(sleepScreenChanged, quickResumeTimeoutChanged);
                          SETTINGS.saveToFile();
                          rebuildSettingsLists();
@@ -343,10 +364,7 @@ void SettingsActivity::toggleCurrentSetting() {
       return;
     }
     SETTINGS.*(setting.valuePtr) = (currentValue + 1) % static_cast<uint8_t>(setting.enumValues.size());
-    if (setting.nameId == StrId::STR_COLOR_MODE) {
-      renderer.setDarkMode(SETTINGS.colorMode == CrossPointSettings::COLOR_MODE::DARK_MODE);
-      forceFullSettingsRefresh = true;
-    }
+    applySettingImmediately(setting.valuePtr);
   } else if (setting.type == SettingType::ENUM && setting.valueGetter && setting.valueSetter) {
     const uint8_t totalValues = setting.enumStringValues.empty()
                                     ? static_cast<uint8_t>(setting.enumValues.size())
@@ -454,6 +472,9 @@ void SettingsActivity::toggleCurrentSetting() {
     return;
   }
 
+  if (setting.valuePtr != nullptr) {
+    applySettingImmediately(setting.valuePtr);
+  }
   syncQuickResumeTimeoutForSleepScreen(sleepScreenChanged, quickResumeTimeoutChanged);
   SETTINGS.saveToFile();
   rebuildSettingsLists();
@@ -499,14 +520,41 @@ void SettingsActivity::openSleepTimeoutPicker() {
 }
 
 void SettingsActivity::render(RenderLock&&) {
-  if (optionPopup.processRender(renderer, mappedInput)) return;
-
-  renderer.clearScreen();
-
-  const auto pageWidth = renderer.getScreenWidth();
-  const auto pageHeight = renderer.getScreenHeight();
+  if (optionPopup.processRender(renderer, mappedInput)) {
+    lastRenderedSettingIndex = -1;
+    lastRenderedCategoryIndex = -1;
+    return;
+  }
 
   const auto& metrics = UITheme::getInstance().getMetrics();
+  const auto pageWidth = renderer.getScreenWidth();
+  const auto pageHeight = renderer.getScreenHeight();
+  const int listTop = metrics.topPadding + metrics.headerHeight + metrics.tabBarHeight + metrics.verticalSpacing;
+  const int listHeight = pageHeight - (metrics.topPadding + metrics.headerHeight + metrics.tabBarHeight +
+                                       metrics.buttonHintsHeight + metrics.verticalSpacing * 2);
+
+  const bool sameCategory = lastRenderedCategoryIndex == selectedCategoryIndex;
+  const bool selectionChanged = lastRenderedSettingIndex >= 0 && lastRenderedSettingIndex != selectedSettingIndex;
+  if (!forceFullSettingsRefresh && sameCategory && selectionChanged) {
+    if (lastRenderedSettingIndex == 0 || selectedSettingIndex == 0) {
+      const int tabTop = metrics.topPadding + metrics.headerHeight;
+      renderer.setPartialUpdateRect(0, tabTop, pageWidth, metrics.tabBarHeight);
+    } else {
+      const int rowStep = GUI.getListRowStep(false);
+      const int pageItems = GUI.getListPageItems(listHeight, false);
+      const int previousRow = lastRenderedSettingIndex - 1;
+      const int currentRow = selectedSettingIndex - 1;
+      const int previousPage = previousRow / pageItems;
+      const int currentPage = currentRow / pageItems;
+      if (previousPage == currentPage) {
+        const int firstRow = std::min(previousRow, currentRow) % pageItems;
+        const int lastRow = std::max(previousRow, currentRow) % pageItems;
+        renderer.setPartialUpdateRect(0, listTop + firstRow * rowStep, pageWidth, (lastRow - firstRow + 1) * rowStep);
+      }
+    }
+  }
+
+  renderer.clearScreen();
 
   GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, tr(STR_SETTINGS_TITLE),
                  CROSSPOINT_VERSION);
@@ -591,13 +639,14 @@ void SettingsActivity::render(RenderLock&&) {
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), confirmLabel, tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 
+  lastRenderedSettingIndex = selectedSettingIndex;
+  lastRenderedCategoryIndex = selectedCategoryIndex;
+
   if (forceFullSettingsRefresh) {
     forceFullSettingsRefresh = false;
-    if (renderer.isDarkMode()) {
-      renderer.displayBufferDarkRedrive();
-    } else {
-      renderer.displayBuffer(HalDisplay::HALF_REFRESH);
-    }
+    // Orientation, palette, and geometry changes invalidate the complete old
+    // screen. HALF is an absolute refresh and is safe for either color mode.
+    renderer.displayBuffer(HalDisplay::HALF_REFRESH);
   } else if (renderer.isDarkMode()) {
     renderer.displayBufferDarkRedrive();
   } else {
