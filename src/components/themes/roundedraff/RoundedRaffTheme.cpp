@@ -373,17 +373,15 @@ void RoundedRaffTheme::drawButtonHints(GfxRenderer& renderer, const char* btn1, 
     return;
   }
 
-  const GfxRenderer::Orientation origOrientation = renderer.getOrientation();
-  renderer.setOrientation(GfxRenderer::Orientation::Portrait);
-
   const int pageWidth = renderer.getScreenWidth();
   const int pageHeight = renderer.getScreenHeight();
+  const bool placeAtTop = renderer.getOrientation() == GfxRenderer::Orientation::PortraitInverted;
   const int sidePadding = 20;
   const int groupGap = 10;
-  const int bottomMargin = 10;
+  const int edgeMargin = 10;
   const int hintHeight = RoundedRaffMetrics::values.buttonHintsHeight - 10;  // 30px total guide height
   const int groupWidth = (pageWidth - sidePadding * 2 - groupGap) / 2;
-  const int hintY = pageHeight - hintHeight - bottomMargin;
+  const int hintY = placeAtTop ? edgeMargin : pageHeight - hintHeight - edgeMargin;
   const int textY = hintY + (hintHeight - renderer.getLineHeight(kGuideFontId)) / 2;
 
   const bool backDisabled = (btn1 == nullptr || btn1[0] == '\0');
@@ -418,6 +416,4 @@ void RoundedRaffTheme::drawButtonHints(GfxRenderer& renderer, const char* btn1, 
 
   renderer.drawText(kGuideFontId, upX, textY, upText.c_str(), true, EpdFontFamily::REGULAR);
   renderer.drawText(kGuideFontId, downX, textY, downText.c_str(), true, EpdFontFamily::REGULAR);
-
-  renderer.setOrientation(origOrientation);
 }

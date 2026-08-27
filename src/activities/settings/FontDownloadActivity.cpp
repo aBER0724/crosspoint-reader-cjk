@@ -1478,14 +1478,16 @@ void FontDownloadActivity::loop() {
     }
 
     const int listSize = listItemCount();
-    const int pageItems = UITheme::getNumberOfItemsPerPage(renderer, true, false, true, false);
+    const auto& metrics = UITheme::getInstance().getMetrics();
+    const Rect screen = UITheme::getInstance().getScreenSafeArea(renderer, true, false);
+    const int lineHeight = renderer.getLineHeight(UI_10_FONT_ID);
+    int listTop = screen.y + metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
+    if (!catalogUpdatedAt_.empty()) listTop += lineHeight + metrics.verticalSpacing;
+    const Rect listRect = GUI.getContentRect(renderer, listTop, metrics.verticalSpacing);
+    const int pageItems = GUI.getListPageItems(listRect.height, true);
 
     if (listSize > 0) {
-      const auto& metrics = UITheme::getInstance().getMetrics();
-      const int contentTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
-      const int contentHeight =
-          renderer.getScreenHeight() - contentTop - metrics.buttonHintsHeight - metrics.verticalSpacing;
-      switch (handleListTouch(selectedIndex_, listSize, contentTop, contentHeight, true)) {
+      switch (handleListTouch(selectedIndex_, listSize, listRect.y, listRect.height, true)) {
         case ListTouchResult::Activated:
           activateSelected();
           return;
@@ -1595,10 +1597,10 @@ void FontDownloadActivity::loop() {
     const int detailRows = detailRowCount();
     if (detailRows > 0) {
       const auto& metrics = UITheme::getInstance().getMetrics();
-      const int contentTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
-      const int contentHeight =
-          renderer.getScreenHeight() - contentTop - metrics.buttonHintsHeight - metrics.verticalSpacing;
-      switch (handleListTouch(selectedIndex_, detailRows, contentTop, contentHeight, true)) {
+      const Rect screen = UITheme::getInstance().getScreenSafeArea(renderer, true, false);
+      const int contentTop = screen.y + metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
+      const Rect contentRect = GUI.getContentRect(renderer, contentTop, metrics.verticalSpacing);
+      switch (handleListTouch(selectedIndex_, detailRows, contentRect.y, contentRect.height, true)) {
         case ListTouchResult::Activated:
           activateDetail();
           return;
@@ -1721,13 +1723,14 @@ void FontDownloadActivity::render(RenderLock&&) {
 
   renderer.clearScreen();
 
-  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, tr(STR_FONT_BROWSER));
+  const Rect screen = UITheme::getInstance().getScreenSafeArea(renderer, true, false);
+  GUI.drawHeader(renderer, Rect{screen.x, screen.y + metrics.topPadding, screen.width, metrics.headerHeight},
+                 tr(STR_FONT_BROWSER));
 
   const auto lineHeight = renderer.getLineHeight(UI_10_FONT_ID);
-  const auto contentTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
-  const auto centerY = (pageHeight - lineHeight) / 2;
+  const int contentTop = screen.y + metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
+  const int centerY = screen.y + (screen.height - lineHeight) / 2;
   downloadProgressBarY_ = centerY + metrics.verticalSpacing;
-
   if (state_ == LOADING_MANIFEST) {
     renderer.drawCenteredText(UI_10_FONT_ID, centerY, tr(STR_LOADING_FONT_LIST));
   } else if (state_ == FAMILY_LIST) {
@@ -1744,10 +1747,9 @@ void FontDownloadActivity::render(RenderLock&&) {
         renderer.drawText(UI_10_FONT_ID, metrics.contentSidePadding, contentTop, updatedBuf);
         listTop = contentTop + lineHeight + metrics.verticalSpacing;
       }
+      const Rect listRect = GUI.getContentRect(renderer, listTop, metrics.verticalSpacing);
       GUI.drawList(
-          renderer,
-          Rect{0, listTop, pageWidth, pageHeight - listTop - metrics.buttonHintsHeight - metrics.verticalSpacing},
-          listItemCount(), selectedIndex_,
+          renderer, listRect, listItemCount(), selectedIndex_,
           [this](int index) -> std::string {
             if (isFontReposRow(index)) {
               return std::string(tr(STR_FONT_REPOSITORIES));
@@ -1805,10 +1807,9 @@ void FontDownloadActivity::render(RenderLock&&) {
       const auto labels = mappedInput.mapLabels(tr(STR_BACK), "", "", "");
       GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
     } else {
+      const Rect contentRect = GUI.getContentRect(renderer, contentTop, metrics.verticalSpacing);
       GUI.drawList(
-          renderer,
-          Rect{0, contentTop, pageWidth, pageHeight - contentTop - metrics.buttonHintsHeight - metrics.verticalSpacing},
-          detailRows, selectedIndex_,
+          renderer, contentRect, detailRows, selectedIndex_,
           [this, &detailFamily, detailRows](int index) -> std::string {
             const bool isDeleteRow = detailHasDeleteRow() && index == detailRows - 1;
             if (isDeleteRow) {
@@ -1873,7 +1874,7 @@ void FontDownloadActivity::render(RenderLock&&) {
 
         const int sampleFontId = previewFontId_ != 0 ? previewFontId_ : UI_10_FONT_ID;
         const int sampleLineHeight = renderer.getLineHeight(sampleFontId);
-        const int maxY = pageHeight - metrics.buttonHintsHeight - metrics.verticalSpacing;
+        const int maxY = screen.y + screen.height - metrics.verticalSpacing;
         int y = contentTop + lineHeight;
         auto* cache = previewFontId_ != 0 ? renderer.getFontCacheManager() : nullptr;
         bool prewarmed = true;

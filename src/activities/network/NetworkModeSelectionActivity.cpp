@@ -47,10 +47,10 @@ void NetworkModeSelectionActivity::loop() {
   }
 
   const auto& metrics = UITheme::getInstance().getMetrics();
-  const int contentTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
-  const int contentHeight =
-      renderer.getScreenHeight() - contentTop - metrics.buttonHintsHeight - metrics.verticalSpacing * 2;
-  switch (handleListTouch(selectedIndex, MENU_ITEM_COUNT, contentTop, contentHeight, true)) {
+  const Rect screen = UITheme::getInstance().getScreenSafeArea(renderer, true, false);
+  const int contentTop = screen.y + metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
+  const Rect contentRect = GUI.getContentRect(renderer, contentTop, metrics.verticalSpacing * 2);
+  switch (handleListTouch(selectedIndex, MENU_ITEM_COUNT, contentRect.y, contentRect.height, true)) {
     case ListTouchResult::Activated:
       selectCurrent();
       return;
@@ -78,9 +78,11 @@ void NetworkModeSelectionActivity::render(RenderLock&&) {
   const auto& metrics = UITheme::getInstance().getMetrics();
   const auto pageWidth = renderer.getScreenWidth();
 
-  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, tr(STR_FILE_TRANSFER));
+  const Rect screen = UITheme::getInstance().getScreenSafeArea(renderer, true, false);
+  GUI.drawHeader(renderer, Rect{screen.x, screen.y + metrics.topPadding, screen.width, metrics.headerHeight},
+                 tr(STR_FILE_TRANSFER));
 
-  const int contentTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
+  const int contentTop = screen.y + metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
   const Rect contentRect = GUI.getContentRect(renderer, contentTop, metrics.verticalSpacing * 2);
   // Menu items and descriptions
   static constexpr StrId menuItems[MENU_ITEM_COUNT] = {StrId::STR_JOIN_NETWORK, StrId::STR_CALIBRE_WIRELESS,

@@ -63,11 +63,18 @@ bool HomeActivity::canUseCoverOnlyPartialUpdate(const int fromIndex, const int t
   return isCoverSelectionIndex(fromIndex) && isCoverSelectionIndex(toIndex) && GUI.supportsHomeCoverSelectionUpdates();
 }
 
+int HomeActivity::getHomeContentOffset(const ThemeMetrics& metrics) const {
+  return renderer.getOrientation() == GfxRenderer::Orientation::PortraitInverted
+             ? metrics.buttonHintsHeight + metrics.verticalSpacing
+             : 0;
+}
+
 Rect HomeActivity::getMenuRect(const ThemeMetrics& metrics, const int pageWidth, const int pageHeight) const {
-  const int menuTop = metrics.homeTopPadding + metrics.homeCoverTileHeight + metrics.homeMenuTopOffset;
+  const int contentOffset = getHomeContentOffset(metrics);
+  const int menuTop = contentOffset + metrics.homeTopPadding + metrics.homeCoverTileHeight + metrics.homeMenuTopOffset;
   const int menuHeight =
-      std::max(0, pageHeight - (metrics.headerHeight + metrics.homeTopPadding + metrics.verticalSpacing +
-                                metrics.homeMenuTopOffset + metrics.buttonHintsHeight));
+      std::max(0, pageHeight - (contentOffset + metrics.headerHeight + metrics.homeTopPadding +
+                                metrics.verticalSpacing + metrics.homeMenuTopOffset + metrics.buttonHintsHeight));
   return Rect{0, menuTop, pageWidth, menuHeight};
 }
 
@@ -288,7 +295,8 @@ void HomeActivity::loop() {
     return;
   }
 
-  const int menuTop = metrics.homeTopPadding + metrics.homeCoverTileHeight + metrics.homeMenuTopOffset;
+  const int menuTop =
+      getHomeContentOffset(metrics) + metrics.homeTopPadding + metrics.homeCoverTileHeight + metrics.homeMenuTopOffset;
   const int renderedMenuSelection =
       metrics.homeContinueReadingInMenu ? selectorIndex : selectorIndex - recentBooks.size();
   const int renderedMenuCount =
@@ -324,6 +332,7 @@ void HomeActivity::render(RenderLock&& lock) {
   const auto& metrics = UITheme::getInstance().getMetrics();
   const auto pageWidth = renderer.getScreenWidth();
   const auto pageHeight = renderer.getScreenHeight();
+  const int contentOffset = getHomeContentOffset(metrics);
   const Rect menuRect = getMenuRect(metrics, pageWidth, pageHeight);
   const int renderedSelectorIndex = selectorIndex;
 #if defined(SSD1677_PROBE_DEBUG) && SSD1677_PROBE_DEBUG
@@ -375,8 +384,8 @@ void HomeActivity::render(RenderLock&& lock) {
     coverOnlyPartialUpdate = bufferRestored;
     if (coverOnlyPartialUpdate) {
       coverDirtyRect = GUI.drawHomeCoverSelectionUpdate(
-          renderer, Rect{0, metrics.homeTopPadding, pageWidth, metrics.homeCoverTileHeight}, recentBooks,
-          lastRenderedSelectorIndex, renderedSelectorIndex);
+          renderer, Rect{0, contentOffset + metrics.homeTopPadding, pageWidth, metrics.homeCoverTileHeight},
+          recentBooks, lastRenderedSelectorIndex, renderedSelectorIndex);
       coverOnlyPartialUpdate = coverDirtyRect.width > 0 && coverDirtyRect.height > 0;
       if (coverOnlyPartialUpdate) {
         renderer.setPartialUpdateRect(coverDirtyRect.x, coverDirtyRect.y, coverDirtyRect.width, coverDirtyRect.height);
@@ -414,7 +423,7 @@ void HomeActivity::render(RenderLock&& lock) {
     afterRestore = millis();
 #endif
 
-    GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.homeTopPadding},
+    GUI.drawHeader(renderer, Rect{0, contentOffset + metrics.topPadding, pageWidth, metrics.homeTopPadding},
                    metrics.homeContinueReadingInMenu && !recentBooks.empty() ? recentBooks[0].title.c_str() : nullptr);
 #if defined(SSD1677_PROBE_DEBUG) && SSD1677_PROBE_DEBUG
     afterHeader = millis();
@@ -424,7 +433,7 @@ void HomeActivity::render(RenderLock&& lock) {
     // which sub-region of the framebuffer to snapshot. ~16 KB in Portrait
     // instead of the 48 KB full framebuffer the previous bind captured.
     coverRectX = 0;
-    coverRectY = metrics.homeTopPadding;
+    coverRectY = contentOffset + metrics.homeTopPadding;
     coverRectW = pageWidth;
     coverRectH = metrics.homeCoverTileHeight;
 
@@ -442,8 +451,8 @@ void HomeActivity::render(RenderLock&& lock) {
       booksForCover = &coverBooks;
     }
     GUI.drawRecentBookCover(
-        renderer, Rect{0, metrics.homeTopPadding, pageWidth, metrics.homeCoverTileHeight}, *booksForCover,
-        renderedSelectorIndex, coverRendered, coverBufferStored, bufferRestored,
+        renderer, Rect{0, contentOffset + metrics.homeTopPadding, pageWidth, metrics.homeCoverTileHeight},
+        *booksForCover, renderedSelectorIndex, coverRendered, coverBufferStored, bufferRestored,
         [this, &lock]() {
           if (lock.isStale() || !storeCoverBuffer()) return false;
           if (!lock.isStale()) return true;

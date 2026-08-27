@@ -34,8 +34,13 @@ BaseTheme::HintInsets BaseTheme::getButtonHintInsets(const GfxRenderer& renderer
 
 Rect BaseTheme::getContentRect(const GfxRenderer& renderer, const int topReserved, const int bottomSpacing) const {
   const auto insets = getButtonHintInsets(renderer);
-  return Rect{insets.left, topReserved, renderer.getScreenWidth() - insets.left - insets.right,
-              renderer.getScreenHeight() - topReserved - insets.bottom - bottomSpacing};
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  int contentTop = topReserved;
+  if (insets.top > 0 && topReserved < insets.top + metrics.headerHeight) {
+    contentTop += insets.top + metrics.verticalSpacing;
+  }
+  return Rect{insets.left, contentTop, renderer.getScreenWidth() - insets.left - insets.right,
+              renderer.getScreenHeight() - contentTop - insets.bottom - bottomSpacing};
 }
 
 // Internal constants
@@ -240,7 +245,6 @@ void BaseTheme::drawButtonHints(GfxRenderer& renderer, const char* btn1, const c
   const int* buttonPositions = gpio.deviceIsX3() ? x3ButtonPositions : x4ButtonPositions;
   const char* labels[] = {btn1, btn2, btn3, btn4};
   const int buttonTop = placeAtTop ? 0 : pageHeight - buttonY;
-
   for (int i = 0; i < 4; i++) {
     // Only draw if the label is non-empty
     if (labels[i] != nullptr && labels[i][0] != '\0') {

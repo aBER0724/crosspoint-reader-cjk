@@ -8,6 +8,8 @@
 #include "activities/Activity.h"
 #include "network/CrossPointWebServer.h"
 
+struct Rect;
+
 // Web server activity states
 enum class WebServerActivityState {
   MODE_SELECTION,  // Choosing between Join Network and Create Hotspot
@@ -44,7 +46,7 @@ class CrossPointWebServerActivity final : public Activity {
   // Performance monitoring
   unsigned long lastHandleClientTime = 0;
 
-  void renderServerRunning() const;
+  void renderServerRunning(const Rect& screen) const;
 
   void onNetworkModeSelected(NetworkMode mode);
   void onWifiSelectionComplete(bool connected);

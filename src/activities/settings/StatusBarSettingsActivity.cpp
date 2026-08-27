@@ -128,9 +128,9 @@ void StatusBarSettingsActivity::loop() {
   if (optionPopup.handleInput(mappedInput, [this] { requestUpdate(); })) return;
 
   const auto& metrics = UITheme::getInstance().getMetrics();
-  const int contentTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
-  const int contentHeight =
-      renderer.getScreenHeight() - contentTop - metrics.buttonHintsHeight - metrics.verticalSpacing * 2;
+  const Rect screen = UITheme::getInstance().getScreenSafeArea(renderer, true, false);
+  const int contentTop = screen.y + metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
+  const int contentHeight = screen.height - (metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing * 3);
   switch (handleListTouch(selectedIndex, visibleItemCount, contentTop, contentHeight, false)) {
     case ListTouchResult::Activated:
       handleSelection();
@@ -238,16 +238,17 @@ void StatusBarSettingsActivity::render(RenderLock&&) {
   renderer.clearScreen();
 
   auto metrics = UITheme::getInstance().getMetrics();
-  const auto pageWidth = renderer.getScreenWidth();
-  const auto pageHeight = renderer.getScreenHeight();
+  const Rect screen = UITheme::getInstance().getScreenSafeArea(renderer, true, false);
 
-  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, tr(STR_CUSTOMISE_STATUS_BAR));
+  GUI.drawHeader(renderer, Rect{screen.x, screen.y + metrics.topPadding, screen.width, metrics.headerHeight},
+                 tr(STR_CUSTOMISE_STATUS_BAR));
 
-  const int contentTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
-  const int contentHeight = pageHeight - contentTop - metrics.buttonHintsHeight - metrics.verticalSpacing * 2;
+  const int contentTop = screen.y + metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
+  const int contentHeight = screen.height - (metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing * 3);
   GUI.drawList(
-      renderer, Rect{0, contentTop, pageWidth, contentHeight}, visibleItemCount, static_cast<int>(selectedIndex),
-      [](int index) { return std::string(I18N.get(menuNames[index])); }, nullptr, nullptr,
+      renderer, Rect{screen.x, contentTop, screen.width, contentHeight}, visibleItemCount,
+      static_cast<int>(selectedIndex), [](int index) { return std::string(I18N.get(menuNames[index])); }, nullptr,
+      nullptr,
       [](int index) -> std::string {
         switch (index) {
           case ITEM_CHAPTER_PAGE_COUNT:

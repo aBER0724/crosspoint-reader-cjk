@@ -418,7 +418,6 @@ void LyraTheme::drawButtonHints(GfxRenderer& renderer, const char* btn1, const c
   const char* labels[] = {btn1, btn2, btn3, btn4};
   const int buttonTop = placeAtTop ? 0 : pageHeight - buttonY;
   const int smallButtonTop = placeAtTop ? 0 : pageHeight - smallButtonHeight;
-
   for (int i = 0; i < 4; i++) {
     const int x = buttonPositions[i];
     if (labels[i] != nullptr && labels[i][0] != '\0') {
