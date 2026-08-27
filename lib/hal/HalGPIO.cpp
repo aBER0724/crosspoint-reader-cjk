@@ -199,6 +199,13 @@ void HalGPIO::begin() {
   BoardConfig::selectDevice(deviceIsX3() ? BoardConfig::Board::XteinkX3 : BoardConfig::Board::XteinkX4);
 
   if (deviceIsX4()) {
+    // GPIO13 controls the X4 battery latch. A deep-sleep hold can survive a
+    // USB-powered reset/reflash, leaving it LOW: the application then runs from
+    // VBUS but loses power as soon as USB is unplugged. Release that stale hold
+    // and assert the latch after hardware detection confirms this is an X4.
+    gpio_hold_dis(GPIO_NUM_13);
+    pinMode(GPIO_NUM_13, OUTPUT);
+    digitalWrite(GPIO_NUM_13, HIGH);
     pinMode(BAT_GPIO0, INPUT);
     pinMode(UART0_RXD, INPUT);
   }
