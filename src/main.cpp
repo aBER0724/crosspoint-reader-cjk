@@ -571,11 +571,15 @@ void setup() {
 
   // Ensure we're not still holding the power button before leaving setup
   waitForPowerRelease();
-  // Poll X3/X4 ADC buttons independently from the app/render loop. The main
-  // loop drops to a 50 ms idle cadence and can also be occupied by reader
-  // parsing, so short physical clicks must be queued instead of sampled only
-  // once per loop iteration.
-  gpio.beginAsyncInput();
+  // X4's ADC ladder and power-button state must stay on the main loop. The
+  // asynchronous poller mutates InputManager state while the main task reads
+  // held-button timing, and can span the idle CPU/APB frequency transition.
+  // That race can synthesize a power-button hold and put the device into deep
+  // sleep shortly after Home appears. X3 keeps asynchronous polling because
+  // its slower I2C-backed input path needs independent sampling.
+  if (gpio.deviceIsX3()) {
+    gpio.beginAsyncInput();
+  }
   allowSleepAt = millis() + 2000;
 }
 
