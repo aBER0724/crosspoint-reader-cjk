@@ -12,7 +12,9 @@
 HalStorage HalStorage::instance;
 
 HalStorage::HalStorage() {
-  storageMutex = xSemaphoreCreateMutex();
+  // Recursive so a HalFile out-parameter can destroy its previous file while
+  // openFileForRead/Write already holds this task's storage lock.
+  storageMutex = xSemaphoreCreateRecursiveMutex();
   assert(storageMutex != nullptr);
 }
 
@@ -26,8 +28,8 @@ bool HalStorage::ready() const { return SDCard.ready(); }
 
 class HalStorage::StorageLock {
  public:
-  StorageLock() { xSemaphoreTake(HalStorage::getInstance().storageMutex, portMAX_DELAY); }
-  ~StorageLock() { xSemaphoreGive(HalStorage::getInstance().storageMutex); }
+  StorageLock() { xSemaphoreTakeRecursive(HalStorage::getInstance().storageMutex, portMAX_DELAY); }
+  ~StorageLock() { xSemaphoreGiveRecursive(HalStorage::getInstance().storageMutex); }
 };
 
 #define HAL_STORAGE_WRAPPED_CALL(method, ...) \
@@ -57,6 +59,12 @@ bool HalStorage::ensureDirectoryExists(const char* path) { HAL_STORAGE_WRAPPED_C
 class HalFile::Impl {
  public:
   Impl(FsFile&& fsFile) : file(std::move(fsFile)) {}
+  ~Impl() {
+    // FsFile destruction may close the file and touch SD/SPI. Serialize that
+    // implicit close with every other HalStorage operation across tasks.
+    HalStorage::StorageLock lock;
+    file.close();
+  }
   FsFile file;
 };
 
