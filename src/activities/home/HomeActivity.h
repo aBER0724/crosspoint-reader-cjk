@@ -89,7 +89,7 @@ class HomeActivity final : public Activity {
   // Cover-only windowed refresh requires the theme's unselected cover baseline.
   bool canUseCoverOnlyPartialUpdate(int fromIndex, int toIndex) const;
   int getHomeContentOffset(const ThemeMetrics& metrics) const;
-  Rect getMenuRect(const ThemeMetrics& metrics, int pageWidth, int pageHeight) const;
+  Rect getMenuRect(const ThemeMetrics& metrics, int pageWidth) const;
   bool storeCoverBuffer();    // Store frame buffer for cover image
   bool restoreCoverBuffer();  // Restore frame buffer from stored cover
   void freeCoverBuffer();     // Free the stored cover buffer

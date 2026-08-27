@@ -69,12 +69,12 @@ int HomeActivity::getHomeContentOffset(const ThemeMetrics& metrics) const {
              : 0;
 }
 
-Rect HomeActivity::getMenuRect(const ThemeMetrics& metrics, const int pageWidth, const int pageHeight) const {
+Rect HomeActivity::getMenuRect(const ThemeMetrics& metrics, const int pageWidth) const {
   const int contentOffset = getHomeContentOffset(metrics);
   const int menuTop = contentOffset + metrics.homeTopPadding + metrics.homeCoverTileHeight + metrics.homeMenuTopOffset;
-  const int menuHeight =
-      std::max(0, pageHeight - (contentOffset + metrics.headerHeight + metrics.homeTopPadding +
-                                metrics.verticalSpacing + metrics.homeMenuTopOffset + metrics.buttonHintsHeight));
+  const Rect safeArea = UITheme::getInstance().getScreenSafeArea(renderer, true, false);
+  const int menuBottom = safeArea.y + safeArea.height;
+  const int menuHeight = std::max(0, menuBottom - menuTop);
   return Rect{0, menuTop, pageWidth, menuHeight};
 }
 
@@ -331,9 +331,8 @@ void HomeActivity::loop() {
 void HomeActivity::render(RenderLock&& lock) {
   const auto& metrics = UITheme::getInstance().getMetrics();
   const auto pageWidth = renderer.getScreenWidth();
-  const auto pageHeight = renderer.getScreenHeight();
   const int contentOffset = getHomeContentOffset(metrics);
-  const Rect menuRect = getMenuRect(metrics, pageWidth, pageHeight);
+  const Rect menuRect = getMenuRect(metrics, pageWidth);
   const int renderedSelectorIndex = selectorIndex;
 #if defined(SSD1677_PROBE_DEBUG) && SSD1677_PROBE_DEBUG
   const unsigned long renderStart = millis();
