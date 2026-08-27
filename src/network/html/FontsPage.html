@@ -140,13 +140,14 @@
     <div class="card">
       <h2>Upload Font</h2>
       <form class="upload-form" id="uploadForm">
-        <input type="file" id="fontFiles" webkitdirectory directory multiple required />
+        <input type="file" id="fontFiles" accept=".cpfontpkg,.cpfont" multiple required />
         <button type="submit" class="btn btn-primary">Upload</button>
       </form>
       <p id="pickedInfo" class="family-meta" style="margin: 8px 0 0;"></p>
       <div id="status"></div>
     </div>
 
+  <script src="/js/jszip.min.js"></script>
   <script>
     const adminToken = (function() {
       const token = new URLSearchParams(window.location.search).get('token');
@@ -269,18 +270,68 @@
       return raw.replace(/[^A-Za-z0-9_-]/g, '_');
     }
 
-    function cpfontFilesOnly(fileList) {
-      return Array.from(fileList).filter(f => /\.cpfont$/i.test(f.name));
+    async function sha256Hex(blob) {
+      const digest = await crypto.subtle.digest('SHA-256', await blob.arrayBuffer());
+      return Array.from(new Uint8Array(digest), value => value.toString(16).padStart(2, '0')).join('');
     }
 
-    function normalizedFontName(name) {
-      return name.replace(/ /g, '_');
-    }
-
-    function sortedFontEntries(fileList) {
-      return cpfontFilesOnly(fileList)
-        .map(file => ({ file, name: normalizedFontName(file.name) }))
-        .sort((a, b) => a.name < b.name ? -1 : (a.name > b.name ? 1 : 0));
+    async function selectedFontEntries(fileList) {
+      const files = Array.from(fileList);
+      const packages = files.filter(file => /\.cpfontpkg$/i.test(file.name));
+      if (packages.length > 0) {
+        if (files.length !== 1 || packages.length !== 1) throw new Error('Select exactly one .cpfontpkg package.');
+        const zip = await JSZip.loadAsync(packages[0]);
+        const manifestEntries = Object.values(zip.files).filter(
+          entry => /(^|\/)manifest\.json$/i.test(entry.name) && !entry.dir);
+        if (manifestEntries.length !== 1) throw new Error('The package must contain exactly one manifest.json.');
+        const manifestEntry = manifestEntries[0];
+        const root = manifestEntry.name.slice(0, -'manifest.json'.length);
+        const manifest = JSON.parse(await manifestEntry.async('text'));
+        if (manifest.format !== 1 || manifest.cpfontVersion !== 4 ||
+            !/^[A-Za-z0-9_-]{1,48}$/.test(manifest.id || '') ||
+            !['ui', 'family'].includes(manifest.role) || !Array.isArray(manifest.uiSizes) ||
+            !Array.isArray(manifest.readerSizes) || !Array.isArray(manifest.styles) ||
+            !manifest.styles.includes('regular') || ![8, 10, 12].every(size => manifest.uiSizes.includes(size))) {
+          throw new Error('The package manifest is invalid.');
+        }
+        const declaredSizes = new Set();
+        const entries = [];
+        for (const item of manifest.fonts || []) {
+          const expectedRole = manifest.uiSizes.includes(item.size) ? 'ui' :
+            (manifest.readerSizes.includes(item.size) ? 'reader' : '');
+          if (!/^[A-Za-z0-9_-]+\.cpfont$/i.test(item.file || '') || !Number.isInteger(item.size) ||
+              item.size < 1 || item.size > 255 || declaredSizes.has(item.size) || item.role !== expectedRole ||
+              !Array.isArray(item.styles) || !item.styles.includes('regular')) {
+            throw new Error('The package contains invalid or duplicate font metadata.');
+          }
+          declaredSizes.add(item.size);
+          const zipEntry = zip.file(root + item.file);
+          if (!zipEntry) throw new Error('A font declared by the package is missing.');
+          const data = await zipEntry.async('blob');
+          if (Number(item.sizeBytes) !== data.size || !/^[0-9a-f]{64}$/i.test(item.sha256 || '')) {
+            throw new Error('A packaged font has invalid integrity metadata.');
+          }
+          const actualSha256 = await sha256Hex(data);
+          if (actualSha256 !== item.sha256.toLowerCase()) {
+            throw new Error('A packaged font failed SHA-256 verification.');
+          }
+          entries.push({ file: new File([data], item.file), name: item.file, sha256: actualSha256 });
+        }
+        const expectedSizes = [...new Set([...manifest.uiSizes, ...manifest.readerSizes])];
+        if (entries.length === 0 || entries.length > 32 || expectedSizes.length !== entries.length ||
+            !expectedSizes.every(size => declaredSizes.has(size))) {
+          throw new Error('The package font list is incomplete or invalid.');
+        }
+        return { family: manifest.id, entries: entries.sort((a, b) => a.name.localeCompare(b.name)) };
+      }
+      const entries = files.filter(file => /\.cpfont$/i.test(file.name))
+        .map(file => ({ file, name: file.name.replace(/ /g, '_') }))
+        .sort((a, b) => a.name.localeCompare(b.name));
+      if (entries.length === 0) throw new Error('No .cpfont files selected.');
+      const families = [...new Set(entries.map(entry => sanitizeFamily(familyFromFilename(entry.name))))];
+      if (families.length !== 1) throw new Error('Please select files from a single font family.');
+      for (const entry of entries) entry.sha256 = await sha256Hex(entry.file);
+      return { family: families[0], entries };
     }
 
     function familyFingerprint(entries) {
@@ -293,38 +344,37 @@
       for (const entry of entries) {
         for (const value of encoder.encode(entry.name)) hashByte(value);
         hashByte(0);
-        let size = entry.file.size;
-        for (let i = 0; i < 8; i++) {
-          hashByte(size & 0xff);
-          size = Math.floor(size / 256);
-        }
+        for (const value of encoder.encode(entry.sha256)) hashByte(value);
         hashByte(0xff);
       }
       return hash >>> 0;
     }
 
-    document.getElementById('fontFiles').addEventListener('change', function() {
+    document.getElementById('fontFiles').addEventListener('change', async function() {
       const info = document.getElementById('pickedInfo');
-      const entries = sortedFontEntries(this.files);
-      if (entries.length === 0) {
-        info.textContent = 'No .cpfont files found in the selected folder.';
-        return;
+      try {
+        const selection = await selectedFontEntries(this.files);
+        info.textContent = selection.entries.length + ' file' + (selection.entries.length === 1 ? '' : 's') +
+          ' → family "' + selection.family + '"';
+      } catch (error) {
+        info.textContent = error.message;
       }
-      const family = sanitizeFamily(familyFromFilename(entries[0].name));
-      info.textContent = entries.length + ' file' + (entries.length === 1 ? '' : 's') +
-        ' → family "' + family + '"';
     });
 
     document.getElementById('uploadForm').addEventListener('submit', async function(e) {
       e.preventDefault();
       const status = document.getElementById('status');
-      const entries = sortedFontEntries(document.getElementById('fontFiles').files);
-      if (entries.length === 0) {
+      let selection;
+      try {
+        selection = await selectedFontEntries(document.getElementById('fontFiles').files);
+      } catch (error) {
         status.className = 'status-err';
         status.style.display = 'block';
-        status.textContent = 'No .cpfont files selected.';
+        status.textContent = error.message;
         return;
       }
+      const entries = selection.entries;
+      const family = selection.family;
       if (entries.length > 32) {
         status.className = 'status-err';
         status.style.display = 'block';
@@ -340,21 +390,9 @@
       if (new Set(entries.map(entry => entry.name)).size !== entries.length) {
         status.className = 'status-err';
         status.style.display = 'block';
-        status.textContent = 'Font filenames must remain unique after spaces are replaced with underscores.';
+        status.textContent = 'Font filenames must be unique.';
         return;
       }
-
-      // A directory picker may include files from multiple family subfolders.
-      // Reject that up front — otherwise entries[0]'s family is silently reused
-      // for every upload, corrupting the install layout.
-      const families = [...new Set(entries.map(entry => sanitizeFamily(familyFromFilename(entry.name))))];
-      if (families.length !== 1) {
-        status.className = 'status-err';
-        status.style.display = 'block';
-        status.textContent = 'Please select files from a single font family.';
-        return;
-      }
-      const family = families[0];
       const fingerprint = familyFingerprint(entries);
       const session = crypto.getRandomValues(new Uint32Array(1))[0];
 
