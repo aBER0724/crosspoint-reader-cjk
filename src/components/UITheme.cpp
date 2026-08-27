@@ -90,16 +90,14 @@ int UITheme::getNumberOfItemsPerPage(const GfxRenderer& renderer, bool hasHeader
 
 // Screen area excluding the button hints
 Rect UITheme::getScreenSafeArea(const GfxRenderer& renderer, bool hasFrontButtonHints, bool hasSideButtonHints) {
-  auto orientation = renderer.getOrientation();
+  const auto orientation = renderer.getOrientation();
   const int screenWidth = renderer.getScreenWidth();
   const int screenHeight = renderer.getScreenHeight();
   Rect safeArea = Rect{0, 0, screenWidth, screenHeight};
   const ThemeMetrics metrics = getMetrics();
   switch (orientation) {
     case GfxRenderer::Orientation::Portrait:
-      if (hasFrontButtonHints) {
-        safeArea.height -= metrics.buttonHintsHeight;
-      }
+      if (hasFrontButtonHints) safeArea.height -= metrics.buttonHintsHeight;
       break;
     case GfxRenderer::Orientation::LandscapeClockwise:
       if (hasFrontButtonHints) {
@@ -109,16 +107,16 @@ Rect UITheme::getScreenSafeArea(const GfxRenderer& renderer, bool hasFrontButton
       break;
     case GfxRenderer::Orientation::PortraitInverted:
       if (hasFrontButtonHints) {
-        safeArea.y += metrics.buttonHintsHeight;
-        safeArea.height -= metrics.buttonHintsHeight;
+        const int hintGutterHeight = metrics.buttonHintsHeight + metrics.verticalSpacing;
+        safeArea.y += hintGutterHeight;
+        safeArea.height -= hintGutterHeight;
       }
       break;
     case GfxRenderer::Orientation::LandscapeCounterClockwise:
-      if (hasFrontButtonHints) {
-        safeArea.width -= metrics.buttonHintsHeight;
-      }
+      if (hasFrontButtonHints) safeArea.width -= metrics.buttonHintsHeight;
       break;
   }
+  (void)hasSideButtonHints;
   return safeArea;
 }
 

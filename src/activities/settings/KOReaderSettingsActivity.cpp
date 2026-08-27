@@ -42,9 +42,9 @@ void KOReaderSettingsActivity::loop() {
   }
 
   const auto& metrics = UITheme::getInstance().getMetrics();
-  const int contentTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
-  const int contentHeight =
-      renderer.getScreenHeight() - contentTop - metrics.buttonHintsHeight - metrics.verticalSpacing * 2;
+  const Rect screen = UITheme::getInstance().getScreenSafeArea(renderer, true, false);
+  const int contentTop = screen.y + metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
+  const int contentHeight = screen.height - (metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing * 3);
   int touchSel = static_cast<int>(selectedIndex);
   const auto listTouch = handleListTouch(touchSel, MENU_ITEMS, contentTop, contentHeight, false);
   if (listTouch != ListTouchResult::None) {
@@ -147,13 +147,14 @@ void KOReaderSettingsActivity::render(RenderLock&&) {
   renderer.clearScreen();
 
   const auto& metrics = UITheme::getInstance().getMetrics();
-  const auto pageWidth = renderer.getScreenWidth();
-  const auto pageHeight = renderer.getScreenHeight();
+  const Rect screen = UITheme::getInstance().getScreenSafeArea(renderer, true, false);
 
-  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, tr(STR_KOREADER_SYNC));
+  GUI.drawHeader(renderer, Rect{screen.x, screen.y + metrics.topPadding, screen.width, metrics.headerHeight},
+                 tr(STR_KOREADER_SYNC));
 
-  const int contentTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
-  const Rect contentRect = GUI.getContentRect(renderer, contentTop, metrics.verticalSpacing * 2);
+  const int contentTop = screen.y + metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
+  const Rect contentRect{screen.x, contentTop, screen.width,
+                         screen.height - (metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing * 3)};
   GUI.drawList(
       renderer, contentRect, static_cast<int>(MENU_ITEMS), static_cast<int>(selectedIndex),
       [](int index) { return std::string(I18N.get(menuNames[index])); }, nullptr, nullptr,

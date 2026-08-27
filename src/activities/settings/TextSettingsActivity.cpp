@@ -58,11 +58,12 @@ void TextSettingsActivity::onEnter() {
   Activity::onEnter();
 
   metrics_ = UITheme::getInstance().getMetrics();
-  afterHeader = metrics_.topPadding + metrics_.headerHeight + metrics_.verticalSpacing;
-  bottomReserved = metrics_.buttonHintsHeight + metrics_.verticalSpacing;
-  usableHeight = renderer.getScreenHeight() - afterHeader - bottomReserved;
+  const Rect screen = UITheme::getInstance().getScreenSafeArea(renderer, true, false);
+  afterHeader = screen.y + metrics_.topPadding + metrics_.headerHeight + metrics_.verticalSpacing;
+  bottomReserved = metrics_.verticalSpacing;
+  usableHeight =
+      screen.height - (metrics_.topPadding + metrics_.headerHeight + metrics_.verticalSpacing) - bottomReserved;
   previewHeight = usableHeight * metrics_.previewHeightPercent / 100;
-
   fonts_.clear();
   FontManager& fontManager = FontManager::getInstance();
   fonts_.reserve(CrossPointSettings::BUILTIN_FONT_COUNT + fontManager.getFontCount() +
@@ -218,7 +219,9 @@ void TextSettingsActivity::render(RenderLock&&) {
 
   const auto pageWidth = renderer.getScreenWidth();
 
-  GUI.drawHeader(renderer, Rect{0, metrics_.topPadding, pageWidth, metrics_.headerHeight}, tr(STR_TEXT_SETTINGS));
+  const Rect screen = UITheme::getInstance().getScreenSafeArea(renderer, true, false);
+  GUI.drawHeader(renderer, Rect{screen.x, screen.y + metrics_.topPadding, screen.width, metrics_.headerHeight},
+                 tr(STR_TEXT_SETTINGS));
 
   const auto geo = paneGeometry();
   const char* familyName = (currentFamilyIndex_ >= 0 && currentFamilyIndex_ < static_cast<int>(fonts_.size()))

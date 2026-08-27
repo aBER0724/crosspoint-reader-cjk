@@ -392,7 +392,8 @@ bool KeyboardEntryActivity::cursorPositionFromPoint(const int x, const int y, si
   const auto& metrics = UITheme::getInstance().getMetrics();
 
   const int lineHeight = renderer.getLineHeight(UI_12_FONT_ID);
-  const int inputStartY = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing +
+  const Rect screen = UITheme::getInstance().getScreenSafeArea(renderer, true, false);
+  const int inputStartY = screen.y + metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing +
                           metrics.verticalSpacing * 4 + metrics.keyboardVerticalOffset;
 
   int availableWidth = pageWidth;
@@ -686,10 +687,12 @@ void KeyboardEntryActivity::render(RenderLock&&) {
   const auto pageWidth = renderer.getScreenWidth();
   const auto& metrics = UITheme::getInstance().getMetrics();
 
-  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, title.c_str());
+  const Rect screen = UITheme::getInstance().getScreenSafeArea(renderer, true, false);
+  GUI.drawHeader(renderer, Rect{screen.x, screen.y + metrics.topPadding, screen.width, metrics.headerHeight},
+                 title.c_str());
 
   const int lineHeight = renderer.getLineHeight(UI_12_FONT_ID);
-  const int inputStartY = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing +
+  const int inputStartY = screen.y + metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing +
                           metrics.verticalSpacing * 4 + metrics.keyboardVerticalOffset;
   int inputHeight = 0;
 

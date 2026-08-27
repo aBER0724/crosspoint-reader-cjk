@@ -71,10 +71,10 @@ void FontRepositoryListActivity::loop() {
   const int itemCount = getItemCount();
   if (itemCount > 0) {
     const auto& metrics = UITheme::getInstance().getMetrics();
-    const int contentTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
-    const int contentHeight =
-        renderer.getScreenHeight() - contentTop - metrics.buttonHintsHeight - metrics.verticalSpacing * 2;
-    switch (handleListTouch(selectedIndex_, itemCount, contentTop, contentHeight, true)) {
+    const Rect screen = UITheme::getInstance().getScreenSafeArea(renderer, true, false);
+    const int contentTop = screen.y + metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
+    const Rect contentRect = GUI.getContentRect(renderer, contentTop, metrics.verticalSpacing * 2);
+    switch (handleListTouch(selectedIndex_, itemCount, contentRect.y, contentRect.height, true)) {
       case ListTouchResult::Activated:
         activateSelected();
         return;
@@ -84,7 +84,7 @@ void FontRepositoryListActivity::loop() {
         break;
     }
 
-    const int pageItems = GUI.getListPageItems(contentHeight, true);
+    const int pageItems = GUI.getListPageItems(contentRect.height, true);
     const auto swipe = mappedInput.wasSwipe();
     if (swipe == MappedInputManager::SwipeDir::Up) {
       selectedIndex_ = ButtonNavigator::nextPageIndex(selectedIndex_, itemCount, pageItems);
@@ -185,10 +185,12 @@ void FontRepositoryListActivity::render(RenderLock&&) {
   const auto pageWidth = renderer.getScreenWidth();
   const auto pageHeight = renderer.getScreenHeight();
 
-  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, tr(STR_FONT_REPOSITORIES));
+  const Rect screen = UITheme::getInstance().getScreenSafeArea(renderer, true, false);
+  GUI.drawHeader(renderer, Rect{screen.x, screen.y + metrics.topPadding, screen.width, metrics.headerHeight},
+                 tr(STR_FONT_REPOSITORIES));
 
-  const int contentTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
-  const int contentHeight = pageHeight - contentTop - metrics.buttonHintsHeight - metrics.verticalSpacing * 2;
+  const int contentTop = screen.y + metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
+  const Rect contentRect = GUI.getContentRect(renderer, contentTop, metrics.verticalSpacing * 2);
   const int itemCount = getItemCount();
 
   // A transient error hint (invalid spec / limit reached) is drawn above the list.
@@ -198,7 +200,7 @@ void FontRepositoryListActivity::render(RenderLock&&) {
     renderer.drawText(UI_10_FONT_ID, metrics.contentSidePadding, listTop, errorMessage_.c_str(), true);
     listTop += lineHeight + metrics.verticalSpacing;
   }
-  const int listHeight = contentTop + contentHeight - listTop;
+  const int listHeight = contentRect.y + contentRect.height - listTop;
 
   if (itemCount == 0) {
     renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2, tr(STR_NO_FONT_REPOSITORIES));

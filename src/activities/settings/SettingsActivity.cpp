@@ -186,13 +186,14 @@ void SettingsActivity::loop() {
   }
 
   const auto& metrics = UITheme::getInstance().getMetrics();
+  const Rect safeArea = UITheme::getInstance().getScreenSafeArea(renderer, true, false);
   int tx = 0;
   int ty = 0;
-  const int tabTop = metrics.topPadding + metrics.headerHeight;
-  const int listTop = metrics.topPadding + metrics.headerHeight + metrics.tabBarHeight + metrics.verticalSpacing;
-  const int listHeight =
-      renderer.getScreenHeight() - (metrics.topPadding + metrics.headerHeight + metrics.tabBarHeight +
-                                    metrics.buttonHintsHeight + metrics.verticalSpacing * 2);
+  const int tabTop = safeArea.y + metrics.topPadding + metrics.headerHeight;
+  const int listTop =
+      safeArea.y + metrics.topPadding + metrics.headerHeight + metrics.tabBarHeight + metrics.verticalSpacing;
+  const int listHeight = safeArea.height - (metrics.topPadding + metrics.headerHeight + metrics.tabBarHeight +
+                                            metrics.verticalSpacing * 2);
   auto buildTabs = [&]() {
     std::vector<TabInfo> tabs;
     tabs.reserve(categoryCount);
@@ -263,9 +264,9 @@ void SettingsActivity::loop() {
 
   // Handle navigation
   const auto& navMetrics = UITheme::getInstance().getMetrics();
-  const int settingsListHeight =
-      renderer.getScreenHeight() - (navMetrics.topPadding + navMetrics.headerHeight + navMetrics.tabBarHeight +
-                                    navMetrics.buttonHintsHeight + navMetrics.verticalSpacing * 2);
+  const Rect navSafeArea = UITheme::getInstance().getScreenSafeArea(renderer, true, false);
+  const int settingsListHeight = navSafeArea.height - (navMetrics.topPadding + navMetrics.headerHeight +
+                                                       navMetrics.tabBarHeight + navMetrics.verticalSpacing * 2);
   const int settingsPageItems = GUI.getListPageItems(settingsListHeight, false);
   const auto swipe = mappedInput.wasSwipe();
   if (swipe == MappedInputManager::SwipeDir::Up) {
@@ -325,6 +326,9 @@ void SettingsActivity::applySettingImmediately(uint8_t CrossPointSettings::* val
   }
   if (valuePtr == &CrossPointSettings::uiOrientation) {
     OrientationHelper::applyOrientation(renderer, mappedInput, this);
+    forceFullSettingsRefresh = true;
+  }
+  if (valuePtr == &CrossPointSettings::frontButtonFollowOrientation) {
     forceFullSettingsRefresh = true;
   }
 }
@@ -528,16 +532,16 @@ void SettingsActivity::render(RenderLock&&) {
 
   const auto& metrics = UITheme::getInstance().getMetrics();
   const auto pageWidth = renderer.getScreenWidth();
-  const auto pageHeight = renderer.getScreenHeight();
-  const int listTop = metrics.topPadding + metrics.headerHeight + metrics.tabBarHeight + metrics.verticalSpacing;
-  const int listHeight = pageHeight - (metrics.topPadding + metrics.headerHeight + metrics.tabBarHeight +
-                                       metrics.buttonHintsHeight + metrics.verticalSpacing * 2);
-
+  const Rect safeArea = UITheme::getInstance().getScreenSafeArea(renderer, true, false);
+  const int listTop =
+      safeArea.y + metrics.topPadding + metrics.headerHeight + metrics.tabBarHeight + metrics.verticalSpacing;
+  const int listHeight = safeArea.height - (metrics.topPadding + metrics.headerHeight + metrics.tabBarHeight +
+                                            metrics.verticalSpacing * 2);
   const bool sameCategory = lastRenderedCategoryIndex == selectedCategoryIndex;
   const bool selectionChanged = lastRenderedSettingIndex >= 0 && lastRenderedSettingIndex != selectedSettingIndex;
   if (!forceFullSettingsRefresh && sameCategory && selectionChanged) {
     if (lastRenderedSettingIndex == 0 || selectedSettingIndex == 0) {
-      const int tabTop = metrics.topPadding + metrics.headerHeight;
+      const int tabTop = safeArea.y + metrics.topPadding + metrics.headerHeight;
       renderer.setPartialUpdateRect(0, tabTop, pageWidth, metrics.tabBarHeight);
     } else {
       const int rowStep = GUI.getListRowStep(false);
@@ -556,24 +560,21 @@ void SettingsActivity::render(RenderLock&&) {
 
   renderer.clearScreen();
 
-  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, tr(STR_SETTINGS_TITLE),
-                 CROSSPOINT_VERSION);
+  GUI.drawHeader(renderer, Rect{0, safeArea.y + metrics.topPadding, pageWidth, metrics.headerHeight},
+                 tr(STR_SETTINGS_TITLE), CROSSPOINT_VERSION);
 
   std::vector<TabInfo> tabs;
   tabs.reserve(categoryCount);
   for (int i = 0; i < categoryCount; i++) {
     tabs.push_back({I18N.get(categoryNames[i]), selectedCategoryIndex == i});
   }
-  GUI.drawTabBar(renderer, Rect{0, metrics.topPadding + metrics.headerHeight, pageWidth, metrics.tabBarHeight}, tabs,
+  GUI.drawTabBar(renderer,
+                 Rect{0, safeArea.y + metrics.topPadding + metrics.headerHeight, pageWidth, metrics.tabBarHeight}, tabs,
                  selectedSettingIndex == 0);
 
   const auto& settings = *currentSettings;
   GUI.drawList(
-      renderer,
-      Rect{0, metrics.topPadding + metrics.headerHeight + metrics.tabBarHeight + metrics.verticalSpacing, pageWidth,
-           pageHeight - (metrics.topPadding + metrics.headerHeight + metrics.tabBarHeight + metrics.buttonHintsHeight +
-                         metrics.verticalSpacing * 2)},
-      settingsCount, selectedSettingIndex - 1,
+      renderer, Rect{safeArea.x, listTop, safeArea.width, listHeight}, settingsCount, selectedSettingIndex - 1,
       [&settings](int index) { return std::string(I18N.get(settings[index].nameId)); }, nullptr, nullptr,
       [&settings](int i) {
         const auto& setting = settings[i];

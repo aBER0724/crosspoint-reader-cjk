@@ -45,11 +45,11 @@ void RecentBooksActivity::onExit() {
 }
 
 void RecentBooksActivity::loop() {
-  const int pageItems = UITheme::getInstance().getNumberOfItemsPerPage(renderer, true, false, true, true);
   const auto& metrics = UITheme::getInstance().getMetrics();
-  const int contentTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
-  const int contentHeight =
-      renderer.getScreenHeight() - contentTop - metrics.buttonHintsHeight - metrics.verticalSpacing;
+  const Rect screen = UITheme::getInstance().getScreenSafeArea(renderer, true, false);
+  const int contentTop = screen.y + metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
+  const Rect contentRect = GUI.getContentRect(renderer, contentTop, metrics.verticalSpacing);
+  const int pageItems = GUI.getListPageItems(contentRect.height, true);
 
   if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
     if (!recentBooks.empty() && selectorIndex < static_cast<int>(recentBooks.size())) {
@@ -61,7 +61,7 @@ void RecentBooksActivity::loop() {
 
   int touchSel = static_cast<int>(selectorIndex);
   const auto listTouch =
-      handleListTouch(touchSel, static_cast<int>(recentBooks.size()), contentTop, contentHeight, true);
+      handleListTouch(touchSel, static_cast<int>(recentBooks.size()), contentRect.y, contentRect.height, true);
   if (listTouch != ListTouchResult::None) {
     selectorIndex = static_cast<size_t>(touchSel);
     if (listTouch == ListTouchResult::Activated) {
@@ -116,9 +116,11 @@ void RecentBooksActivity::render(RenderLock&&) {
   const auto pageHeight = renderer.getScreenHeight();
   const auto& metrics = UITheme::getInstance().getMetrics();
 
-  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, tr(STR_MENU_RECENT_BOOKS));
+  const Rect screen = UITheme::getInstance().getScreenSafeArea(renderer, true, false);
+  GUI.drawHeader(renderer, Rect{screen.x, screen.y + metrics.topPadding, screen.width, metrics.headerHeight},
+                 tr(STR_MENU_RECENT_BOOKS));
 
-  const int contentTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
+  const int contentTop = screen.y + metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
   const Rect contentRect = GUI.getContentRect(renderer, contentTop, metrics.verticalSpacing);
 
   // Recent tab

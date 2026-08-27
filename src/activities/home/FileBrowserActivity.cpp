@@ -198,12 +198,11 @@ void FileBrowserActivity::loop() {
     return;
   }
 
-  const int pathReserved = renderer.getLineHeight(SMALL_FONT_ID) + UITheme::getInstance().getMetrics().verticalSpacing;
-  const int pageItems = UITheme::getNumberOfItemsPerPage(renderer, true, false, true, false, pathReserved);
   const auto& metrics = UITheme::getInstance().getMetrics();
+  const int pathReserved = renderer.getLineHeight(SMALL_FONT_ID) + metrics.verticalSpacing;
   const int contentTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
-  const int contentHeight =
-      renderer.getScreenHeight() - contentTop - metrics.buttonHintsHeight - metrics.verticalSpacing - pathReserved;
+  const Rect contentRect = GUI.getContentRect(renderer, contentTop, metrics.verticalSpacing + pathReserved);
+  const int pageItems = GUI.getListPageItems(contentRect.height, false);
 
   auto activateSelected = [this] {
     if (lockNextConfirmRelease) {
@@ -279,7 +278,8 @@ void FileBrowserActivity::loop() {
   };
 
   int touchSel = static_cast<int>(selectorIndex);
-  const auto listTouch = handleListTouch(touchSel, static_cast<int>(files.size()), contentTop, contentHeight, false);
+  const auto listTouch =
+      handleListTouch(touchSel, static_cast<int>(files.size()), contentRect.y, contentRect.height, false);
   if (listTouch != ListTouchResult::None) {
     selectorIndex = static_cast<size_t>(touchSel);
     if (listTouch == ListTouchResult::Activated) activateSelected();
@@ -382,11 +382,13 @@ void FileBrowserActivity::render(RenderLock&&) {
       (mode == Mode::PickFirmware)
           ? std::string(tr(STR_SELECT_FIRMWARE_FILE))
           : ((basepath == "/") ? std::string(tr(STR_SD_CARD)) : basepath.substr(basepath.rfind('/') + 1));
-  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, folderName.c_str());
+  const Rect screen = UITheme::getInstance().getScreenSafeArea(renderer, true, false);
+  GUI.drawHeader(renderer, Rect{screen.x, screen.y + metrics.topPadding, screen.width, metrics.headerHeight},
+                 folderName.c_str());
 
   const int pathLineHeight = renderer.getLineHeight(SMALL_FONT_ID);
   const int pathReserved = pathLineHeight + metrics.verticalSpacing;
-  const int contentTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
+  const int contentTop = screen.y + metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
   const Rect contentRect = GUI.getContentRect(renderer, contentTop, metrics.verticalSpacing + pathReserved);
   if (files.empty()) {
     const char* emptyMsg = (mode == Mode::PickFirmware) ? tr(STR_NO_BIN_FILES) : tr(STR_NO_FILES_FOUND);
