@@ -216,10 +216,25 @@ void RoundedRaffTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, con
 
 Rect RoundedRaffTheme::getHomeMenuDirtyRect(const Rect menuRect, const int previousIndex,
                                             const int currentIndex) const {
-  (void)previousIndex;
-  (void)currentIndex;
-  // Rows are dynamically paginated and the scrollbar moves at page boundaries.
-  return menuRect;
+  const int rowHeight = RoundedRaffMetrics::values.menuRowHeight;
+  const int rowStep = rowHeight + RoundedRaffMetrics::values.menuSpacing;
+  const int pageItems = std::max(1, menuRect.height / rowStep);
+  const int previousPage = std::max(0, previousIndex) / pageItems;
+  const int currentPage = std::max(0, currentIndex) / pageItems;
+  if (previousPage != currentPage) {
+    // Pagination changes every visible row and moves the scrollbar.
+    return menuRect;
+  }
+
+  // Keep unchanged rows out of the X4 FAST window. Re-driving the whole menu
+  // for every selection move gradually weakens otherwise untouched light-mode
+  // glyphs. The menu renderer may rebuild the full framebuffer, but only these
+  // two rows are submitted to the panel.
+  const int firstRow = std::min(previousIndex, currentIndex) % pageItems;
+  const int lastRow = std::max(previousIndex, currentIndex) % pageItems;
+  const int y = menuRect.y + firstRow * rowStep;
+  const int bottom = menuRect.y + lastRow * rowStep + rowHeight;
+  return Rect{menuRect.x, y, menuRect.width, bottom - y};
 }
 
 void RoundedRaffTheme::drawButtonMenu(GfxRenderer& renderer, Rect rect, int buttonCount, int selectedIndex,
@@ -228,8 +243,8 @@ void RoundedRaffTheme::drawButtonMenu(GfxRenderer& renderer, Rect rect, int butt
   (void)rowIcon;
   const int sidePadding = RoundedRaffMetrics::values.contentSidePadding;
   const int rowX = rect.x + sidePadding;
-  const int rowHeight = renderer.getLineHeight(kTitleFontId) + 20;  // 10px top + 10px bottom
-  const int rowGap = kSelectableRowGap;
+  const int rowHeight = RoundedRaffMetrics::values.menuRowHeight;
+  const int rowGap = RoundedRaffMetrics::values.menuSpacing;
   const int rowStep = rowHeight + rowGap;
   const int pageItems = std::max(1, rect.height / rowStep);
   const int safeSelectedIndex = std::max(0, selectedIndex);
