@@ -433,9 +433,10 @@ void setup() {
       }
       break;
     case HalGPIO::WakeupReason::AfterUSBPower:
-      // If USB power caused a cold boot, go back to sleep
-      LOG_DBG("MAIN", "Wakeup reason: After USB Power");
-      powerManager.startDeepSleep(gpio);
+      // A flashing reset can present as a USB power-on reset on some X4 units
+      // and hosts. Continue through a cold boot so the panel is initialized and
+      // repainted instead of immediately sleeping with the old e-ink frame.
+      LOG_DBG("MAIN", "Wakeup reason: After USB Power; continuing cold boot");
       break;
     case HalGPIO::WakeupReason::AfterFlash:
       // After flashing, just proceed to boot
