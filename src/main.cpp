@@ -470,9 +470,10 @@ void setup() {
   // skips the panel-clearing pass and the X3 initial-full-sync arming (see
   // HalDisplay::begin), so the first paint is FAST_REFRESH (~500ms) over the
   // retained frame and input dispatches against a visible UI.
-  const BootResume resume = isSilentReboot              ? BootResume::Silent
-                            : !APP_STATE.showBootScreen ? BootResume::QuickResume
-                                                        : BootResume::Splash;
+  const BootResume resume = isSilentReboot ? BootResume::Silent
+                            : (wakeupReason == HalGPIO::WakeupReason::PowerButton && !APP_STATE.showBootScreen)
+                                ? BootResume::QuickResume
+                                : BootResume::Splash;
 
   setupDisplayAndFonts(resume != BootResume::Splash);
 
