@@ -478,16 +478,12 @@ void EpubReaderActivity::runDeferredReaderWork() {
     }
   }
 
-  // Idle SD-font glyph prefetch: warm the next page's glyphs while the reader sits on the
-  // current one, so the actual page turn's prewarm becomes a subset-check hit (zero SD
-  // reads; see SdCardFont::resetStyleMiniData, which deliberately keeps mini data across
-  // PrewarmScopes). This is the established design intent -- "the idle prewarm of page N+1
-  // serves the actual page turn with zero SD reads" -- wired into EpubReaderActivity here.
-  // Runs only when idle (input quiet for IDLE_READER_WORK_DELAY_MS), not while waiting for
-  // the current page, and holds the RenderLock so it cannot race a real render. The lock
-  // tracks the render generation, so a quick page turn bumps the generation, making the
-  // prefetch's isCancelled callback fire and abort the prewarm promptly.
-  if (section && !section->isBuilding() && !waiting && !RenderLock::peek() &&
+  // Idle SD-font prefetch performs synchronous SD reads on the caller. Keep it
+  // off X4, where this loop also owns synchronous button sampling: otherwise
+  // an input arriving during prefetch cannot be observed until the whole page
+  // font batch finishes, making otherwise identical page turns feel erratic.
+  // X4 still batch-prewarms the requested page on the render task below.
+  if (gpio.deviceIsX3() && section && !section->isBuilding() && !waiting && !RenderLock::peek() &&
       ReaderRuntime::classifyReaderMemory(ESP.getFreeHeap()) != ReaderRuntime::MemoryDecision::Stop) {
     const int fontId = SETTINGS.getReaderFontId();
     if (renderer.isSdCardFont(fontId) && section->currentPage >= 0 &&
@@ -1913,12 +1909,16 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
     }
     pagesUntilFullRefresh = SETTINGS.getRefreshFrequency();
   } else {
-    // On X4 the display owns a shadow baseline for this update, so the
-    // framebuffer is immediately available to the next input, reader menu,
-    // directory, or Home render. Coalescing in ActivityManager keeps only the
-    // newest frame while a waveform is running.
-    renderer.displayBufferAsync(HalDisplay::FAST_REFRESH);
-    pagesUntilFullRefresh = SETTINGS.getRefreshFrequency();
+    // Keep normal page turns on X4's responsive asynchronous FAST path, but
+    // periodically run the ghost-cleanup HALF waveform synchronously. HALF is
+    // not safe on the asynchronous page-turn path.
+    if (pagesUntilFullRefresh <= 1) {
+      renderer.displayBuffer(HalDisplay::HALF_REFRESH);
+      pagesUntilFullRefresh = SETTINGS.getRefreshFrequency();
+    } else {
+      renderer.displayBufferAsync(HalDisplay::FAST_REFRESH);
+      pagesUntilFullRefresh--;
+    }
   }
   const auto tDisplay = millis();
 
