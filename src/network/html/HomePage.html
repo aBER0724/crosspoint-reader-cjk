@@ -228,29 +228,11 @@
     </div>
   <script>
     let selectedSSID = '';
-    const adminToken = (function() {
-      const token = new URLSearchParams(window.location.search).get('token');
-      if (token) sessionStorage.setItem('crosspointToken', token);
-      return token || sessionStorage.getItem('crosspointToken') || '';
-    })();
-
-    function withToken(url) {
-      if (!adminToken) return url;
-      if (url.includes('?token=') || url.includes('&token=')) return url;
-      return url + (url.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(adminToken);
-    }
-
     function authFetch(url, options) {
-      options = options || {};
-      options.headers = Object.assign({}, options.headers || {}, adminToken ? {'X-CrossPoint-Token': adminToken} : {});
-      return fetch(withToken(url), options);
+      return fetch(url, options || {});
     }
 
-    function updateNavTokens() {
-      document.querySelectorAll('.nav-links a[href^="/"]').forEach(function(a) {
-        a.setAttribute('href', withToken(a.getAttribute('href')));
-      });
-    }
+    function updateNavTokens() {}
 
     async function fetchStatus() {
       try {

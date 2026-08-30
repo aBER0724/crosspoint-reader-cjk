@@ -2,11 +2,14 @@
 
 #include <DNSServer.h>
 #include <ESPmDNS.h>
+#include <FontCacheManager.h>
+#include <FontManager.h>
 #include <GfxRenderer.h>
 #include <I18n.h>
 #include <WiFi.h>
 
 #include <cstddef>
+#include <new>
 #include <string>
 
 #include "MappedInputManager.h"
@@ -33,12 +36,6 @@ constexpr int QR_CODE_HEIGHT = 198;
 DNSServer* dnsServer = nullptr;
 constexpr uint16_t DNS_PORT = 53;
 
-std::string appendAdminToken(const std::string& url, const std::string& token) {
-  if (token.empty()) {
-    return url;
-  }
-  return url + (url.find('?') == std::string::npos ? "?" : "&") + "token=" + token;
-}
 }  // namespace
 
 void CrossPointWebServerActivity::onEnter() {
@@ -249,8 +246,21 @@ void CrossPointWebServerActivity::startAccessPoint() {
 void CrossPointWebServerActivity::startWebServer() {
   LOG_DBG("WEBACT", "Starting web server...");
 
-  // Create the web server instance
-  webServer.reset(new CrossPointWebServer());
+  // WiFi and the current UI font compete for the same fragmented X4 heap.
+  // Reclaim glyph bitmaps before starting networking; selections and open font
+  // files remain intact and glyphs are loaded again on demand.
+  LOG_DBG("WEBACT", "Heap before upload cache release: free=%d max=%d", ESP.getFreeHeap(), ESP.getMaxAllocHeap());
+  FontManager::getInstance().releaseGlyphCaches();
+  if (auto* cache = renderer.getFontCacheManager()) {
+    cache->clearCache();
+  }
+
+  webServer.reset(new (std::nothrow) CrossPointWebServer());
+  if (!webServer) {
+    LOG_ERR("WEBACT", "Insufficient heap for web server: free=%d max=%d", ESP.getFreeHeap(), ESP.getMaxAllocHeap());
+    onGoHome();
+    return;
+  }
   webServer->begin();
 
   if (webServer->isRunning()) {
@@ -294,8 +304,17 @@ void CrossPointWebServerActivity::loop() {
         if (wifiStatus != WL_CONNECTED) {
           LOG_DBG("WEBACT", "WiFi disconnected! Status: %d", wifiStatus);
           // Show error and exit gracefully
-          state = WebServerActivityState::SHUTTING_DOWN;
+          stopWebServer();
+          state = WebServerActivityState::MODE_SELECTION;
           requestUpdate();
+          startActivityForResult(std::make_unique<NetworkModeSelectionActivity>(renderer, mappedInput),
+                                 [this](const ActivityResult& result) {
+                                   if (result.isCancelled) {
+                                     onGoHome();
+                                   } else {
+                                     onNetworkModeSelected(std::get<NetworkModeResult>(result.data).mode);
+                                   }
+                                 });
           return;
         }
         // Log weak signal warnings
@@ -320,41 +339,36 @@ void CrossPointWebServerActivity::loop() {
 
       // Process HTTP requests in tight loop for maximum throughput
       // More iterations = more data processed per main loop cycle
-      constexpr int MAX_ITERATIONS = 500;
+      // Keep MAX_ITERATIONS small so the Back button and button update checks
+      // are polled frequently; handleClient can internally block on socket I/O.
+      constexpr int MAX_ITERATIONS = 10;
       for (int i = 0; i < MAX_ITERATIONS && webServer->isRunning(); i++) {
         webServer->handleClient();
-        // Reset watchdog every 32 iterations
-        if ((i & 0x1F) == 0x1F) {
-          resetTaskWatchdogIfSubscribed();
+        // Reset WDT every iteration to stay safe when handleClient blocks internally
+        resetTaskWatchdogIfSubscribed();
+        // Poll Back button each iteration so exit stays snappy even when sockets block
+        mappedInput.update();
+        if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
+          onGoHome();
+          return;
         }
-        // Yield and check for exit button every 64 iterations
-        if ((i & 0x3F) == 0x3F) {
-          yield();
-          // Force trigger an update of which buttons are being pressed so be have accurate state
-          // for back button checking
-          mappedInput.update();
-          // Check for exit button inside loop for responsiveness
-          if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
-            onGoHome();
-            return;
-          }
+        yield();
+        lastHandleClientTime = millis();
+      }
+
+      if (sdFontSystem.hasPendingReload()) {
+        RenderLock lock(false);
+        if (lock.locked()) {
+          sdFontSystem.ensureLoaded(renderer);
+          requestUpdate();
         }
       }
-      lastHandleClientTime = millis();
-    }
 
-    if (sdFontSystem.hasPendingReload()) {
-      RenderLock lock(false);
-      if (lock.locked()) {
-        sdFontSystem.ensureLoaded(renderer);
-        requestUpdate();
+      // Handle exit on Back button (also check outside loop)
+      if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
+        onGoHome();
+        return;
       }
-    }
-
-    // Handle exit on Back button (also check outside loop)
-    if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
-      onGoHome();
-      return;
     }
   }
 }
@@ -390,7 +404,6 @@ void CrossPointWebServerActivity::render(RenderLock&&) {
 void CrossPointWebServerActivity::renderServerRunning(const Rect& screen) const {
   const auto& metrics = UITheme::getInstance().getMetrics();
   const auto pageWidth = renderer.getScreenWidth();
-  const std::string token = webServer ? webServer->getAdminToken() : "";
   GUI.drawHeader(renderer, Rect{screen.x, screen.y + metrics.topPadding, screen.width, metrics.headerHeight},
                  isApMode ? tr(STR_HOTSPOT_MODE) : tr(STR_FILE_TRANSFER), nullptr);
   GUI.drawSubHeader(
@@ -424,8 +437,8 @@ void CrossPointWebServerActivity::renderServerRunning(const Rect& screen) const 
                       EpdFontFamily::BOLD);
     startY += height10 + metrics.verticalSpacing * 2;
 
-    std::string hostnameUrl = appendAdminToken(std::string("http://") + AP_HOSTNAME + ".local/", token);
-    std::string ipUrl = appendAdminToken("http://" + connectedIP + "/", token);
+    std::string hostnameUrl = std::string("http://") + AP_HOSTNAME + ".local/";
+    std::string ipUrl = "http://" + connectedIP + "/";
 
     // Show QR code for URL
     const Rect qrBoundsUrl(metrics.contentSidePadding, startY, QR_CODE_WIDTH, QR_CODE_HEIGHT);
@@ -449,7 +462,7 @@ void CrossPointWebServerActivity::renderServerRunning(const Rect& screen) const 
     startY += height10 + metrics.verticalSpacing * 2;
 
     // Show QR code for URL
-    std::string webInfo = appendAdminToken("http://" + connectedIP + "/", token);
+    std::string webInfo = "http://" + connectedIP + "/";
     const Rect qrBounds((pageWidth - QR_CODE_WIDTH) / 2, startY, QR_CODE_WIDTH, QR_CODE_HEIGHT);
     QrUtils::drawQrCode(renderer, qrBounds, webInfo);
     startY += QR_CODE_HEIGHT + metrics.verticalSpacing * 2;
@@ -461,7 +474,7 @@ void CrossPointWebServerActivity::renderServerRunning(const Rect& screen) const 
     startY += height10 + 5;
 
     // Also show hostname URL
-    std::string hostnameUrl = appendAdminToken(std::string("http://") + AP_HOSTNAME + ".local/", token);
+    std::string hostnameUrl = std::string("http://") + AP_HOSTNAME + ".local/";
     std::string hostnameDisplay =
         renderer.truncatedText(SMALL_FONT_ID, hostnameUrl.c_str(), pageWidth - metrics.contentSidePadding * 2);
     renderer.drawCenteredText(SMALL_FONT_ID, startY, hostnameDisplay.c_str(), true);

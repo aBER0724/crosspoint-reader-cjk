@@ -86,60 +86,6 @@ def check_secret_redaction(failures: list[str]) -> None:
     )
 
 
-def check_web_auth_contract(failures: list[str]) -> None:
-    cpp = read("src/network/CrossPointWebServer.cpp")
-    gated_handlers = [
-        "CrossPointWebServer::handleFileListData",
-        "CrossPointWebServer::handleDownload",
-        "CrossPointWebServer::handleUploadPost",
-        "CrossPointWebServer::handleCreateFolder",
-        "CrossPointWebServer::handleRename",
-        "CrossPointWebServer::handleMove",
-        "CrossPointWebServer::handleDelete",
-        "CrossPointWebServer::handleGetSettings",
-        "CrossPointWebServer::handlePostSettings",
-        "CrossPointWebServer::handleGetOpdsServers",
-        "CrossPointWebServer::handlePostOpdsServer",
-        "CrossPointWebServer::handleDeleteOpdsServer",
-        "CrossPointWebServer::handleWifiScan",
-        "CrossPointWebServer::handleWifiSave",
-        "CrossPointWebServer::handleWifiList",
-        "CrossPointWebServer::handleWifiDelete",
-    ]
-    for handler in gated_handlers:
-        require_function_contains(cpp, handler, "requireAdminAuth()", failures, "must require admin auth")
-
-    require_function_contains(
-        cpp,
-        "CrossPointWebServer::handleUpload",
-        "isAdminAuthorized()",
-        failures,
-        "multipart upload callback must reject unauthorized file bodies",
-    )
-    require_contains(
-        "src/network/WebAdminAuth.cpp",
-        "X-CrossPoint-Token",
-        failures,
-        "shared web auth policy must check the admin token header",
-    )
-    require_contains(
-        "src/network/CrossPointWebServer.cpp",
-        'START:<token>:<filename>:<size>:<path>',
-        failures,
-        "WebSocket protocol comment must require token",
-    )
-    require_contains(
-        "src/network/CrossPointWebServer.cpp",
-        "ERROR:Unauthorized",
-        failures,
-        "WebSocket upload must reject bad tokens",
-    )
-
-    dav = read("src/network/WebDAVHandler.cpp")
-    require_function_contains(dav, "WebDAVHandler::handle", "isAuthorized(server)", failures, "must require auth")
-    require_function_contains(dav, "WebDAVHandler::raw", "isAuthorized(server)", failures, "raw PUT must require auth")
-
-
 def check_path_policy_contract(failures: list[str]) -> None:
     require_contains(
         "src/network/StoragePathPolicy.cpp",
@@ -261,28 +207,6 @@ def check_tls_and_atomic_contracts(failures: list[str]) -> None:
         )
 
 
-def check_frontend_contract(failures: list[str]) -> None:
-    for path in [
-        "src/network/html/HomePage.html",
-        "src/network/html/SettingsPage.html",
-        "src/network/html/FilesPage.html",
-    ]:
-        require_contains(path, "X-CrossPoint-Token", failures, "frontend requests must propagate admin token")
-        require_contains(path, "withToken", failures, "frontend links/requests must carry admin token")
-    require_contains(
-        "src/network/html/FilesPage.html",
-        "START:${adminToken}:",
-        failures,
-        "WebSocket upload START must include admin token",
-    )
-    require_contains(
-        "src/network/html/FilesPage.html",
-        "rewriteAuthedLinks",
-        failures,
-        "generated file links must be tokenized",
-    )
-
-
 def check_upload_resource_contract(failures: list[str]) -> None:
     require_contains(
         "src/network/CrossPointWebServer.cpp",
@@ -378,10 +302,8 @@ def check_dark_mode_contract(failures: list[str]) -> None:
 def main() -> int:
     failures: list[str] = []
     check_secret_redaction(failures)
-    check_web_auth_contract(failures)
     check_path_policy_contract(failures)
     check_tls_and_atomic_contracts(failures)
-    check_frontend_contract(failures)
     check_upload_resource_contract(failures)
     check_dark_mode_contract(failures)
 

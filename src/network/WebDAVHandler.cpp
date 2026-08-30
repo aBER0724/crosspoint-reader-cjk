@@ -6,7 +6,6 @@
 #include <Logging.h>
 
 #include "StoragePathPolicy.h"
-#include "WebAdminAuth.h"
 #include "util/BookCacheUtils.h"
 #include "util/TaskWatchdog.h"
 
@@ -38,8 +37,6 @@ bool storageHasSpaceForTransfer(const size_t pendingBytes) {
 }  // namespace
 
 // ── RequestHandler interface ─────────────────────────────────────────────────
-
-WebDAVHandler::WebDAVHandler(std::string adminToken) : _adminToken(std::move(adminToken)) {}
 
 bool WebDAVHandler::canHandle(WebServer& server, HTTPMethod method, const String& uri) {
   (void)server;
@@ -76,14 +73,6 @@ void WebDAVHandler::raw(WebServer& server, const String& uri, HTTPRaw& raw) {
     _putStatusCode = 500;
     _putErrorMessage = "Write failed - incomplete upload or disk full";
 
-    if (!isAuthorized(server)) {
-      if (_putFile) _putFile.close();
-      _putPath = "";
-      _putStatusCode = 401;
-      _putErrorMessage = "Unauthorized";
-      _putOk = false;
-      return;
-    }
     _putPath = getRequestPath(server);
     if (isProtectedPath(_putPath)) {
       _putPath = "";
@@ -211,11 +200,6 @@ void WebDAVHandler::raw(WebServer& server, const String& uri, HTTPRaw& raw) {
 
 bool WebDAVHandler::handle(WebServer& server, HTTPMethod method, const String& uri) {
   (void)uri;
-  if (!isAuthorized(server)) {
-    server.send(401, "text/plain", "Unauthorized");
-    return true;
-  }
-
   switch (method) {
     case HTTP_OPTIONS:
       handleOptions(server);
@@ -875,8 +859,6 @@ void WebDAVHandler::urlEncodePath(const String& path, String& out) const {
     }
   }
 }
-
-bool WebDAVHandler::isAuthorized(WebServer& s) const { return WebAdminAuth::isAuthorized(s, _adminToken); }
 
 bool WebDAVHandler::isProtectedPath(const String& path) const { return StoragePathPolicy::isProtectedPath(path); }
 

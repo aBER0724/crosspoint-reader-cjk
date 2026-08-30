@@ -1810,36 +1810,19 @@
 <script>
   // get current path from query parameter
   const currentPath = decodeURIComponent(new URLSearchParams(window.location.search).get('path') || '/');
-  const adminToken = (function() {
-    const token = new URLSearchParams(window.location.search).get('token');
-    if (token) sessionStorage.setItem('crosspointToken', token);
-    return token || sessionStorage.getItem('crosspointToken') || '';
-  })();
-
-  function withToken(url) {
-    if (!adminToken) return url;
-    if (url.includes('?token=') || url.includes('&token=')) return url;
-    return url + (url.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(adminToken);
-  }
+  function withToken(url) { return url; }
 
   function authFetch(url, options) {
-    options = options || {};
-    options.headers = Object.assign({}, options.headers || {}, adminToken ? {'X-CrossPoint-Token': adminToken} : {});
-    return fetch(withToken(url), options);
+    return fetch(url, options || {});
   }
 
   function openAuthedXhr(method, url) {
     const xhr = new XMLHttpRequest();
-    xhr.open(method, withToken(url), true);
-    if (adminToken) xhr.setRequestHeader('X-CrossPoint-Token', adminToken);
+    xhr.open(method, url, true);
     return xhr;
   }
 
-  function rewriteAuthedLinks(root) {
-    (root || document).querySelectorAll('a[href^="/"]').forEach(function(a) {
-      a.setAttribute('href', withToken(a.getAttribute('href')));
-    });
-  }
+  function rewriteAuthedLinks(root) {}
 
   if (currentPath !== '/') {
     const leaf = currentPath.split('/').filter(Boolean).pop();
@@ -2930,14 +2913,17 @@
     }
 
     if (qualitySlider && qualityInput) {
-      // Initialize converter variables with UI default values
-      suppressUploadSettingsSave = true;
-      try {
-        updateQualitySettings();
-      } finally {
-        suppressUploadSettingsSave = false;
+      // Initialize converter variables with UI default values. This callback
+      // runs before the later upload-settings declarations are initialized, so
+      // avoid touching persistence state here.
+      const autoCropToggle = document.getElementById('autoCropToggle');
+      JPEG_QUALITY = parseInt(qualitySlider.value, 10);
+      ENABLE_GRAYSCALE = true;
+      ENABLE_AUTO_CROP = autoCropToggle ? autoCropToggle.checked : false;
+      const qualityDisplay = document.getElementById('qualityDisplaySimple');
+      if (qualityDisplay) {
+        qualityDisplay.textContent = '📦 ' + qualitySlider.value + '% JPEG';
       }
-
       // Deselect all presets when slider is manually changed
       const deselectPresets = function() {
         document.querySelectorAll('.quality-preset').forEach(btn => {
@@ -3221,6 +3207,7 @@ const DEFAULT_MAX_HEIGHT = 800;
 const DEFAULT_JPEG_QUALITY = 85;
 const DEFAULT_ENABLE_GRAYSCALE = true;
 // Note: Overlap is now always centered distribution (min 5%)
+const DEFAULT_ENABLE_AUTO_CROP = false;
 
 // Dynamic conversion settings (updated by UI)
 let MAX_WIDTH = DEFAULT_MAX_WIDTH;
@@ -4983,8 +4970,8 @@ function uploadFileWebSocket(file, onProgress, onComplete, onError) {
 
     ws.onopen = function() {
       console.log('[WS] Connected, starting upload:', file.name);
-      // Send start message: START:<token>:<filename>:<size>:<path>
-      ws.send(`START:${adminToken}:${file.name}:${file.size}:${currentPath}`);
+      // Send start message: START:<filename>:<size>:<path>
+      ws.send(`START:${file.name}:${file.size}:${currentPath}`);
     };
 
     ws.onmessage = async function(event) {
@@ -5088,8 +5075,7 @@ function uploadFileHTTP(file, onProgress, onComplete, onError) {
 
     const xhr = new XMLHttpRequest();
     currentUploadXhr = xhr;
-    xhr.open('POST', withToken('/upload?path=' + encodeURIComponent(currentPath)), true);
-    if (adminToken) xhr.setRequestHeader('X-CrossPoint-Token', adminToken);
+    xhr.open('POST', '/upload?path=' + encodeURIComponent(currentPath), true);
 
     xhr.upload.onprogress = function(e) {
       if (e.lengthComputable && onProgress) {

@@ -143,8 +143,11 @@ inline SettingInfo buildDictionarySetting(const std::vector<DictionaryEntry>& di
 // SdCardFontRegistry is supplied AND has SD card fonts installed, the
 // font-family entry is replaced in a per-call copy with a registry-aware
 // version. Callers without SD fonts pay only a vector copy.
-inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* registry = nullptr,
-                                                const std::vector<DictionaryEntry>* dictionaries = nullptr) {
+//
+// WebServer paths that never need registry/dictionary expansion can ask for the
+// static base list directly (const reference, zero copy) to keep peak heap usage
+// bounded on memory-constrained devices.
+inline const std::vector<SettingInfo>& getBaseSettingsList() {
   static const std::vector<SettingInfo> baseList = [] {
     std::vector<SettingInfo> v = {
         // --- Display ---
@@ -370,7 +373,12 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
     }
     return v;
   }();
+  return baseList;
+}
 
+inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* registry = nullptr,
+                                                const std::vector<DictionaryEntry>* dictionaries = nullptr) {
+  const std::vector<SettingInfo>& baseList = getBaseSettingsList();
   std::vector<SettingInfo> v = baseList;
   if (!BoardConfig::hasTouch()) {
     v.erase(std::remove_if(v.begin(), v.end(),

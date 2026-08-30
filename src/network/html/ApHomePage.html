@@ -44,10 +44,8 @@ li:last-child{border:none}
 </div>
 <script>
 var P='/';
-var adminToken=(function(){var t=new URLSearchParams(window.location.search).get('token');if(t)sessionStorage.setItem('crosspointToken',t);return t||sessionStorage.getItem('crosspointToken')||'';})();
-function withToken(u){if(!adminToken||u.indexOf('?token=')>=0||u.indexOf('&token=')>=0)return u;return u+(u.indexOf('?')>=0?'&':'?')+'token='+encodeURIComponent(adminToken);}
-function authFetch(u,o){o=o||{};o.headers=Object.assign({},o.headers||{},adminToken?{'X-CrossPoint-Token':adminToken}:{});return fetch(withToken(u),o);}
-function openAuthedXhr(m,u){var x=new XMLHttpRequest();x.open(m,withToken(u));if(adminToken)x.setRequestHeader('X-CrossPoint-Token',adminToken);return x;}
+function authFetch(u,o){return fetch(u,o||{});}
+function openAuthedXhr(m,u){var x=new XMLHttpRequest();x.open(m,u);return x;}
 function fmt(b){if(b<1024)return b+'B';if(b<1048576)return(b/1024).toFixed(1)+'K';return(b/1048576).toFixed(1)+'M';}
 function nav(p){P=p;load();}
 function load(){

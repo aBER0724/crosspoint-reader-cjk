@@ -47,10 +47,8 @@ class CrossPointWebServer {
     // 4KB is a good balance: large enough to reduce syscall overhead, small enough
     // to keep individual write times short and avoid watchdog issues
     static constexpr size_t UPLOAD_BUFFER_SIZE = 4096;  // 4KB buffer
-    std::vector<uint8_t> buffer;
+    std::unique_ptr<uint8_t[]> buffer;
     size_t bufferPos = 0;
-
-    UploadState() { buffer.resize(UPLOAD_BUFFER_SIZE); }
   } upload;
 
   // Used by font upload handler (.cpfont multipart upload)
@@ -89,10 +87,8 @@ class CrossPointWebServer {
     static constexpr unsigned long BATCH_IDLE_TIMEOUT_MS = 2UL * 60UL * 1000UL;
     static constexpr unsigned long DUPLICATE_RETRY_WINDOW_MS = 30UL * 1000UL;
     static constexpr unsigned long CLEANUP_RETRY_INTERVAL_MS = 5UL * 1000UL;
-    std::vector<uint8_t> buffer;
+    std::unique_ptr<uint8_t[]> buffer;
     size_t bufferPos = 0;
-
-    FontUploadState() { buffer.resize(BUFFER_SIZE); }
   } fontUpload;
 
   CrossPointWebServer();
@@ -111,7 +107,6 @@ class CrossPointWebServer {
   bool isRunning() const { return running; }
 
   WsUploadStatus getWsUploadStatus() const;
-  const std::string& getAdminToken() const { return adminToken; }
 
   // Get the port number
   uint16_t getPort() const { return port; }
@@ -126,11 +121,6 @@ class CrossPointWebServer {
   uint16_t wsPort = 81;  // WebSocket port
   NetworkUDP udp;
   bool udpActive = false;
-  std::string adminToken;
-
-  bool isAdminAuthorized() const;
-  bool requireAdminAuth() const;
-
   // WebSocket upload state
   void onWebSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t length);
   static void wsEventCallback(uint8_t num, WStype_t type, uint8_t* payload, size_t length);
@@ -151,6 +141,7 @@ class CrossPointWebServer {
   void handleDownload() const;
   void handleUpload(UploadState& state) const;
   void handleUploadPost(UploadState& state) const;
+  bool allocateHttpUploadBuffer(UploadState& state) const;
   void handleCreateFolder() const;
   void handleRename() const;
   void handleMove() const;
@@ -158,7 +149,7 @@ class CrossPointWebServer {
 
   // Settings handlers
   void handleSettingsPage() const;
-  void handleGetSettings() const;
+  void buildSettingsCache() const;
   void handlePostSettings();
 
   // WiFi credential management (CJK)
@@ -174,6 +165,7 @@ class CrossPointWebServer {
   void handleFontUpload();
   void handleFontDelete();
   void resetFontUploadRequest();
+  bool allocateFontUploadBuffer();
   void abortFontUploadBatch(const char* errorMessage);
 
   // OPDS server handlers

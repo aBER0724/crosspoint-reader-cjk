@@ -3,11 +3,9 @@
 #include <HalStorage.h>
 #include <WebServer.h>
 
-#include <string>
-
 class WebDAVHandler : public RequestHandler {
  public:
-  explicit WebDAVHandler(std::string adminToken);
+  WebDAVHandler() = default;
 
   // RequestHandler interface
   bool canHandle(WebServer& server, HTTPMethod method, const String& uri) override;
@@ -25,7 +23,6 @@ class WebDAVHandler : public RequestHandler {
   unsigned long _putStartTime = 0;
   int _putStatusCode = 500;
   String _putErrorMessage = "Write failed - incomplete upload or disk full";
-  std::string _adminToken;
 
   // WebDAV method handlers
   void handleOptions(WebServer& s);
@@ -44,7 +41,6 @@ class WebDAVHandler : public RequestHandler {
   String getRequestPath(WebServer& s) const;
   String getDestinationPath(WebServer& s) const;
   void urlEncodePath(const String& path, String& out) const;
-  bool isAuthorized(WebServer& s) const;
   bool isProtectedPath(const String& path) const;
   int getDepth(WebServer& s) const;
   bool getOverwrite(WebServer& s) const;

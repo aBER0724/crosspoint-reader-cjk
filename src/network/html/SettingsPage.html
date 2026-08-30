@@ -310,29 +310,16 @@
 <script>
   let allSettings = [];
   let originalValues = {};
-  const adminToken = (function() {
-    const token = new URLSearchParams(window.location.search).get('token');
-    if (token) sessionStorage.setItem('crosspointToken', token);
-    return token || sessionStorage.getItem('crosspointToken') || '';
-  })();
-
-  function withToken(url) {
-    if (!adminToken) return url;
-    if (url.includes('?token=') || url.includes('&token=')) return url;
-    return url + (url.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(adminToken);
-  }
-
   function authFetch(url, options) {
-    options = options || {};
-    options.headers = Object.assign({}, options.headers || {}, adminToken ? {'X-CrossPoint-Token': adminToken} : {});
-    return fetch(withToken(url), options);
+    const opts = options || {};
+    if (opts.signal) return fetch(url, opts);
+    const controller = new AbortController();
+    const timer = setTimeout(function() { controller.abort(); }, 30000);
+    return fetch(url, Object.assign({}, opts, {signal: controller.signal}))
+      .finally(function() { clearTimeout(timer); });
   }
 
-  function updateNavTokens() {
-    document.querySelectorAll('.nav-links a[href^="/"]').forEach(function(a) {
-      a.setAttribute('href', withToken(a.getAttribute('href')));
-    });
-  }
+  function updateNavTokens() {}
 
   function escapeHtml(unsafe) {
     return unsafe
@@ -458,9 +445,20 @@
       document.getElementById('saveBtn').disabled = true;
     } catch (e) {
       console.error(e);
-      document.getElementById('settings-container').innerHTML =
-        '<div class="card"><p style="text-align:center;color:#e74c3c;">Failed to load settings</p></div>';
+      const container = document.getElementById('settings-container');
+      container.innerHTML =
+        '<div class="card"><p style="text-align:center;color:#e74c3c;">Failed to load settings</p>' +
+        '<p style="text-align:center;"><button class="btn-small" onclick="retryLoad()">Retry</button></p></div>';
     }
+  }
+
+  async function retryLoad() {
+    const container = document.getElementById('settings-container');
+    container.innerHTML = '<div class="loader-container"><span class="loader"></span></div>';
+    // The ESP32 WebServer is single-threaded. Keep these relatively large JSON
+    // responses sequential so two browser sockets do not compete for scarce lwIP heap.
+    await loadSettings();
+    await loadOpdsServers();
   }
 
   async function saveSettings() {
@@ -576,6 +574,12 @@
       renderOpdsSection();
     } catch (e) {
       console.error('OPDS load error:', e);
+      const container = document.getElementById('opds-container');
+      if (container && !container.innerHTML.trim()) {
+        container.innerHTML =
+          '<div class="card"><p style="text-align:center;color:#e74c3c;">Failed to load OPDS servers' +
+          ' <button class="btn-small" onclick="retryLoad()">Retry</button></p></div>';
+      }
     }
   }
 
@@ -632,8 +636,7 @@
   }
 
   updateNavTokens();
-  loadSettings();
-  loadOpdsServers();
+  retryLoad();
 </script>
 </body>
 </html>

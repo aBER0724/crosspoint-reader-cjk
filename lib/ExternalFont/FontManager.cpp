@@ -3,11 +3,12 @@
 #include <HalStorage.h>
 #include <Logging.h>
 #include <Serialization.h>
+#include <esp_err.h>
+#include <esp_task_wdt.h>
 
 #include <cstring>
 
 #include "FontFilenameParser.h"
-
 // Out-of-class definitions for static constexpr members (required for ODR-use
 // in C++14)
 constexpr int FontManager::MAX_FONTS;
@@ -15,6 +16,13 @@ constexpr const char* FontManager::FONTS_DIR;
 constexpr const char* FontManager::SETTINGS_FILE;
 constexpr uint8_t FontManager::SETTINGS_VERSION;
 
+namespace {
+void resetTaskWatchdogIfSubscribed() {
+  if (esp_task_wdt_status(nullptr) == ESP_OK) {
+    esp_task_wdt_reset();
+  }
+}
+}  // namespace
 FontManager& FontManager::getInstance() {
   static FontManager instance;
   return instance;
@@ -45,6 +53,7 @@ void FontManager::scanFonts() {
   _fontCount = 0;
   HalFile entry;
   while (_fontCount < MAX_FONTS && (entry = dir.openNextFile())) {
+    resetTaskWatchdogIfSubscribed();  // SD iteration may be slow; feed WDT
     if (entry.isDirectory()) {
       entry.close();
       continue;
