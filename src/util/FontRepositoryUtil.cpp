@@ -33,6 +33,6 @@ bool isValidRepositorySpec(const std::string& spec) {
   return true;
 }
 
-std::string assembleManifestUrl(const std::string& ownerRepo, const std::string& tag) {
-  return "https://github.com/" + ownerRepo + "/releases/download/" + tag + "/fonts.json";
+std::string assembleManifestUrl(const std::string& ownerRepo) {
+  return "https://api.github.com/repos/" + ownerRepo + "/contents/fonts.json?ref=main";
 }

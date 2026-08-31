@@ -2,6 +2,7 @@
 
 #include <array>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -19,7 +20,7 @@
 // repository the file is downloaded from (a family may mix point sizes from
 // several repositories after merging).
 struct ManifestFile {
-  std::string baseUrl;
+  std::shared_ptr<const std::string> baseUrl;
   size_t size = 0;
   uint8_t pointSize = 0;
   std::array<uint8_t, 32> sha256{};

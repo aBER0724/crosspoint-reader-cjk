@@ -21,11 +21,17 @@
 // aBER0724/crosspoint-cjk-fonts repository's release-fonts.yml workflow under the
 // "sd-fonts-m<META>-b<BIN>" tag. The tag derives its version numbers from
 // lib/EpdFont/scripts/cpfont_version.py.
+//
+// The manifest is fetched via the GitHub contents API (api.github.com) rather
+// than the release-assets CDN: api.github.com negotiates an ECDHE-ECDSA cipher
+// whose handshake needs far less contiguous heap than release-assets' RSA cipher,
+// which fails with -112/-125 once the X4 heap is fragmented. The file must be
+// committed to the repo (not only attached to the release) for this to work.
 #define FONT_MANIFEST_URL_STRINGIFY_INNER(x) #x
 #define FONT_MANIFEST_URL_STRINGIFY(x) FONT_MANIFEST_URL_STRINGIFY_INNER(x)
-#define FONT_MANIFEST_URL                                                                                      \
-  "https://github.com/aBER0724/crosspoint-cjk-fonts/releases/download/sd-fonts-m" FONT_MANIFEST_URL_STRINGIFY( \
-      FONTS_MANIFEST_VERSION) "-b" FONT_MANIFEST_URL_STRINGIFY(CPFONT_VERSION) "/fonts.json"
+#define FONT_MANIFEST_URL                                                \
+  "https://api.github.com/repos/aBER0724/crosspoint-cjk-fonts/contents/" \
+  "fonts.json?ref=main"
 #endif
 
 class FontDownloadActivity : public Activity {
@@ -96,6 +102,8 @@ class FontDownloadActivity : public Activity {
   bool cancelRequested_ = false;
   bool lowMemoryDownload_ = false;
   bool wifiStarted_ = false;
+  std::string reconnectSsid_;
+  std::string reconnectPassword_;
   int lastProgressPercent_ = -1;
   int downloadProgressBarY_ = 0;
 
@@ -104,14 +112,15 @@ class FontDownloadActivity : public Activity {
   bool downloadManifestToFile(const std::string& url, const char* path);
   bool parseManifestFile(const char* path, std::vector<ManifestFamily>& outFamilies, std::string& outBaseUrl,
                          std::string& outUpdatedAt, bool allowSelfHealRestart);
-  void restoreManifestData();
+  bool restoreManifestData();
   void openFontRepositories();
   bool pollDownloadCancellation();
   void beginNetworkTransfer(int activeFamilyIndex = -1);
-  void endNetworkTransfer();
+  bool endNetworkTransfer();
   void updateDownloadProgress(size_t downloaded, size_t total);
   void renderLowMemoryProgress();
   void refreshFamilyState(ManifestFamily& family);
+  bool ensureWifiConnectedForTransfer();
   void downloadFamily(int familyIndex, int fileIndex = -1, const char* stagedFilePath = nullptr);
   void downloadAll();
   static bool parsePointSize(const char* filename, const char* familyName, uint8_t& pointSize);

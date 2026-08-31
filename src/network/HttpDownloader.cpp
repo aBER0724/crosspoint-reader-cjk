@@ -12,6 +12,7 @@
 
 #if defined(FREEINK_NET_WOLFSSL)
 #include <SecureHttpClient.h>
+#include <esp_heap_caps.h>
 
 extern "C" void wolfSSL_Arduino_Serial_Print(const char* const msg) { LOG_DBG("WOLFSSL", "%s", msg); }
 #else
@@ -59,27 +60,96 @@ bool isCancelled(Sink& sink) {
 }
 
 #if defined(FREEINK_NET_WOLFSSL)
+bool shouldUseTls12(const std::string& url) { return url.find(".workers.dev/") != std::string::npos; }
+
+void addBasicAuthorization(freeink::SecureHttpClient& http, const std::string& username, const std::string& password) {
+  if (username.empty() || password.empty()) return;
+  const std::string credentials = username + ":" + password;
+  const String encoded = base64::encode(credentials.c_str());
+  http.addHeader("Authorization", std::string("Basic ") + encoded.c_str());
+}
+
 HttpDownloader::DownloadError runGetWolf(const std::string& startUrl, const std::string& username,
                                          const std::string& password, Sink& sink) {
-  std::string url = startUrl;
+  if (shouldUseTls12(startUrl) && sink.maxBytes != 0) {
+    constexpr size_t RANGE_BYTES = 32 * 1024;
+    size_t expectedTotal = 0;
+    while (expectedTotal == 0 || sink.downloaded < expectedTotal) {
+      if (isCancelled(sink)) return HttpDownloader::ABORTED;
+      const size_t rangeStart = sink.downloaded;
+      const size_t upperBound = expectedTotal == 0 ? sink.maxBytes : expectedTotal;
+      const size_t rangeEnd = std::min(rangeStart + RANGE_BYTES, upperBound) - 1;
 
+      freeink::SecureHttpClient part;
+      part.setTimeout(HTTP_TIMEOUT_MS);
+      part.setInsecure();
+      part.setTls12Only(true);
+      part.setFollowRedirects(0);
+      part.setReuse(false);
+      if (!part.begin(startUrl)) return HttpDownloader::HTTP_ERROR;
+      part.addHeader("Range", "bytes=" + std::to_string(rangeStart) + "-" + std::to_string(rangeEnd));
+      part.setUserAgent("CrossPoint-ESP32-" CROSSPOINT_VERSION);
+      addBasicAuthorization(part, username, password);
+      LOG_DBG("HTTP", "wolfSSL range GET: %zu-%zu free=%u maxblk=%u", rangeStart, rangeEnd,
+              (unsigned)esp_get_free_heap_size(), (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+
+      const size_t downloadedBefore = sink.downloaded;
+      const int status = part.GET(
+          [&part, &sink](const uint8_t* data, size_t len) {
+            if (part.getStatus() != 206) return false;
+            resetTaskWatchdogIfSubscribed();
+            if (exceedsLimit(sink, len) || !sink.write(data, len)) return false;
+            sink.downloaded += len;
+            return true;
+          },
+          [&sink]() { return isCancelled(sink); });
+      resetTaskWatchdogIfSubscribed();
+
+      if (part.aborted()) return HttpDownloader::ABORTED;
+      if (status != 206 || part.callbackAborted() || !part.responseComplete()) {
+        LOG_ERR("HTTP", "wolfSSL range failed: status=%d got=%zu requested=%zu-%zu", status, sink.downloaded,
+                rangeStart, rangeEnd);
+        return HttpDownloader::HTTP_ERROR;
+      }
+
+      size_t responseStart = 0;
+      size_t responseEnd = 0;
+      size_t responseTotal = 0;
+      if (!part.getContentRange(responseStart, responseEnd, responseTotal) || responseStart != rangeStart ||
+          responseEnd != std::min(rangeEnd, responseTotal - 1) || responseTotal > sink.maxBytes ||
+          sink.downloaded - downloadedBefore != responseEnd - responseStart + 1) {
+        LOG_ERR("HTTP", "Invalid Content-Range for requested bytes %zu-%zu", rangeStart, rangeEnd);
+        return HttpDownloader::HTTP_ERROR;
+      }
+      if (expectedTotal != 0 && responseTotal != expectedTotal) {
+        LOG_ERR("HTTP", "Content-Range total changed: %zu -> %zu", expectedTotal, responseTotal);
+        return HttpDownloader::HTTP_ERROR;
+      }
+      expectedTotal = responseTotal;
+      sink.total = expectedTotal;
+      if (sink.progress) sink.progress(sink.downloaded, sink.total);
+      part.end();
+      delay(1);
+    }
+    return sink.downloaded == expectedTotal ? HttpDownloader::OK : HttpDownloader::HTTP_ERROR;
+  }
+
+  std::string url = startUrl;
   for (int hop = 0; hop <= MAX_REDIRECTS; ++hop) {
     freeink::SecureHttpClient http;
     http.setTimeout(HTTP_TIMEOUT_MS);
     http.setInsecure();
+    http.setFollowRedirects(0);
+    http.setReuse(false);
     if (!http.begin(url)) {
       LOG_ERR("HTTP", "wolfSSL bad URL: %s", url.c_str());
       return HttpDownloader::HTTP_ERROR;
     }
-    // setUserAgent replaces SecureHttpClient's built-in UA; addHeader would
-    // append a second User-Agent header, which strict servers reject (aiohttp
-    // answers 400 "Duplicate 'User-Agent' header found").
     http.setUserAgent("CrossPoint-ESP32-" CROSSPOINT_VERSION);
-    if (!username.empty() && !password.empty()) {
-      const std::string credentials = username + ":" + password;
-      const String encoded = base64::encode(credentials.c_str());
-      http.addHeader("Authorization", std::string("Basic ") + encoded.c_str());
+    if (url.find("api.github.com") != std::string::npos) {
+      http.addHeader("Accept", "application/vnd.github.raw");
     }
+    addBasicAuthorization(http, username, password);
 
     LOG_DBG("HTTP", "wolfSSL GET: %s", url.c_str());
     resetTaskWatchdogIfSubscribed();
@@ -88,8 +158,7 @@ HttpDownloader::DownloadError runGetWolf(const std::string& startUrl, const std:
           if (http.getStatus() != 200) return true;
           resetTaskWatchdogIfSubscribed();
           if (sink.total == 0 && http.hasContentLength()) sink.total = http.getContentLength();
-          if (exceedsLimit(sink, len)) return false;
-          if (!sink.write(data, len)) return false;
+          if (exceedsLimit(sink, len) || !sink.write(data, len)) return false;
           sink.downloaded += len;
           if (sink.progress && sink.total > 0) sink.progress(sink.downloaded, sink.total);
           return true;
@@ -104,6 +173,7 @@ HttpDownloader::DownloadError runGetWolf(const std::string& startUrl, const std:
     }
     if (isRedirect(status)) {
       const std::string location = http.getHeader("location");
+      http.end();
       if (location.empty() || !freeink::SecureHttpClient::resolveUrl(url, location, url)) {
         LOG_ERR("HTTP", "wolfSSL bad redirect: %d", status);
         return HttpDownloader::HTTP_ERROR;

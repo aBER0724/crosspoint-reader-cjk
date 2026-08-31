@@ -53,14 +53,10 @@ TEST(FontRepositoryUtilTest, InvalidSpecs) {
   EXPECT_FALSE(isValidRepositorySpec("user\\repo"));
 }
 
-TEST(FontRepositoryUtilTest, ReleaseTagConstant) { EXPECT_STREQ(FONT_RELEASE_TAG, "sd-fonts-m2-b4"); }
-
 TEST(FontRepositoryUtilTest, AssembleManifestUrl) {
-  EXPECT_EQ(assembleManifestUrl("user/repo", FONT_RELEASE_TAG),
-            "https://github.com/user/repo/releases/download/sd-fonts-m2-b4/fonts.json");
-  EXPECT_EQ(assembleManifestUrl("aBER0724/crosspoint-cjk-fonts", FONT_RELEASE_TAG),
-            "https://github.com/aBER0724/crosspoint-cjk-fonts/releases/download/sd-fonts-m2-b4/fonts.json");
-  EXPECT_EQ(assembleManifestUrl("user/repo", "v1.0"), "https://github.com/user/repo/releases/download/v1.0/fonts.json");
+  EXPECT_EQ(assembleManifestUrl("user/repo"), "https://api.github.com/repos/user/repo/contents/fonts.json?ref=main");
+  EXPECT_EQ(assembleManifestUrl("aBER0724/crosspoint-cjk-fonts"),
+            "https://api.github.com/repos/aBER0724/crosspoint-cjk-fonts/contents/fonts.json?ref=main");
 }
 
 // ---------------------------------------------------------------------------
@@ -116,7 +112,7 @@ TEST(FontManifestMergeTest, DuplicateFamilyPointSizeDeduped) {
   // Incoming fork declares the same family with the same 14 pt file but from a
   // different repository (different baseUrl). Earlier repo wins.
   auto fork = makeFamily("Family", 14, 9999, 9);
-  fork.files[0].baseUrl = "https://github.com/fork/repo/releases/download/x";
+  fork.files[0].baseUrl = std::make_shared<const std::string>("https://github.com/fork/repo/releases/download/x");
   std::vector<ManifestFamily> incoming;
   incoming.push_back(std::move(fork));
 
@@ -125,7 +121,7 @@ TEST(FontManifestMergeTest, DuplicateFamilyPointSizeDeduped) {
   ASSERT_EQ(out.size(), 1u);
   ASSERT_EQ(out[0].files.size(), 1u);
   EXPECT_EQ(out[0].files[0].size, 100u);  // original kept, fork ignored
-  EXPECT_TRUE(out[0].files[0].baseUrl.empty());
+  EXPECT_FALSE(out[0].files[0].baseUrl);
   EXPECT_EQ(out[0].totalSize, 100u);
 }
 
@@ -136,7 +132,7 @@ TEST(FontManifestMergeTest, MissingPointSizeAppendedFromFork) {
 
   // Fork provides an extra 18 pt file that the default repo does not ship.
   auto fork = makeFamily("Family", 18, 200, 2);
-  fork.files[0].baseUrl = "https://github.com/fork/repo/releases/download/x";
+  fork.files[0].baseUrl = std::make_shared<const std::string>("https://github.com/fork/repo/releases/download/x");
   std::vector<ManifestFamily> incoming;
   incoming.push_back(std::move(fork));
 
@@ -148,7 +144,8 @@ TEST(FontManifestMergeTest, MissingPointSizeAppendedFromFork) {
   // Sorted by point size: 14 (default) then 18 (fork, with its own baseUrl).
   EXPECT_EQ(out[0].files[0].pointSize, 14);
   EXPECT_EQ(out[0].files[1].pointSize, 18);
-  EXPECT_EQ(out[0].files[1].baseUrl, "https://github.com/fork/repo/releases/download/x");
+  ASSERT_TRUE(out[0].files[1].baseUrl);
+  EXPECT_EQ(*out[0].files[1].baseUrl, "https://github.com/fork/repo/releases/download/x");
 
   // totalSize recomputed to include the appended file.
   EXPECT_EQ(out[0].totalSize, 300u);
