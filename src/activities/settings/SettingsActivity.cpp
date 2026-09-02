@@ -431,7 +431,11 @@ void SettingsActivity::toggleCurrentSetting() {
         startActivityForResult(std::make_unique<FontDownloadActivity>(renderer, mappedInput),
                                [this](const ActivityResult&) {
                                  SETTINGS.saveToFile();
-                                 rebuildSettingsLists();
+                                 // The settings list itself is unchanged by catalog browsing.
+                                 // Restore while Wi-Fi and catalog allocations are gone, before
+                                 // another list rebuild can fragment the contiguous heap needed by
+                                 // all configured UI font sizes.
+                                 sdFontSystem.ensureLoaded(renderer);
                                });
         break;
       case SettingAction::FontRepositories:
