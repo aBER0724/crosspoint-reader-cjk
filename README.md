@@ -16,7 +16,7 @@ Community firmware for the **Xteink X4** e-paper reader, based on [CrossPoint Re
 - File browser, book covers, sleep screens, rotation, and reading progress
 - Wi-Fi upload, WebDAV, OTA updates, Calibre integration, and KOReader Sync
 
-![CrossPoint Reader CJK 0.4.0 home screen in dark mode](./docs/images/current/home-dark-0.4.0.png)
+![CrossPoint Reader CJK 0.4.0 home screen with the English interface in light mode](./docs/images/current/home-en-light-0.4.0.png)
 
 ## Install
 
