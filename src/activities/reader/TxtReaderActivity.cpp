@@ -188,6 +188,7 @@ bool TxtReaderActivity::buildPageIndex(RenderLock& lock) {
   LOG_DBG("TRS", "Building page index for %zu bytes...", fileSize);
 
   GUI.drawPopup(renderer, tr(STR_INDEXING));
+  renderer.waitRefreshComplete();
   auto lastYieldMs = millis();
 
   while (offset < fileSize) {

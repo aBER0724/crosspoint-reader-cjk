@@ -1362,6 +1362,7 @@ void EpubReaderActivity::render(RenderLock&& lock) {
       const bool needsFullBuild = pendingPercentJump;
       if (needsFullBuild) {
         GUI.drawPopup(renderer, tr(STR_INDEXING));
+        renderer.waitRefreshComplete();
         // The popup's own refresh is a plain FAST, so force the page that replaces it onto the HALF
         // ghost-cleanup path -- otherwise the "INDEXING" text ghosts under the rendered page.
         pagesUntilFullRefresh = 1;
@@ -1408,6 +1409,13 @@ void EpubReaderActivity::render(RenderLock&& lock) {
                                : target + PARTIAL_REBUILD_START_MARGIN < static_cast<int>(section->pageCount))) {
           LOG_DBG("ERS", "Partial covers target %d of %d; deferring extension build", target, section->pageCount);
         } else {
+          const bool targetUnavailable = anchorJump ? !section->getPageForAnchor(pendingAnchor).has_value()
+                                                    : target >= static_cast<int>(section->pageCount);
+          if (targetUnavailable) {
+            GUI.drawPopup(renderer, tr(STR_INDEXING));
+            renderer.waitRefreshComplete();
+            pagesUntilFullRefresh = 1;
+          }
           bool started;
           {
             // Lend the framebuffer's 48 KB to startBuild only (the spine HTML
@@ -1482,6 +1490,9 @@ void EpubReaderActivity::render(RenderLock&& lock) {
     }
   }
   if (section->isBuilding() && section->currentPage >= static_cast<int>(section->pageCount)) {
+    GUI.drawPopup(renderer, tr(STR_INDEXING));
+    renderer.waitRefreshComplete();
+    pagesUntilFullRefresh = 1;
     GfxRenderer::FrameBufferLoan loan(renderer);
     const Section::BuildResult buildResult =
         section->buildSomeMore(BUILD_PAGES_PER_CHUNK, FOREGROUND_BUILD_PARSE_STEPS_PER_TICK,

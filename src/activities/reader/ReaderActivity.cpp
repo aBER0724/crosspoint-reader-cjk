@@ -37,6 +37,7 @@ std::unique_ptr<Epub> ReaderActivity::loadEpub(const std::string& path) {
   const bool uncached = !Storage.exists((epub->getCachePath() + "/book.bin").c_str());
   if (uncached) {
     GUI.drawPopup(renderer, tr(STR_INDEXING));
+    renderer.waitRefreshComplete();
   }
   bool loaded;
   {
