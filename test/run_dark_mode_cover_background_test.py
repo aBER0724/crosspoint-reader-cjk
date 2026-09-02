@@ -9,6 +9,12 @@ if expected not in source:
     print("solid fill path does not honor image dark-mode bypass", file=sys.stderr)
     sys.exit(1)
 
+expected_crop_width = "const int sourceWidth = bitmap.getWidth() - 2 * cropPixX;"
+expected_crop_height = "const int sourceHeight = bitmap.getHeight() - 2 * cropPixY;"
+if expected_crop_width not in source or expected_crop_height not in source:
+    print("cropped bitmap background does not cover the complete visible image", file=sys.stderr)
+    sys.exit(1)
+
 if "fillRect(x, y, scaledWidth, scaledHeight, false);" not in source:
     print("general bitmap path does not pre-fill its white background", file=sys.stderr)
     sys.exit(1)

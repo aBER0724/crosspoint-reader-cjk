@@ -2090,8 +2090,8 @@ void GfxRenderer::drawBitmap(const Bitmap& bitmap, const int x, const int y, con
   LOG_DBG("GFX", "Scaling by %f - %s", scale, isScaled ? "scaled" : "not scaled");
 
   if (darkMode && renderMode == BW) {
-    const int sourceWidth = static_cast<int>((1.0f - cropX) * bitmap.getWidth() - cropPixX);
-    const int sourceHeight = static_cast<int>((1.0f - cropY) * bitmap.getHeight() - cropPixY);
+    const int sourceWidth = bitmap.getWidth() - 2 * cropPixX;
+    const int sourceHeight = bitmap.getHeight() - 2 * cropPixY;
     const int scaledWidth = isScaled ? static_cast<int>(std::floor(sourceWidth * scale)) : sourceWidth;
     const int scaledHeight = isScaled ? static_cast<int>(std::floor(sourceHeight * scale)) : sourceHeight;
     fillRect(x, y, scaledWidth, scaledHeight, false);
