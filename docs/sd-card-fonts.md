@@ -5,6 +5,8 @@
 CrossPoint supports loading additional fonts from the SD card, including fonts
 with extended Unicode coverage (CJK, Cyrillic, Greek, etc.).
 
+The bundled firmware fonts use a reduced character set to conserve flash space. Less-common characters outside that set may be missing. For broader CJK coverage, install the matching **Noto Sans SC**, **Noto Sans TC**, or **Noto Sans JP** family through **Settings > System > Manage Fonts**, or use one of the manual installation methods below.
+
 ## Installing Fonts
 
 There are three ways to install fonts:

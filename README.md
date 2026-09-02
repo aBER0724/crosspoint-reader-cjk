@@ -49,6 +49,8 @@ pio run --target upload
 
 Install reader and UI font families from the device catalog. Fonts are stored on the SD card.
 
+The bundled fonts use a reduced character set to fit the firmware. Less-common characters outside that set may appear as missing glyphs. For broader CJK coverage, install the matching **Noto Sans SC**, **Noto Sans TC**, or **Noto Sans JP** family from **Settings > System > Manage Fonts**, or install a compatible font manually on the SD card.
+
 - **[CrossPoint CJK Fonts](https://github.com/aBER0724/crosspoint-cjk-fonts)** — reproducible catalog of ready-to-install `.cpfont` families
 - **[CrossPoint CJK Font Maker](https://github.com/aBER0724/crosspoint-cjk-font-maker)** — create compatible font packages from your own fonts
 - **[SD-card font guide](./docs/sd-card-fonts.md)** — installation layout, repositories, and technical details

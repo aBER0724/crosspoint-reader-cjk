@@ -49,6 +49,8 @@ pio run --target upload
 
 可从设备字体目录安装阅读字体和 UI 字体族，字体保存在 SD 卡中。
 
+受固件空间限制，内置字体使用了精简字符集。显示字符集以外的生僻字或不常用字符时，可能会出现缺字。需要更完整的中日韩字符覆盖时，建议前往 **设置 > 系统 > 管理字体**，根据阅读内容安装 **Noto Sans SC**、**Noto Sans TC** 或 **Noto Sans JP**；也可以将兼容字体手动安装到 SD 卡。
+
 - **[CrossPoint CJK Fonts](https://github.com/aBER0724/crosspoint-cjk-fonts)** — 可直接安装的 `.cpfont` 字体目录及可复现构建流程
 - **[CrossPoint CJK Font Maker](https://github.com/aBER0724/crosspoint-cjk-font-maker)** — 将自己的字体制作成兼容字体包
 - **[SD 卡字体指南](./docs/sd-card-fonts-ZH.md)** — 安装目录、字体源与技术说明

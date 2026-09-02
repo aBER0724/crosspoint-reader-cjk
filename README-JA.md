@@ -49,6 +49,8 @@ pio run --target upload
 
 端末のフォントカタログから本文用・UI 用のフォントファミリーをインストールできます。フォントは SD カードに保存されます。
 
+ファームウェア容量を抑えるため、内蔵フォントの文字セットは必要な文字を中心に絞っています。収録範囲外の珍しい漢字などは、欠落グリフとして表示される場合があります。より広い CJK 文字範囲が必要な場合は、**設定 > システム > フォント管理**から読書内容に合う **Noto Sans SC**、**Noto Sans TC**、または **Noto Sans JP** をインストールしてください。対応フォントを SD カードへ手動で配置することもできます。
+
 - **[CrossPoint CJK Fonts](https://github.com/aBER0724/crosspoint-cjk-fonts)** — そのままインストールできる `.cpfont` フォントと再現可能なビルド環境
 - **[CrossPoint CJK Font Maker](https://github.com/aBER0724/crosspoint-cjk-font-maker)** — 手持ちのフォントから対応パッケージを作成
 - **[SD カードフォントガイド](./docs/sd-card-fonts-JA.md)** — 配置方法、フォントリポジトリ、技術仕様
