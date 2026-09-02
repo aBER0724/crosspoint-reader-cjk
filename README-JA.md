@@ -13,7 +13,7 @@
 - SD カードから読み込める本文フォントと UI フォント（`.cpfont` 形式）
 - フォントのプレビュー、ダウンロード、インストールに対応した端末内カタログ
 - 電子ペーパー向けに調整したライトモードとダークモード。ダークモードでは専用の再描画処理により、背景の白浮きを抑え、表紙画像も正しい階調で表示
-- UI 全体の上下反転に対応。端末を逆向きに持った場合も、ホーム画面や設定画面をそのまま操作できます。上流版の上下反転は現在、リーダー画面のみ対応しています
+- ホーム、設定、リーダー画面を含む UI 全体の上下反転
 - ファイルブラウザ、表紙表示、スリープ画面、画面回転、読書位置の保存
 - Wi-Fi 転送、WebDAV、OTA 更新、Calibre、KOReader Sync
 
@@ -47,7 +47,7 @@ pio run --target upload
 
 ## フォント
 
-端末内のフォントカタログから、本文用・UI 用のフォントファミリーをまとめてインストールできます。フォントは SD カードに保存し、必要なときだけ読み込むことで、ファームウェア容量とメモリ消費を抑えています。
+端末のフォントカタログから本文用・UI 用のフォントファミリーをインストールできます。フォントは SD カードに保存されます。
 
 - **[CrossPoint CJK Fonts](https://github.com/aBER0724/crosspoint-cjk-fonts)** — そのままインストールできる `.cpfont` フォントと再現可能なビルド環境
 - **[CrossPoint CJK Font Maker](https://github.com/aBER0724/crosspoint-cjk-font-maker)** — 手持ちのフォントから対応パッケージを作成
@@ -64,15 +64,7 @@ pio run --target upload
 
 ## コントリビューション
 
-変更内容はできるだけ一つの目的に絞り、Pull Request を作成する前に次のチェックを実行してください。
-
-```sh
-./bin/clang-format-fix
-pio check --fail-on-defect low --fail-on-defect medium --fail-on-defect high
-pio run
-```
-
-AI コーディングエージェントを使う場合は、[AGENTS.md](./AGENTS.md) も確認してください。
+開発環境と必要なチェックについては、[コントリビューターガイド](./docs/contributing/README-JA.md)を参照してください。
 
 ## 謝辞
 

@@ -4,12 +4,8 @@
 
 ## Purpose
 
-This document records behavior that is intentional in the CJK fork and must survive upstream merges.
-It is not a general feature list or a claim that upstream lacks every related capability.
-Use it to distinguish user-visible promises from implementation invariants that can be lost in a conflict-free merge.
-
-Before accepting upstream versions of the paths listed below, compare behavior rather than only APIs or compilation results.
-A clean build does not prove that the fork contract is intact.
+This guide records fork behavior and implementation constraints that must survive upstream merges.
+Review behavior—not only APIs or build results—when resolving conflicts in the paths below.
 
 ## User-visible fork features
 

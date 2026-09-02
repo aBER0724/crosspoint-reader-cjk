@@ -34,9 +34,9 @@ Welcome to the **CrossPoint** firmware. This guide outlines the hardware control
     - [Page Turning](#page-turning)
     - [Chapter Navigation](#chapter-navigation)
     - [System Navigation](#system-navigation)
-    - [Supported Languages](#supported-languages)
+    - [Supported scripts and languages](#supported-scripts-and-languages)
   - [5. Chapter Selection Screen](#5-chapter-selection-screen)
-  - [6. Current Limitations \& Roadmap](#6-current-limitations--roadmap)
+  - [6. Current limitations](#6-current-limitations)
   - [7. Troubleshooting Issues \& Escaping Bootloop](#7-troubleshooting-issues--escaping-bootloop)
 
 
@@ -214,7 +214,7 @@ The Settings screen allows you to configure the device's behavior. There are a f
   > **Warning:** Use only valid X4 OTA app images from trusted releases.
   > Do not use X3 update packages. Incorrect files may permanently brick
   > devices without working USB data.
-- **Language**: Set the system language (see **[Supported Languages](#supported-languages)** for more information).
+- **Language**: Set the interface language.
 
 #### 3.6.5 OPDS Servers (Multiple Libraries)
 
@@ -435,24 +435,9 @@ If the device goes to sleep or you close the book while viewing a footnote, the 
 * **Return to Browse Files:** Press and hold the **Back** button to close the book and return to the **[Browse Files](#33-browse-files-screen)** screen.
 * **Chapter Menu:** Press **Confirm** to open the **[Table of Contents/Chapter Selection](#5-chapter-selection-screen)** screen.
 
-### Supported Languages
+### Supported scripts and languages
 
-CrossPoint renders text using the following Unicode character blocks, enabling support for a wide range of languages:
-
-*   **Latin Script (Basic, Supplement, Extended-A):** Covers English, German, French, Spanish, Portuguese, Italian, Dutch, Swedish, Norwegian, Danish, Finnish, Polish, Czech, Hungarian, Romanian, Slovak, Slovenian, Turkish, and others.
-*   **Cyrillic Script (Standard and Extended):** Covers Russian, Ukrainian, Belarusian, Bulgarian, Serbian, Macedonian, Kazakh, Kyrgyz, Mongolian, and others.
-
-What is not supported: Chinese, Japanese, Korean, Vietnamese, Hebrew, Arabic, Greek and Farsi.
-
-### Supported Languages
-
-CrossPoint renders text using the following Unicode character blocks, enabling support for a wide range of languages:
-
-*   **Latin Script (Basic, Supplement, Extended-A):** Covers English, German, French, Spanish, Portuguese, Italian, Dutch, Swedish, Norwegian, Danish, Finnish, Polish, Czech, Hungarian, Romanian, Slovak, Slovenian, Turkish, and others.
-*   **Cyrillic Script (Standard and Extended):** Covers Russian, Ukrainian, Belarusian, Bulgarian, Serbian, Macedonian, Kazakh, Kyrgyz, Mongolian, and others.
-
-What is not supported: Chinese, Japanese, Korean, Vietnamese, Hebrew, Arabic, Greek and Farsi.
-
+CrossPoint supports Latin and Cyrillic text with built-in fonts. CJK books are supported when a compatible CJK reading font is installed or selected. Complex-script shaping for Arabic, Hebrew, and similar scripts is not currently supported.
 ---
 
 ## 5. Chapter Selection Screen
@@ -465,14 +450,10 @@ Accessible by pressing **Confirm** while inside a book.
 
 ---
 
-## 6. Current Limitations & Roadmap
+## 6. Current limitations
 
-Please note that this firmware is currently in active development. The following features are **not yet supported** but are planned for future updates:
-
-* **Images:** Embedded images in e-books will not render.
-* **Cover Images:** Large cover images embedded into EPUB require several seconds (~10s for ~2000 pixel tall image) to convert for sleep screen and home screen thumbnail. Consider optimizing the EPUB with e.g. https://github.com/bigbag/epub-to-xtc-converter to speed this up.
-
----
+- Large EPUB covers can take several seconds to generate for Home and sleep-screen use. Optimizing oversized images before copying the book to the device reduces this delay.
+- Complex-script shaping for Arabic, Hebrew, and similar scripts is not supported.
 
 ## 7. Troubleshooting Issues & Escaping Bootloop
 

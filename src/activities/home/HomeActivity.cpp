@@ -158,7 +158,6 @@ void HomeActivity::loadNextRecentCover(int coverHeight) {
   }
 
   recentsLoaded = true;
-  recentsLoading = false;
 }
 void HomeActivity::onEnter() {
   Activity::onEnter();
@@ -169,7 +168,6 @@ void HomeActivity::onEnter() {
   loadRecentBooks(metrics.homeRecentBooksCount);
   nextRecentCoverIndex = 0;
   recentsLoaded = recentBooks.empty();
-  recentsLoading = false;
   nextRecentCoverLoadAt = millis() + RECENT_COVER_LOAD_IDLE_MS;
   deferRecentCoverDraw = !recentBooks.empty();
   const auto base = static_cast<int>(recentBooks.size());
@@ -366,10 +364,8 @@ void HomeActivity::loop() {
     return;
   }
 
-  if (firstRenderDone && !recentsLoaded && !recentsLoading && millis() >= nextRecentCoverLoadAt) {
-    recentsLoading = true;
+  if (firstRenderDone && !recentsLoaded && millis() >= nextRecentCoverLoadAt) {
     loadNextRecentCover(metrics.homeCoverHeight);
-    recentsLoading = false;
     nextRecentCoverLoadAt = millis() + RECENT_COVER_LOAD_INTERVAL_MS;
   }
 }
@@ -482,10 +478,9 @@ void HomeActivity::render(RenderLock&& lock) {
     coverRectW = pageWidth;
     coverRectH = metrics.homeCoverTileHeight;
 
-    const std::vector<RecentBook>* booksForCover = &recentBooks;
     GUI.drawRecentBookCover(
-        renderer, Rect{0, contentOffset + metrics.homeTopPadding, pageWidth, metrics.homeCoverTileHeight},
-        *booksForCover, renderedSelectorIndex, coverRendered, coverBufferStored, bufferRestored,
+        renderer, Rect{0, contentOffset + metrics.homeTopPadding, pageWidth, metrics.homeCoverTileHeight}, recentBooks,
+        renderedSelectorIndex, coverRendered, coverBufferStored, bufferRestored,
         [this, &lock]() {
           if (lock.isStale() || !storeCoverBuffer()) return false;
           if (!lock.isStale()) return true;

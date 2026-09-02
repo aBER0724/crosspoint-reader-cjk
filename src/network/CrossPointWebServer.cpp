@@ -535,14 +535,10 @@ void CrossPointWebServer::stop() {
     watchdogTaskRegistered = false;
   }
 
-  // Note: Static upload variables (uploadFileName, uploadPath, uploadError) are declared
-  // later in the file and will be cleared when they go out of scope or on next upload
   LOG_DBG("WEB", "[MEM] Free heap final: %d bytes", ESP.getFreeHeap());
 }
 
 void CrossPointWebServer::handleClient() {
-  static unsigned long lastDebugPrint = 0;
-
   // Check running flag FIRST before accessing server
   if (!running) {
     return;
@@ -565,12 +561,6 @@ void CrossPointWebServer::handleClient() {
       fontUpload.cleanupPending = false;
       LOG_INF("WEB", "Finished deferred font family cleanup: %s", fontUpload.familyName.c_str());
     }
-  }
-
-  // Print debug every 10 seconds to confirm handleClient is being called
-  if (millis() - lastDebugPrint > 10000) {
-    LOG_DBG("WEB", "handleClient active, server running on port %d", port);
-    lastDebugPrint = millis();
   }
 
   server->handleClient();

@@ -13,7 +13,7 @@ Community firmware for the **Xteink X4** e-paper reader. Built on [CrossPoint Re
 - SD-card-based reading and UI fonts using the `.cpfont` format
 - On-device font catalog for previewing, downloading, and installing fonts
 - Light and dark modes tuned for e-paper, including dark-mode refresh handling that keeps backgrounds and cover art stable
-- Inverted portrait UI for using the device comfortably in either upright orientation; upstream currently applies inversion to reader views, while this fork also supports Home and Settings
+- Inverted portrait UI across Home, Settings, and reader screens
 - File browser, book covers, sleep screens, rotation, and reading progress
 - Wi-Fi upload, WebDAV, OTA updates, Calibre integration, and KOReader Sync
 
@@ -47,7 +47,7 @@ pio run --target upload
 
 ## Fonts
 
-CrossPoint Reader CJK can install complete reader and UI font families from the device's font catalog. Fonts are stored on the SD card and loaded on demand to keep firmware and memory usage manageable.
+Install reader and UI font families from the device catalog. Fonts are stored on the SD card.
 
 - **[CrossPoint CJK Fonts](https://github.com/aBER0724/crosspoint-cjk-fonts)** — reproducible catalog of ready-to-install `.cpfont` families
 - **[CrossPoint CJK Font Maker](https://github.com/aBER0724/crosspoint-cjk-font-maker)** — create compatible font packages from your own fonts
@@ -64,15 +64,7 @@ CrossPoint Reader CJK can install complete reader and UI font families from the 
 
 ## Contributing
 
-Please keep changes focused and run the standard checks before opening a pull request:
-
-```sh
-./bin/clang-format-fix
-pio check --fail-on-defect low --fail-on-defect medium --fail-on-defect high
-pio run
-```
-
-See [AGENTS.md](./AGENTS.md) when working with an AI coding agent.
+See the [contributor guide](./docs/contributing/README.md) for setup and required checks.
 
 ## Credits
 

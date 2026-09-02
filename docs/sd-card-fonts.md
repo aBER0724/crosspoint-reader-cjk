@@ -56,26 +56,9 @@ There are three ways to install fonts:
 
 ## CJK in the User Interface
 
-The built-in UI fonts are Latin-only, so by default the interface (book titles
-in the library, file names in the browser, list rows, headers) shows
-replacement boxes for Chinese/Japanese/Korean text even when book *content*
-renders correctly with a selected SD-card font.
+Reader and UI fonts are selected separately. Choose a CJK-capable family under **Settings > Display > UI Font** for titles, filenames, lists, and interface text. Reader font selection remains under **Settings > Reader > Font Family**.
 
-To avoid shipping a large CJK glyph set in flash, CrossPoint instead reuses the
-SD-card font you already selected: when a UI string contains a CJK character
-the built-in font cannot draw, that whole string is rendered with your selected
-SD-card font instead.
-
-The fallback is **size-matched**. The built-in UI fonts render at 8 pt
-(small/author lines), 10 pt (list rows) and 12 pt (book-cover titles, headers),
-so CrossPoint loads your SD family at those sizes too and maps each UI font to
-its same-size SD font. CJK book names therefore appear at the same size as the
-Latin text around them. For this to work the family must contain `.cpfont`
-files at sizes **8, 10 and 12** (in addition to the reader sizes 14, 16, 18,
-and 22); any UI
-size missing from the family simply keeps showing boxes for CJK at that size.
-
-When converting your own font, include the UI sizes:
+UI font families should include 8, 10, and 12 pt files. When converting a family for both roles, include the reader sizes as well:
 
     python3 lib/EpdFont/scripts/fontconvert_sdcard.py \
       MyCJKFont-Regular.otf \
@@ -85,49 +68,10 @@ When converting your own font, include the UI sizes:
       --name MyCJKFont \
       --output-dir ./MyCJKFont/
 
-What this means in practice:
-
-- Select a CJK-capable SD font under **Settings > Reader > Font Family**
-  (see [Installing Fonts](#installing-fonts) and the `cjk` / `hangul` presets
-  under [Converting Custom Fonts](#converting-custom-fonts)). That single
-  selection drives both book content *and* size-matched CJK fallback in the UI.
-- Pure-Latin UI strings keep the crisp built-in font; only strings that
-  actually contain CJK are routed to the SD font.
-- The fallback is per *string*, not per glyph: a mixed title such as
-  `三体 Vol.1` renders entirely in the SD font (including the Latin part). If
-  that SD font is a `Mono` family, the Latin portion will appear half/full
-  width.
-- If no SD font is selected (a built-in reading font is active), there is no
-  CJK fallback and the UI again shows boxes for CJK — pick a CJK SD font to
-  restore it.
-
+If an exact UI size is unavailable, CrossPoint uses the nearest available size from the same family. Mixed CJK and Latin text is rendered with one font for the whole string.
 ## Available Pre-Built Fonts
 
-The current CJK list is maintained in the
-[CJK font repository](https://github.com/aBER0724/crosspoint-cjk-fonts).
-That independent repository is the reproducible build source and Release CDN;
-generated binaries are not stored in this firmware repository. Its Actions
-workflow validates SHA-256-locked upstream sources, builds the seven physical
-sizes, generates manifest schema v2, and publishes the `sd-fonts-m2-b4`
-Release.
-
-The firmware also remains compatible with manually uploaded `.cpfont` files.
-The legacy upstream Latin catalog is hosted separately by the original
-CrossPoint project and is not mixed into this CJK Release.
-
-The original catalog definition remains in
-`lib/EpdFont/scripts/sd-fonts.yaml` for firmware-side development and migration.
-Source downloads are cached under `downloaded_fonts/`, variable-font instances
-under `instanced_fonts/`, and generated `.cpfont` families under `output/`.
-These directories are local build artifacts and are not used by the firmware
-at runtime. Published `.cpfont` files are installed on the device under
-`/.fonts/<Family>/` (preferred) or `/fonts/<Family>/`.
-
-New CJK sources are selected from their upstream projects and pinned to a
-release or commit. A catalog such as
-[jaywcjlove/free-font](https://github.com/jaywcjlove/free-font) can be used for
-discovery, but a font is only added after its upstream redistribution license
-has been checked.
+Browse and install maintained CJK families from the device catalog. Font sources, licenses, and downloadable packages are available in the [CrossPoint CJK Fonts repository](https://github.com/aBER0724/crosspoint-cjk-fonts). Manually converted `.cpfont` files remain supported.
 
 ## Converting Custom Fonts
 

@@ -13,7 +13,7 @@
 - 基于 `.cpfont` 的 SD 卡阅读字体和 UI 字体
 - 设备端字体目录，可直接预览、下载和安装字体
 - 针对电子纸优化的浅色和深色模式；深色模式使用专门的刷新策略，避免背景发白并保持封面图像正常显示
-- 支持将整个 UI 上下倒置，设备反向握持时首页和设置页也能正常操作；上游目前只在阅读界面支持倒置
+- 首页、设置页和阅读界面均支持 UI 上下倒置
 - 文件浏览、书籍封面、休眠画面、屏幕旋转和阅读进度保存
 - Wi-Fi 上传、WebDAV、OTA、Calibre 和 KOReader Sync
 
@@ -47,7 +47,7 @@ pio run --target upload
 
 ## 字体
 
-CrossPoint Reader CJK 可以从设备字体目录安装完整的阅读字体和 UI 字体族。字体按需从 SD 卡加载，以控制固件体积和内存占用。
+可从设备字体目录安装阅读字体和 UI 字体族，字体保存在 SD 卡中。
 
 - **[CrossPoint CJK Fonts](https://github.com/aBER0724/crosspoint-cjk-fonts)** — 可直接安装的 `.cpfont` 字体目录及可复现构建流程
 - **[CrossPoint CJK Font Maker](https://github.com/aBER0724/crosspoint-cjk-font-maker)** — 将自己的字体制作成兼容字体包
@@ -64,15 +64,7 @@ CrossPoint Reader CJK 可以从设备字体目录安装完整的阅读字体和 
 
 ## 参与贡献
 
-提交 PR 前请保持改动聚焦，并运行：
-
-```sh
-./bin/clang-format-fix
-pio check --fail-on-defect low --fail-on-defect medium --fail-on-defect high
-pio run
-```
-
-使用 AI 编码 Agent 时请同时阅读 [AGENTS.md](./AGENTS.md)。
+开发环境和必需检查见[贡献指南](./docs/contributing/README-ZH.md)。
 
 ## 致谢
 
