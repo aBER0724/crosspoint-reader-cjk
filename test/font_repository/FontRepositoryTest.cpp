@@ -35,6 +35,9 @@ TEST(FontRepositoryUtilTest, ValidSpecs) {
   EXPECT_TRUE(isValidRepositorySpec("user/repo"));
   EXPECT_TRUE(isValidRepositorySpec("a-b/c_d"));
   EXPECT_TRUE(isValidRepositorySpec("  user/repo  "));  // surrounding whitespace trimmed
+  EXPECT_TRUE(isValidRepositorySpec("https://example.com/fonts/catalog.json"));
+  EXPECT_TRUE(isValidRepositorySpec("https://raw.githubusercontent.com/a/b/main/fonts.json"));
+  EXPECT_TRUE(isValidRepositorySpec("  https://example.com/fonts.json  "));
 }
 
 TEST(FontRepositoryUtilTest, InvalidSpecs) {
@@ -51,12 +54,31 @@ TEST(FontRepositoryUtilTest, InvalidSpecs) {
   EXPECT_FALSE(isValidRepositorySpec("user/repo#frag"));
   EXPECT_FALSE(isValidRepositorySpec("user repo/x"));
   EXPECT_FALSE(isValidRepositorySpec("user\\repo"));
+  EXPECT_FALSE(isValidRepositorySpec("http://example.com/fonts.json"));
+  EXPECT_FALSE(isValidRepositorySpec("https://"));
+  EXPECT_FALSE(isValidRepositorySpec("https:///fonts.json"));
+  EXPECT_FALSE(isValidRepositorySpec("https://example.com"));
+  EXPECT_FALSE(isValidRepositorySpec("https://example.com/fonts.txt"));
+  EXPECT_FALSE(isValidRepositorySpec("https://user@example.com/fonts.json"));
+  EXPECT_FALSE(isValidRepositorySpec("https://example.com/fonts.json?x=1"));
+  EXPECT_FALSE(isValidRepositorySpec("https://example.com/fonts.json#frag"));
+  EXPECT_FALSE(isValidRepositorySpec("https://example.com/a/../fonts.json"));
 }
 
 TEST(FontRepositoryUtilTest, AssembleManifestUrl) {
   EXPECT_EQ(assembleManifestUrl("user/repo"), "https://api.github.com/repos/user/repo/contents/fonts.json?ref=main");
   EXPECT_EQ(assembleManifestUrl("aBER0724/crosspoint-cjk-fonts"),
             "https://api.github.com/repos/aBER0724/crosspoint-cjk-fonts/contents/fonts.json?ref=main");
+}
+
+TEST(FontRepositoryUtilTest, AssembleRepositoryUrl) {
+  EXPECT_EQ(assembleRepositoryUrl("user/repo"), "https://api.github.com/repos/user/repo/contents/fonts.json?ref=main");
+  EXPECT_EQ(assembleRepositoryUrl("  user/repo  "),
+            "https://api.github.com/repos/user/repo/contents/fonts.json?ref=main");
+
+  const std::string directUrl = "https://example.com/fonts/catalog.json";
+  EXPECT_EQ(assembleRepositoryUrl(directUrl), directUrl);
+  EXPECT_EQ(assembleRepositoryUrl("  " + directUrl + "  "), directUrl);
 }
 
 // ---------------------------------------------------------------------------
