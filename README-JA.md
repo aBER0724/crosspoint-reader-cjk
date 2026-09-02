@@ -23,6 +23,10 @@
 |:--:|:--:|:--:|
 | ![日本語のライトモードのホーム画面](./docs/images/current/home-ja-light-0.4.0.png) | ![日本語のライトモードの設定画面](./docs/images/current/settings-ja-light-0.4.0.png) | ![日本語のダークモードのホーム画面](./docs/images/current/home-ja-dark-0.4.0.png) |
 
+| フォント一覧 | フォントプレビュー |
+|:--:|:--:|
+| ![日本語の端末内フォント一覧](./docs/images/current/fonts-list-ja-light-0.4.0.png) | ![日本語のフォントプレビューと選択画面](./docs/images/current/fonts-preview-ja-light-0.4.0.png) |
+
 ## インストール
 
 ### Web Flasher

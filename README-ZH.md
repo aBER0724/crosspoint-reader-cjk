@@ -23,6 +23,9 @@
 |:--:|:--:|:--:|
 | ![简体中文浅色模式主页](./docs/images/current/home-zh-light-0.4.0.png) | ![简体中文浅色模式设置页](./docs/images/current/settings-zh-light-0.4.0.png) | ![简体中文深色模式主页](./docs/images/current/home-zh-dark-0.4.0.png) |
 
+| 字体列表 | 字体预览 |
+|:--:|:--:|
+| ![简体中文设备端字体列表](./docs/images/current/fonts-list-zh-light-0.4.0.png) | ![简体中文字体预览和选择页面](./docs/images/current/fonts-preview-zh-light-0.4.0.png) |
 
 ## 安装
 

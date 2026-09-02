@@ -23,6 +23,10 @@ Community firmware for the **Xteink X4** e-paper reader. Built on [CrossPoint Re
 |:--:|:--:|:--:|
 | ![English home screen in light mode](./docs/images/current/home-en-light-0.4.0.png) | ![English settings screen in light mode](./docs/images/current/settings-en-light-0.4.0.png) | ![English home screen in dark mode](./docs/images/current/home-en-dark-0.4.0.png) |
 
+| Font catalog | Font preview |
+|:--:|:--:|
+| ![English on-device font catalog](./docs/images/current/fonts-list-en-light-0.4.0.png) | ![English font preview and selection screen](./docs/images/current/fonts-preview-en-light-0.4.0.png) |
+
 ## Install
 
 ### Web flasher
