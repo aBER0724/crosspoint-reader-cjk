@@ -1,158 +1,63 @@
 # CrossPoint Reader CJK
 
-[English](./README.md) | **[中文](./README-ZH.md)** | [日本語](./README-JA.md)
+[English](./README.md) · **中文** · [日本語](./README-JA.md) · **版本 0.4.0**
 
-如果你使用 AI 编码 Agent 在本仓库协作开发, 请先阅读 [AGENTS.md](./AGENTS.md).
+面向 **Xteink X4** 墨水屏阅读器的社区固件。项目基于 [CrossPoint Reader](https://github.com/crosspoint-reader/crosspoint-reader)，重点改进中文、日文及多语言阅读体验。
 
-> 基于 [daveallie/crosspoint-reader](https://github.com/daveallie/crosspoint-reader) 的 **Xteink X4** 墨水屏阅读器固件 CJK 适配版. 
+![运行 CrossPoint Reader CJK 的 Xteink X4](./docs/images/cover.jpg)
 
-本项目在原版 CrossPoint Reader 的基础上进行了 CJK 适配, 支持多语言界面和 CJK 字体渲染. 
+## 主要功能
 
-![](./docs/images/cover.jpg)
+- 简体中文、繁体中文、日文和英文界面
+- EPUB 2/3 与 TXT 阅读，支持 CJK 排版和字体渲染
+- 基于 `.cpfont` 的 SD 卡阅读字体和 UI 字体
+- 设备内字体目录：预览、下载、安装及自定义字体源
+- 针对电子纸优化的浅色/深色主题与刷新策略
+- 文件浏览、书籍封面、休眠画面、屏幕旋转和进度保存
+- Wi-Fi 上传、WebDAV、OTA、Calibre 和 KOReader Sync
 
-## ✨ CJK 版新增功能
+![CrossPoint Reader CJK 0.4.0 深色模式主页](./docs/images/current/home-dark-0.4.0.png)
 
-### 🌏 多语言界面支持 (I18n)
+## 安装
 
-- **完整本地化**：支持中文、英文、日语三种界面语言
-- 可在设置中随时切换界面语言
-- 所有菜单、提示、设置项均已完全本地化
-- 基于字符串 ID 的动态翻译系统
+### 网页刷写
 
-### 📝 CJK 字体系统
+1. 使用 USB-C 连接 Xteink X4。
+2. 打开 [CrossPoint CJK 网页刷写器](https://xteink-flasher-cjk.vercel.app/)。
+3. 选择 **Flash CrossPoint CJK firmware**。
 
-- **外置字体支持**：
-  - **阅读字体**：用于书籍内容 (可选大小和字体族) 
-  - **UI 字体**：用于菜单、标题和界面
-  - 字体共享选项：使用阅读字体作为 UI 字体以节省内存
-- LRU 缓存优化, 提升 CJK 渲染性能
-- 内置 ASCII 字符回退机制, 减少内存占用
-- 示例字体：
-  - [思源黑体](fonts/SourceHanSansCN-Bold_20_20x20.bin) (UI 字体)
-  - [京华老宋体](fonts/KingHwaOldSong_38_33x39.bin) (阅读器字体)
+也可以从 [GitHub Releases](https://github.com/aBER0724/crosspoint-reader-cjk/releases) 下载固件文件。
 
-### 🎨 主题与显示
+### 从源码构建
 
-- **Lyra 主题**：现代化 UI 主题, 圆角选中高亮、滚动条分页、精致布局, 所有 CJK 页面已完全适配
-- **深色/浅色模式切换**, 应用于阅读器和UI界面
-- 无刷新的平滑主题切换
+需要 PlatformIO Core、Python 3、包含子模块的完整仓库以及 Xteink X4。
 
-### 📖 阅读布局
-
-- **首行缩进**：通过 CSS `text-indent` 实现段落缩进, 可开关切换
-- 缩进宽度基于实际中文字符宽度计算
-- **流式 CSS 解析**：处理大型样式表时不会内存溢出
-- **CJK 字间距修复**：去除相邻 CJK 字符间的多余空格
-
-## 📦 功能列表
-
-- [x] EPUB 解析与渲染 (EPUB 2 和 EPUB 3)
-- [x] EPUB 图片 alt 文本显示
-- [x] TXT 纯文本阅读支持
-- [x] 阅读进度保存
-- [x] 文件浏览器 (支持嵌套文件夹) 
-- [x] 自定义休眠画面 (支持封面显示) 
-- [x] KOReader 阅读进度同步
-- [x] WiFi 文件上传
-- [x] WiFi OTA 固件更新
-- [x] WiFi 凭证管理 (通过网页界面扫描、保存、删除)
-- [x] AP 模式改进 (Captive Portal 支持)
-- [x] 深色/浅色模式切换
-- [x] 段落首行缩进
-- [x] 多语言连字符支持
-- [x] 字体、布局、显示样式自定义
-  - [x] 外置字体系统 (阅读 + UI 字体)
-- [x] 屏幕旋转 (UI/阅读器方向独立设置)
-  - [x] 阅读界面屏幕旋转 (竖屏、横屏顺/逆时针、反转)
-  - [x] UI 界面屏幕旋转 (竖屏、反转)
-- [x] Calibre 无线连接与网页库集成
-- [x] 封面图片显示
-- [x] Lyra 主题 (所有 CJK 页面已适配)
-- [x] KOReader 阅读进度同步
-- [x] 流式 CSS 解析 (防止大型 EPUB 样式表内存溢出)
-
-详细操作说明请参阅 [用户指南](./USER_GUIDE.md). 
-
-## 📥 安装方式
-
-### 网页刷写 (推荐)
-
-1. 使用 USB-C 连接 Xteink X4 到电脑
-2. 访问 https://xteink-flasher-cjk.vercel.app/ 并点击 **"Flash CrossPoint CJK firmware"** 即可直接刷入最新 CJK 固件
-
-> **提示**：恢复官方固件或原版 CrossPoint 固件可在同一页面操作. 切换启动分区请访问 https://xteink-flasher-cjk.vercel.app/debug
-
-### 手动编译
-
-#### 环境要求
-
-* **PlatformIO Core** (`pio`)
-* Python 3.8+
-* Pillow (`python3 -m pip install Pillow`)
-* USB-C 数据线
-* 阅星瞳 X4
-
-#### 获取代码
-
-```bash
-git clone --recursive https://github.com/aBER0724/crosspoint-reader-cjk
-
-# 若克隆后缺少子模块仓库
-git submodule update --init --recursive
-```
-
-#### 构建并烧录
-
-连接设备后运行:
-
-```bash
+```sh
+git clone --recursive https://github.com/aBER0724/crosspoint-reader-cjk.git
+cd crosspoint-reader-cjk
+pio run
 pio run --target upload
 ```
 
-## 🔠 字体相关
+## 字体
 
-### 字体生成
+CrossPoint Reader CJK 可以从设备字体目录安装完整的阅读字体和 UI 字体族。字体按需从 SD 卡加载，以控制固件体积和内存占用。
 
-- `scripts/generate_cjk_ui_font.py`
+- **[CrossPoint CJK Fonts](https://github.com/aBER0724/crosspoint-cjk-fonts)** — 可直接安装的 `.cpfont` 字体目录及可复现构建流程
+- **[CrossPoint CJK Font Maker](https://github.com/aBER0724/crosspoint-cjk-font-maker)** — 将自己的字体制作成兼容字体包
+- **[SD 卡字体指南](./docs/sd-card-fonts.md)** — 安装目录、字体源与技术说明
 
-- [点墨](https://apps.apple.com/us/app/dotink-eink-assistant/id6754073002) (推荐使用点墨来生成阅读字体, 便于查看字体在设备上的预览效果)
+## 文档
 
-内置 20px UI 字体头文件会在 PlatformIO 构建时自动根据 `fonts/思源黑体-Bold.otf` 和当前 i18n 翻译字符重新生成.
+- [用户指南](./USER_GUIDE.md)
+- [故障排查](./docs/troubleshooting.md)
+- [Web 服务说明](./docs/webserver.md)
+- [开发者文档](./docs/contributing/README.md)
+- [项目范围](./SCOPE.md)
 
-### 字体配置
+## 参与贡献
 
-1. 在 SD 卡根目录创建 `fonts/` 文件夹
-2. 放入 `.bin` 格式的字体文件
-3. 在设置中选择 "阅读/阅读器字体" 或 "显示/UI 字体"
-
-**字体文件命名格式**：`FontName_size_WxH.bin`
-
-示例：
-- `SourceHanSansCN-Medium_20_20x20.bin` (UI: 20pt, 20x20)
-- `KingHwaOldSong_38_33x39.bin` (阅读: 38pt, 33x39)
-
-**字体说明**：
-- **阅读字体**：用于书籍内容文本
-- **UI 字体**：用于菜单、标题和界面元素
-
-> 考虑到内存压力, 所以内置字体使用由当前翻译自动生成的精简 UI 字符集.
-> 建议在 SD 卡中存入更为完整的 UI 字体和阅读字体, 获得更好的使用体验.  
-> 若不便生成字体, 可点击下载上面提供的示例字体.
-
-## ℹ️ 常见问题
-
-1. 页数较多的章节首次打开时索引可能较慢. 流式 CSS 解析器已大幅改善此问题, 但超大章节仍可能需要等待数秒.
-    > 若重启仍卡在索引中, 且长时间未能完成索引, 无法返回其他页面. 请重新刷入固件.
-2. 若在某个界面卡住, 可尝试重启设备.
-3. ESP32-C3 内存非常有限, 同时使用大型 CJK 字体文件作为 UI 字体和阅读字体可能导致内存溢出崩溃. 建议 UI 字体选择 20pt 及以下的字号.
-4. 添加新书后首次打开主页时, 设备会生成封面缩略图, 可能出现 "加载中" 弹窗并等待数秒, 这是正常现象, 并非设备卡死.
-5. 如果设备停留在 v0.3.3 且普通 OTA 更新无法使用, 请使用 [SD Recovery release](https://github.com/aBER0724/crosspoint-reader-cjk/releases/tag/sd-recovery). 下载其中的 `firmware.bin`, 和你想刷入的目标固件一起放到 SD 卡根目录, 并按照 release 页面里的命名规则操作.
-
-## 🤝 参与贡献
-
-如果你是首次参与本项目, 建议先阅读 [贡献文档](./docs/contributing/README.md).
-
-提交 PR 前建议先在本地完成以下检查:
+提交 PR 前请保持改动聚焦，并运行：
 
 ```sh
 ./bin/clang-format-fix
@@ -160,20 +65,12 @@ pio check --fail-on-defect low --fail-on-defect medium --fail-on-defect high
 pio run
 ```
 
-如果改动涉及连字符逻辑, 请额外执行单项测试:
+使用 AI 编码 Agent 时请同时阅读 [AGENTS.md](./AGENTS.md)。
 
-```sh
-./test/run_hyphenation_eval.sh english
-```
+## 致谢
 
-- PR 标题建议使用语义化格式, 并填写 `.github/PULL_REQUEST_TEMPLATE.md`.
-- 如果你使用 AI 编码助手/Agent, 请额外阅读 [AGENTS.md](./AGENTS.md).
+- [CrossPoint Reader](https://github.com/crosspoint-reader/crosspoint-reader) — 上游阅读器固件
+- [freeink-sdk](https://github.com/aBER0724/freeink-sdk) — 显示及硬件 SDK
+- [CrossPoint CJK Fonts](https://github.com/aBER0724/crosspoint-cjk-fonts) — 字体目录和构建流程
 
-## 📜 致谢
-
-- [CrossPoint Reader](https://github.com/daveallie/crosspoint-reader) - 原始项目
-- [freeink-sdk](https://github.com/aBER0724/freeink-sdk) - FreeInk device SDK
-
----
-
-**声明**：本项目与 Xteink 或 X4 硬件制造商无关, 均为社区项目. 
+CrossPoint Reader CJK 是独立的社区项目，与 Xteink 或 X4 硬件制造商无隶属关系。
