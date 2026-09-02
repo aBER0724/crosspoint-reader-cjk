@@ -23,9 +23,9 @@ struct UiFontSize {
 };
 
 constexpr UiFontSize kUiFontSizes[] = {
-    {SMALL_FONT_ID, 8},
-    {UI_10_FONT_ID, 10},
     {UI_12_FONT_ID, 12},
+    {UI_10_FONT_ID, 10},
+    {SMALL_FONT_ID, 8},
 };
 
 constexpr uint32_t kCjkProbes[] = {0x4E00, 0x3042, 0x30A2, 0xAC00};
@@ -141,6 +141,32 @@ void SdCardFontSystem::ensureLoaded(GfxRenderer& renderer) {
 
   if (settingsChanged) SETTINGS.saveToFile();
 }
+
+void SdCardFontSystem::ensureUiLoaded(GfxRenderer& renderer) {
+  const bool registryWasDirty = registryDirty_.exchange(false, std::memory_order_acquire);
+  if (registryWasDirty) {
+    LOG_DBG("SDFS", "Registry dirty - re-discovering fonts");
+    registry_.discover();
+  }
+
+  const std::string wantedUi = SETTINGS.sdUiFontFamilyName;
+  const SdCardFontFamilyInfo* uiFamily = wantedUi.empty() ? nullptr : registry_.findFamily(wantedUi);
+  if (!uiFamily) {
+    if (!wantedUi.empty()) LOG_ERR("SDFS", "UI font family unavailable: %s", wantedUi.c_str());
+    return;
+  }
+
+  if (manager_.hasLoadedFonts()) manager_.unloadAll(renderer);
+  loadedUiFamilyName_.clear();
+  previewActive_ = false;
+  residentFontsDirty_.store(true, std::memory_order_release);
+  if (setupUiFallbacks(renderer, *uiFamily)) {
+    loadedUiFamilyName_ = wantedUi;
+    LOG_DBG("SDFS", "Loaded UI-only font family: %s", wantedUi.c_str());
+  } else {
+    LOG_ERR("SDFS", "No usable UI sizes in font family: %s", wantedUi.c_str());
+  }
+}
 int SdCardFontSystem::beginPreview(GfxRenderer& renderer, const char* filePath, const char* familyName,
                                    uint8_t pointSize) {
   if (manager_.hasLoadedFonts()) manager_.unloadAll(renderer);
@@ -162,6 +188,13 @@ int SdCardFontSystem::beginPreview(GfxRenderer& renderer, const char* filePath, 
   return fontId;
 }
 
+void SdCardFontSystem::releaseResidentFonts(GfxRenderer& renderer) {
+  if (manager_.hasLoadedFonts()) manager_.unloadAll(renderer);
+  loadedUiFamilyName_.clear();
+  previewActive_ = false;
+  residentFontsDirty_.store(true, std::memory_order_release);
+}
+
 void SdCardFontSystem::endPreview(GfxRenderer& renderer, const bool restoreConfiguredFonts) {
   if (!previewActive_) return;
 
@@ -174,10 +207,19 @@ void SdCardFontSystem::endPreview(GfxRenderer& renderer, const bool restoreConfi
 
 bool SdCardFontSystem::setupUiFallbacks(GfxRenderer& renderer, const SdCardFontFamilyInfo& family) {
   bool loadedAny = false;
+  int nearestLoadedFontId = 0;
+  uint8_t nearestLoadedPointSize = 0;
   for (const auto& ui : kUiFontSizes) {
     const int sdFontId = manager_.loadFamilyExtraSize(family, renderer, ui.pointSize);
     if (sdFontId == 0) {
-      LOG_DBG("SDFS", "No %u pt SD glyphs for UI fallback in %s", ui.pointSize, family.name.c_str());
+      if (nearestLoadedFontId != 0) {
+        renderer.setFallbackFont(ui.fontId, nearestLoadedFontId);
+        LOG_DBG("SDFS", "Reusing SD UI font %u pt for unavailable %u pt in %s", nearestLoadedPointSize, ui.pointSize,
+                family.name.c_str());
+        loadedAny = true;
+      } else {
+        LOG_DBG("SDFS", "No %u pt SD glyphs for UI fallback in %s", ui.pointSize, family.name.c_str());
+      }
       continue;
     }
     if (!hasCjkCoverage(renderer, sdFontId)) {
@@ -186,6 +228,8 @@ bool SdCardFontSystem::setupUiFallbacks(GfxRenderer& renderer, const SdCardFontF
     }
 
     renderer.setFallbackFont(ui.fontId, sdFontId);
+    nearestLoadedFontId = sdFontId;
+    nearestLoadedPointSize = ui.pointSize;
     loadedAny = true;
   }
   return loadedAny;
