@@ -382,16 +382,24 @@ int GfxRenderer::resolveTextFontId(const int fontId, const char* text, const Epd
   const EpdFontFamily& primary = fontIt->second;
   const EpdFontFamily& fallback = fallbackIt->second;
   const char* cursor = text;
+  bool fallbackCoversAll = true;
+  bool needsCjkFallback = false;
   uint32_t cp;
   while ((cp = utf8NextCodepoint(reinterpret_cast<const uint8_t**>(&cursor)))) {
-    // Only redirect for CJK the primary font cannot draw but the fallback can.
-    // Latin/symbol strings the built-in UI fonts already cover are left
-    // untouched, and a partial-coverage fallback (e.g. kana-only) is not worth
-    // dragging the whole string into for glyphs it would also miss.
-    if (utf8IsCjkCodepoint(cp) && !primary.hasCodepoint(cp, style) && fallback.hasCodepoint(cp, style)) {
-      return fallbackFontId;
+    const bool fallbackCoversCodepoint = fallback.hasCodepoint(cp, style);
+    fallbackCoversAll = fallbackCoversAll && fallbackCoversCodepoint;
+
+    // Preserve the original CJK fallback behavior for mixed strings where the
+    // configured font does not cover every symbol. This keeps CJK readable even
+    // when an adjacent icon or uncommon mark is absent from the SD font.
+    if (utf8IsCjkCodepoint(cp) && !primary.hasCodepoint(cp, style) && fallbackCoversCodepoint) {
+      needsCjkFallback = true;
     }
   }
+
+  // A configured UI font is the preferred UI face, not merely a CJK patch.
+  // Route Latin and mixed labels to it whenever it can render the complete string.
+  if (fallbackCoversAll || needsCjkFallback) return fallbackFontId;
   return primaryFontId;
 }
 
@@ -558,9 +566,8 @@ enum class TextRotation { None, Rotated90CW };
 // horizontal space for the scaled glyph.
 template <TextRotation rotation>
 static void renderCharScaled(const GfxRenderer& renderer, GfxRenderer::RenderMode renderMode,
-                             const EpdFontFamily& fontFamily, const uint32_t cp, int cursorX, int cursorY,
+                             const EpdFontFamily& fontFamily, const EpdGlyph* glyph, int cursorX, int cursorY,
                              const bool pixelState, const EpdFontFamily::Style style) {
-  const EpdGlyph* glyph = fontFamily.getGlyph(cp, style);
   if (!glyph) return;
 
   const EpdFontData* fontData = fontFamily.getData(style);
@@ -628,11 +635,10 @@ static void renderCharScaled(const GfxRenderer& renderer, GfxRenderer::RenderMod
 }
 template <TextRotation rotation>
 static void renderCharImpl(const GfxRenderer& renderer, GfxRenderer::RenderMode renderMode,
-                           const EpdFontFamily& fontFamily, const uint32_t cp, int cursorX, int cursorY,
+                           const EpdFontFamily& fontFamily, const EpdGlyph* glyph, int cursorX, int cursorY,
                            const bool pixelState, const EpdFontFamily::Style style) {
-  const EpdGlyph* glyph = fontFamily.getGlyph(cp, style);
   if (!glyph) {
-    LOG_ERR("GFX", "No glyph for codepoint %d", cp);
+    LOG_ERR("GFX", "Missing resolved glyph");
     return;
   }
 
@@ -1120,6 +1126,29 @@ int GfxRenderer::measureTextAdvance(const int resolvedFontId, const EpdFontFamil
     if (complete) return fastWidthPx + snapTextAdvance(fastPrevAdvanceFP, isSupSub);
   }
 
+  if (sdIt != sdCardFonts_.end()) {
+    const uint8_t styleIdx = resolveSdCardStyle(*sdIt->second, style);
+    HalFile metricsFile;
+    const char* scan = text;
+    uint32_t metricPrevCp = 0;
+    int metricWidthPx = 0;
+    int32_t metricPrevAdvanceFP = 0;
+    while ((cp = utf8NextCodepoint(reinterpret_cast<const uint8_t**>(&scan)))) {
+      if (BidiUtils::isTransparentMark(cp) || utf8IsCombiningMark(cp)) continue;
+      cp = fontFamily.applyLigatures(cp, scan, style);
+
+      EpdGlyph metricGlyph{};
+      if (!sdIt->second->getGlyphMetrics(cp, styleIdx, &metricGlyph, &metricsFile)) break;
+      if (metricPrevCp != 0) {
+        metricWidthPx +=
+            snapTextAdvance(metricPrevAdvanceFP + fontFamily.getKerning(metricPrevCp, cp, style), isSupSub);
+      }
+      metricPrevAdvanceFP = metricGlyph.advanceX;
+      metricPrevCp = cp;
+    }
+    if (cp == 0) return metricWidthPx + snapTextAdvance(metricPrevAdvanceFP, isSupSub);
+  }
+
   while ((cp = utf8NextCodepoint(reinterpret_cast<const uint8_t**>(&text)))) {
     if (BidiUtils::isTransparentMark(cp) || utf8IsCombiningMark(cp)) continue;
     cp = fontFamily.applyLigatures(cp, text, style);
@@ -1148,6 +1177,62 @@ int GfxRenderer::measureTextAdvance(const int resolvedFontId, const EpdFontFamil
   return widthPx + snapTextAdvance(prevAdvanceFP, isSupSub);
 }
 
+bool GfxRenderer::measureSdTextPrefix(const int resolvedFontId, const EpdFontFamily& fontFamily, const char* text,
+                                      const EpdFontFamily::Style style, HalFile& metricsFile,
+                                      std::vector<size_t>& byteOffsets, std::vector<int>& prefixWidths,
+                                      int& textWidth) const {
+  const auto sdIt = sdCardFonts_.find(resolvedFontId);
+  if (sdIt == sdCardFonts_.end()) return false;
+
+  const uint8_t styleIdx = resolveSdCardStyle(*sdIt->second, style);
+  const bool isSupSub = isHalfScaleStyle(style);
+  EpdGlyph ellipsisGlyph{};
+  if (!sdIt->second->getGlyphMetrics(0x2026, styleIdx, &ellipsisGlyph, &metricsFile)) return false;
+  const int ellipsisAdvance = snapTextAdvance(ellipsisGlyph.advanceX, isSupSub);
+
+  const char* scan = text;
+  uint32_t previousCp = 0;
+  int32_t previousAdvanceFP = 0;
+  int completedWidth = 0;
+
+  byteOffsets.clear();
+  prefixWidths.clear();
+  byteOffsets.reserve(strlen(text) + 1);
+  prefixWidths.reserve(strlen(text) + 1);
+  byteOffsets.push_back(0);
+  prefixWidths.push_back(ellipsisAdvance);
+  uint32_t cp;
+  while ((cp = utf8NextCodepoint(reinterpret_cast<const uint8_t**>(&scan)))) {
+    if (BidiUtils::isTransparentMark(cp) || utf8IsCombiningMark(cp)) {
+      byteOffsets.push_back(static_cast<size_t>(scan - text));
+      prefixWidths.push_back(
+          previousCp == 0
+              ? ellipsisAdvance
+              : completedWidth +
+                    snapTextAdvance(previousAdvanceFP + fontFamily.getKerning(previousCp, 0x2026, style), isSupSub) +
+                    ellipsisAdvance);
+      continue;
+    }
+    cp = fontFamily.applyLigatures(cp, scan, style);
+
+    EpdGlyph metricGlyph{};
+    if (!sdIt->second->getGlyphMetrics(cp, styleIdx, &metricGlyph, &metricsFile)) return false;
+    if (previousCp != 0) {
+      completedWidth += snapTextAdvance(previousAdvanceFP + fontFamily.getKerning(previousCp, cp, style), isSupSub);
+    }
+    previousAdvanceFP = metricGlyph.advanceX;
+    previousCp = cp;
+    byteOffsets.push_back(static_cast<size_t>(scan - text));
+    prefixWidths.push_back(
+        completedWidth +
+        snapTextAdvance(previousAdvanceFP + fontFamily.getKerning(previousCp, 0x2026, style), isSupSub) +
+        ellipsisAdvance);
+  }
+
+  textWidth = previousCp == 0 ? 0 : completedWidth + snapTextAdvance(previousAdvanceFP, isSupSub);
+  return true;
+}
+
 int GfxRenderer::getTextWidth(const int fontId, const char* text, const EpdFontFamily::Style style,
                               const BidiUtils::BidiBaseDir baseDir) const {
   if (text == nullptr || *text == '\0') return 0;
@@ -1163,6 +1248,14 @@ int GfxRenderer::getTextWidth(const int fontId, const char* text, const EpdFontF
   std::string visual;
   const char* renderedText = resolveVisualText(text, visual, baseDir);
 
+  // SD-backed UI fonts must remain metrics-only during width calculation.
+  // Otherwise the glyph preflight below fills and churns the eight-entry
+  // on-demand bitmap ring before the actual draw pass.
+  if (sdCardFonts_.count(resolvedFontId) != 0) {
+    const auto widthStyle = static_cast<EpdFontFamily::Style>(
+        static_cast<uint8_t>(style) & ~static_cast<uint8_t>(EpdFontFamily::SUP | EpdFontFamily::SUB));
+    return measureTextAdvance(resolvedFontId, fontFamily, renderedText, widthStyle);
+  }
   bool needsFallback = false;
   const char* checkPtr = renderedText;
   uint32_t testCp;
@@ -1227,6 +1320,12 @@ bool GfxRenderer::drawText(const int fontId, const int x, const int y, const cha
   }
   const auto& font = fontIt->second;
 
+  HalFile bitmapFile;
+  SdCardFont* bitmapFont = nullptr;
+  const auto sdFontIt = sdCardFonts_.find(resolvedFontId);
+  if (sdFontIt != sdCardFonts_.end() && sdFontIt->second->beginOverflowRead(bitmapFile)) {
+    bitmapFont = sdFontIt->second;
+  }
   const char* textCursor = renderedText;
   uint32_t cp;
   uint32_t prevCp = 0;
@@ -1238,6 +1337,7 @@ bool GfxRenderer::drawText(const int fontId, const int x, const int y, const cha
     // so a new page turn, Back, Home, or menu request can release the render
     // lock between SD-backed glyph loads instead of waiting for the paragraph.
     if ((codepointIndex++ & 0x03u) == 0 && isCancelled && isCancelled(cancellationContext)) {
+      if (bitmapFont) bitmapFont->endOverflowRead(bitmapFile);
       return false;
     }
 
@@ -1261,9 +1361,11 @@ bool GfxRenderer::drawText(const int fontId, const int x, const int y, const cha
       const int combiningX =
           combiningMark::anchorOver(anchor, lastBaseX, lastBaseLeft, lastBaseWidth, combiningLeft, combiningWidth);
       if (isSupSub) {
-        renderCharScaled<TextRotation::None>(*this, renderMode, font, cp, combiningX, yPos - raiseBy, black, style);
+        renderCharScaled<TextRotation::None>(*this, renderMode, font, combiningGlyph, combiningX, yPos - raiseBy, black,
+                                             style);
       } else {
-        renderCharImpl<TextRotation::None>(*this, renderMode, font, cp, combiningX, yPos - raiseBy, black, style);
+        renderCharImpl<TextRotation::None>(*this, renderMode, font, combiningGlyph, combiningX, yPos - raiseBy, black,
+                                           style);
       }
       continue;
     }
@@ -1296,9 +1398,9 @@ bool GfxRenderer::drawText(const int fontId, const int x, const int y, const cha
     if (glyph) {
       prevAdvanceFP = glyph->advanceX;
       if (isSupSub) {
-        renderCharScaled<TextRotation::None>(*this, renderMode, font, cp, lastBaseX, yPos, black, style);
+        renderCharScaled<TextRotation::None>(*this, renderMode, font, glyph, lastBaseX, yPos, black, style);
       } else {
-        renderCharImpl<TextRotation::None>(*this, renderMode, font, cp, lastBaseX, yPos, black, style);
+        renderCharImpl<TextRotation::None>(*this, renderMode, font, glyph, lastBaseX, yPos, black, style);
       }
     } else {
       prevAdvanceFP = hasFallback ? fp4::fromPixel(fallback.advance) : 0;
@@ -1310,6 +1412,7 @@ bool GfxRenderer::drawText(const int fontId, const int x, const int y, const cha
     prevWasEpd = glyph != nullptr;
     prevCp = cp;
   }
+  if (bitmapFont) bitmapFont->endOverflowRead(bitmapFile);
   return true;
 }
 
@@ -2412,20 +2515,77 @@ std::string GfxRenderer::truncatedText(const int fontId, const char* text, const
                                        const EpdFontFamily::Style style) const {
   if (!text || maxWidth <= 0) return "";
 
-  std::string item = text;
+  const std::string item = text;
   // U+2026 HORIZONTAL ELLIPSIS (UTF-8: 0xE2 0x80 0xA6)
-  const char* ellipsis = "\xe2\x80\xa6";
-  int textWidth = getTextWidth(fontId, item.c_str(), style);
-  if (textWidth <= maxWidth) {
-    // Text fits, return as is
-    return item;
+  constexpr const char* ellipsis = "\xe2\x80\xa6";
+  const int resolvedFontId = resolveTextFontId(fontId, text, style);
+  const auto fontIt = fontMap.find(resolvedFontId);
+  bool hasRtlBytes = false;
+  for (const unsigned char* scan = reinterpret_cast<const unsigned char*>(text); *scan; ++scan) {
+    if (*scan >= 0xD6 && *scan <= 0xDB) {
+      hasRtlBytes = true;
+      break;
+    }
   }
 
-  while (!item.empty() && getTextWidth(fontId, (item + ellipsis).c_str(), style) >= maxWidth) {
-    utf8RemoveLastChar(item);
+  // LTR SD-backed labels can collect all prefix widths while one local metrics
+  // stream is open. This avoids reopening and rescanning the same long filename
+  // for every binary-search candidate, without retaining a file handle in the font.
+  if (!hasRtlBytes && fontIt != fontMap.end() && sdCardFonts_.count(resolvedFontId) != 0) {
+    const auto widthStyle = static_cast<EpdFontFamily::Style>(
+        static_cast<uint8_t>(style) & ~static_cast<uint8_t>(EpdFontFamily::SUP | EpdFontFamily::SUB));
+    HalFile metricsFile;
+    std::vector<size_t> sdByteOffsets;
+    std::vector<int> prefixWidths;
+    int textWidth = 0;
+    if (measureSdTextPrefix(resolvedFontId, fontIt->second, text, widthStyle, metricsFile, sdByteOffsets, prefixWidths,
+                            textWidth)) {
+      if (textWidth <= maxWidth) return item;
+
+      size_t low = 0;
+      size_t high = sdByteOffsets.size() - 1;
+      while (low < high) {
+        const size_t mid = low + (high - low + 1) / 2;
+        if (prefixWidths[mid] < maxWidth) {
+          low = mid;
+        } else {
+          high = mid - 1;
+        }
+      }
+      return low == 0 ? ellipsis : item.substr(0, sdByteOffsets[low]) + ellipsis;
+    }
   }
 
-  return item.empty() ? ellipsis : item + ellipsis;
+  if (getTextWidth(fontId, item.c_str(), style) <= maxWidth) return item;
+  // Search UTF-8 prefix boundaries instead of repeatedly deleting one codepoint
+  // and remeasuring the entire remaining string.
+  std::vector<size_t> byteOffsets;
+  byteOffsets.reserve(item.size() + 1);
+  byteOffsets.push_back(0);
+  for (size_t i = 0; i < item.size();) {
+    const uint8_t lead = static_cast<uint8_t>(item[i]);
+    const size_t sequenceBytes = lead < 0x80             ? 1
+                                 : (lead & 0xE0) == 0xC0 ? 2
+                                 : (lead & 0xF0) == 0xE0 ? 3
+                                 : (lead & 0xF8) == 0xF0 ? 4
+                                                         : 1;
+    i = std::min(item.size(), i + sequenceBytes);
+    byteOffsets.push_back(i);
+  }
+
+  size_t low = 0;
+  size_t high = byteOffsets.size() - 1;
+  while (low < high) {
+    const size_t mid = low + (high - low + 1) / 2;
+    const std::string candidate = item.substr(0, byteOffsets[mid]) + ellipsis;
+    if (getTextWidth(fontId, candidate.c_str(), style) < maxWidth) {
+      low = mid;
+    } else {
+      high = mid - 1;
+    }
+  }
+
+  return low == 0 ? ellipsis : item.substr(0, byteOffsets[low]) + ellipsis;
 }
 
 std::vector<std::string> GfxRenderer::wrappedText(const int fontId, const char* text, const int maxWidth,
@@ -2885,9 +3045,11 @@ void GfxRenderer::drawTextRotated90CW(const int fontId, const int x, const int y
       const int combiningY = combiningMark::anchorOverRotated90CW(anchor, lastBaseY, lastBaseLeft, lastBaseWidth,
                                                                   combiningLeft, combiningWidth);
       if (isSupSub) {
-        renderCharScaled<TextRotation::Rotated90CW>(*this, renderMode, font, cp, combiningX, combiningY, black, style);
+        renderCharScaled<TextRotation::Rotated90CW>(*this, renderMode, font, combiningGlyph, combiningX, combiningY,
+                                                    black, style);
       } else {
-        renderCharImpl<TextRotation::Rotated90CW>(*this, renderMode, font, cp, combiningX, combiningY, black, style);
+        renderCharImpl<TextRotation::Rotated90CW>(*this, renderMode, font, combiningGlyph, combiningX, combiningY,
+                                                  black, style);
       }
       continue;
     }
@@ -2928,9 +3090,9 @@ void GfxRenderer::drawTextRotated90CW(const int fontId, const int x, const int y
     if (glyph) {
       prevAdvanceFP = glyph->advanceX;
       if (isSupSub) {
-        renderCharScaled<TextRotation::Rotated90CW>(*this, renderMode, font, cp, x, lastBaseY, black, style);
+        renderCharScaled<TextRotation::Rotated90CW>(*this, renderMode, font, glyph, x, lastBaseY, black, style);
       } else {
-        renderCharImpl<TextRotation::Rotated90CW>(*this, renderMode, font, cp, x, lastBaseY, black, style);
+        renderCharImpl<TextRotation::Rotated90CW>(*this, renderMode, font, glyph, x, lastBaseY, black, style);
       }
     } else {
       prevAdvanceFP = hasFallback ? fp4::fromPixel(fallback.advance) : 0;

@@ -1,5 +1,7 @@
 #pragma once
 
+class HalFile;
+
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -64,6 +66,13 @@ class SdCardFont {
   // Returns the 12.4 fixed-point advance, or 0 if not found.
   uint16_t getAdvance(uint32_t codepoint, uint8_t style) const;
 
+  // Read glyph metadata without loading or allocating its bitmap. Used by UI
+  // measurement so width calculations do not churn the on-demand bitmap ring.
+  bool getGlyphMetrics(uint32_t codepoint, uint8_t style, EpdGlyph* outGlyph, HalFile* metricsFile = nullptr);
+  // Reuse a caller-owned file only for one drawText scope. SdCardFont never owns
+  // or closes this handle; endOverflowRead() must run before the caller destroys it.
+  bool beginOverflowRead(HalFile& file);
+  void endOverflowRead(HalFile& file);
   // Returns true if advance table is populated for at least one style.
   bool hasAdvanceTable() const;
 
@@ -260,8 +269,15 @@ class SdCardFont {
   };
   OverflowContext overflowCtx_[MAX_STYLES] = {};
 
-  // Shared on-demand overflow buffer (ring buffer of glyphs loaded via glyphMissHandler)
-  static constexpr uint32_t OVERFLOW_CAPACITY = 8;
+  // Shared on-demand overflow cache. A UI page commonly contains dozens of
+  // distinct glyphs; eight entries caused the entire page to reload from SD on
+  // each measure/draw traversal. Keep enough slots for a normal page while also
+  // enforcing a bitmap-byte budget so unusual large glyphs cannot consume the
+  // TLS/reader heap reserve.
+  static constexpr uint32_t OVERFLOW_CAPACITY = 80;
+  static constexpr uint32_t OVERFLOW_BITMAP_BUDGET_BYTES = 24 * 1024;
+  static constexpr uint32_t OVERFLOW_LOW_HEAP_RESERVE_BYTES = 8 * 1024;
+  uint32_t overflowBitmapBudget() const;
   struct OverflowEntry {
     EpdGlyph glyph;
     uint8_t* bitmap = nullptr;
@@ -271,8 +287,22 @@ class SdCardFont {
   OverflowEntry overflow_[OVERFLOW_CAPACITY] = {};
   uint32_t overflowCount_ = 0;
   uint32_t overflowNext_ = 0;
-
+  uint32_t overflowOldest_ = 0;
+  uint32_t overflowBitmapBytes_ = 0;
+  // Tiny fixed metric cache for repeated UI measure/draw layout calls. Unlike
+  // overflow_, these entries never own bitmap data and therefore stay cheap.
+  static constexpr uint8_t METRICS_CACHE_CAPACITY = 32;
+  struct MetricsCacheEntry {
+    EpdGlyph glyph{};
+    uint32_t codepoint = 0;
+    uint8_t styleIdx = 0;
+    bool valid = false;
+  };
+  MetricsCacheEntry metricsCache_[METRICS_CACHE_CAPACITY] = {};
+  uint8_t metricsCacheNext_ = 0;
   // Compact advance-only table for layout measurement (per-style).
+  // Non-owning pointer valid only between beginOverflowRead()/endOverflowRead().
+  HalFile* overflowFile_ = nullptr;
   // Built by buildAdvanceTable(), queried by getAdvance().
   struct AdvanceEntry {
     uint32_t codepoint;
@@ -312,6 +342,7 @@ class SdCardFont {
   void applyKernLigaturePointers(PerStyle& s, EpdFontData& data) const;
   void applyGlyphMissCallback(uint8_t styleIdx);
   int32_t findGlobalGlyphIndex(const PerStyle& s, uint32_t codepoint) const;
+  bool findCachedGlyphMetrics(uint32_t codepoint, uint8_t styleIdx, EpdGlyph* outGlyph) const;
   int fetchAdvancesForCodepoints(uint32_t* codepoints, uint32_t cpCount, uint8_t styleMask);
   template <typename Iter>
   int buildAdvanceTableRange(Iter begin, Iter end, bool includeSpace, bool includeHyphen, uint8_t styleMask,

@@ -14,7 +14,7 @@ enum class BidiBaseDir : signed char { AUTO = -1, LTR = 0, RTL = 1 };
 class FontCacheManager;
 class FontDecompressor;
 class SdCardFont;
-
+class HalFile;
 #include <cstring>
 #include <functional>
 #include <map>
@@ -153,6 +153,9 @@ class GfxRenderer {
                                      bool pixelState, bool halfScale) const;
   int measureTextAdvance(int resolvedFontId, const EpdFontFamily& fontFamily, const char* text,
                          EpdFontFamily::Style style) const;
+  bool measureSdTextPrefix(int resolvedFontId, const EpdFontFamily& fontFamily, const char* text,
+                           EpdFontFamily::Style style, HalFile& metricsFile, std::vector<size_t>& byteOffsets,
+                           std::vector<int>& prefixWidths, int& textWidth) const;
 
   void renderChar(int fontId, const EpdFontFamily& fontFamily, uint32_t cp, int* x, const int* y, bool pixelState,
                   EpdFontFamily::Style style) const;
