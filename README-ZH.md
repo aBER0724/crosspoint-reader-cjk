@@ -16,7 +16,13 @@
 - 文件浏览、书籍封面、休眠画面、屏幕旋转和进度保存
 - Wi-Fi 上传、WebDAV、OTA、Calibre 和 KOReader Sync
 
-![CrossPoint Reader CJK 0.4.0 简体中文界面浅色模式主页](./docs/images/current/home-zh-light-0.4.0.png)
+## 界面截图
+
+| 主页 | 设置 |
+|:--:|:--:|
+| ![简体中文浅色模式主页](./docs/images/current/home-zh-light-0.4.0.png) | ![简体中文浅色模式设置页](./docs/images/current/settings-zh-light-0.4.0.png) |
+
+另见 [English](./README.md#screenshots) 和 [日本語](./README-JA.md#スクリーンショット) 界面。
 
 ## 安装
 

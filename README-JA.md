@@ -1,6 +1,6 @@
 # CrossPoint Reader CJK
 
-[English](./README.md) | [中文](./README-ZH.md) | **[日本語](./README-JA.md)**
+[English](./README.md) | [中文](./README-ZH.md) | **[日本語](./README-JA.md)** | **バージョン 0.4.0**
 
 このリポジトリで AI コーディングエージェントを使う場合は、先に [AGENTS.md](./AGENTS.md) を参照してください。
 
@@ -9,6 +9,14 @@
 本プロジェクトは、オリジナルの CrossPoint Reader をベースに CJK 対応を行い、多言語インターフェースと CJK フォントのレンダリングをサポートしています。
 
 ![](./docs/images/cover.jpg)
+
+## スクリーンショット
+
+| ホーム | 設定 |
+|:--:|:--:|
+| ![日本語のライトモードのホーム画面](./docs/images/current/home-ja-light-0.4.0.png) | ![日本語のライトモードの設定画面](./docs/images/current/settings-ja-light-0.4.0.png) |
+
+[English](./README.md#screenshots) と [简体中文](./README-ZH.md#界面截图) の画面もご覧いただけます。
 
 ## ✨ CJK 版の新機能
 
