@@ -55,16 +55,15 @@ std::string uiPointSizeLabel(const SdCardFontFamilyInfo& family) {
 }
 
 const char* bundledNotoSansCatalogFamily() {
-  switch (I18N.getLanguage()) {
-    case Language::CHINESE_TRADITIONAL:
-      return "NotoSansTC";
-    case Language::JAPANESE:
-      return "NotoSansJP";
-    case Language::CHINESE_SIMPLIFIED:
-    case Language::EN:
-    default:
-      return "NotoSansSC";
+  const size_t languageIndex = static_cast<size_t>(I18N.getLanguage());
+  const char* languageCode = languageIndex < static_cast<size_t>(Language::_COUNT) ? LANGUAGE_CODES[languageIndex] : "";
+  if (std::strcmp(languageCode, "CHINESE_TRADITIONAL") == 0) {
+    return "NotoSansTC";
   }
+  if (std::strcmp(languageCode, "JAPANESE") == 0) {
+    return "NotoSansJP";
+  }
+  return "NotoSansSC";
 }
 }  // namespace
 
