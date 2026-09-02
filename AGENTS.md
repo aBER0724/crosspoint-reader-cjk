@@ -47,6 +47,17 @@ Required tools:
 
 The first build is slower because `custom_sdkconfig` rebuilds Arduino/ESP-IDF components. On macOS, retain any machine-specific CMake/toolchain workaround in gitignored `platformio.local.ini`; never commit that file.
 
+Enable the repository's local Git hooks once per checkout:
+
+```bash
+./bin/install-git-hooks
+```
+
+The pre-commit hook formats tracked C/C++ changes, and the pre-push hook runs the
+same cppcheck command as CI. A push is blocked when cppcheck reports any low, medium,
+or high defect. For an exceptional one-off push when PlatformIO cannot run, explicitly
+use `CROSSPOINT_SKIP_PRE_PUSH_CHECKS=1 git push`; CI still remains authoritative.
+
 If an interrupted core rebuild reports multiple definitions of `app_main`, follow the cleanup command documented in `platformio.ini`. Do **not** use `git clean -fdX`, because it can delete local configuration and other intentionally ignored assets.
 
 ## 4. PlatformIO environments

@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+cd "${REPO_ROOT}"
+
+if [[ "${CROSSPOINT_SKIP_PRE_PUSH_CHECKS:-0}" == "1" ]]; then
+  echo "Skipping pre-push checks (CROSSPOINT_SKIP_PRE_PUSH_CHECKS=1)."
+  exit 0
+fi
+
+if ! command -v pio >/dev/null 2>&1; then
+  echo "error: PlatformIO Core ('pio') is required for the pre-push cppcheck gate." >&2
+  echo "Install it, or bypass once with CROSSPOINT_SKIP_PRE_PUSH_CHECKS=1 git push." >&2
+  exit 1
+fi
+
+echo "Running the CI cppcheck gate before push..."
+pio check --fail-on-defect low --fail-on-defect medium --fail-on-defect high
