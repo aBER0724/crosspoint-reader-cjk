@@ -5,6 +5,7 @@
 #include <I18n.h>
 #include <Logging.h>
 #include <WiFi.h>
+#include <esp_wifi.h>
 
 #include <algorithm>
 
@@ -39,6 +40,7 @@ void WifiSelectionActivity::onEnter() {
   forgetPromptSelection = 0;
   autoConnecting = false;
   manualNetworkListRequested = false;
+  scanRecoveryAttempts = 0;
   autoAttemptedSsids.clear();
   autoAttemptedSsids.reserve(WIFI_STORE.getCredentials().size());
 
@@ -97,24 +99,64 @@ void WifiSelectionActivity::startWifiScan(const bool autoScan) {
   networks.clear();
   requestUpdate();
 
-  // Set WiFi mode to station
-  WiFi.mode(WIFI_STA);
-  WiFi.disconnect();
+  // Always clear the previous result/state before starting another asynchronous
+  // scan. After a failed connection or an interrupted scan the Arduino WiFi
+  // wrapper can otherwise retain stale scan bits and return an old/empty result.
+  WiFi.scanDelete();
+  WiFi.persistent(false);
+  if (!WiFi.mode(WIFI_STA)) {
+    LOG_ERR("WIFI", "Failed to enable station mode for scan");
+    processWifiScanResults();
+    return;
+  }
+  WiFi.disconnect(false, false);
+  WiFi.setSleep(false);
+  // Keep channels 12/13 available before association. Phones commonly move a
+  // 2.4 GHz hotspot between channels. Start with the device's primary CJK
+  // domain so channels 12/13 are discoverable, while keeping 802.11d enabled
+  // so the radio adopts the access point's advertised regulatory domain.
+  const esp_err_t countryResult = esp_wifi_set_country_code("CN", true);
+  if (countryResult != ESP_OK) {
+    LOG_ERR("WIFI", "Failed to configure scan country: %d", static_cast<int>(countryResult));
+  }
   delay(100);
 
-  // Start async scan
-  WiFi.scanNetworks(true);  // true = async scan
+  scanStartTime = millis();
+  const int16_t scanStatus =
+      WiFi.scanNetworks(/*async=*/true, /*show_hidden=*/false, /*passive=*/false, /*max_ms_per_chan=*/500);
+  if (scanStatus == WIFI_SCAN_FAILED) {
+    LOG_ERR("WIFI", "Failed to start WiFi scan");
+    processWifiScanResults();
+  }
 }
 
 void WifiSelectionActivity::processWifiScanResults() {
   const int16_t scanResult = WiFi.scanComplete();
 
-  if (scanResult == WIFI_SCAN_RUNNING) {
-    // Scan still in progress
+  if (scanResult == WIFI_SCAN_RUNNING && millis() - scanStartTime <= SCAN_TIMEOUT_MS) {
     return;
   }
 
-  if (scanResult == WIFI_SCAN_FAILED) {
+  if (scanResult == WIFI_SCAN_RUNNING) {
+    LOG_ERR("WIFI", "WiFi scan timed out after %lu ms", millis() - scanStartTime);
+    WiFi.scanDelete();
+  }
+
+  if (scanResult == WIFI_SCAN_FAILED || scanResult == WIFI_SCAN_RUNNING) {
+    if (scanRecoveryAttempts < MAX_SCAN_RECOVERY_ATTEMPTS) {
+      scanRecoveryAttempts++;
+      const bool retryAutoScan = autoConnecting && !manualNetworkListRequested;
+      LOG_INF("WIFI", "Recovering WiFi radio after failed scan (attempt %u)", scanRecoveryAttempts);
+      WiFi.scanDelete();
+      WiFi.disconnect(false, false);
+      WiFi.mode(WIFI_OFF);
+      delay(100);
+      startWifiScan(retryAutoScan);
+      return;
+    }
+
+    LOG_ERR("WIFI", "WiFi scan failed after recovery");
+    scanRecoveryAttempts = 0;
     networks.clear();
     realNetworkCount = 0;
     appendHiddenNetworkEntry();
@@ -125,6 +167,8 @@ void WifiSelectionActivity::processWifiScanResults() {
     requestUpdate();
     return;
   }
+
+  scanRecoveryAttempts = 0;
 
   // Scan complete, process results — deduplicate in-place, keeping strongest signal
   networks.clear();

@@ -90,10 +90,13 @@ class WifiSelectionActivity final : public Activity {
   int forgetPromptSelection = 0;
 
   // Connection timeout
+  static constexpr unsigned long SCAN_TIMEOUT_MS = 20000;
+  static constexpr uint8_t MAX_SCAN_RECOVERY_ATTEMPTS = 1;
   static constexpr unsigned long CONNECTION_TIMEOUT_MS = 15000;
   static constexpr unsigned long AUTO_CONNECTION_TIMEOUT_MS = 7000;
+  unsigned long scanStartTime = 0;
   unsigned long connectionStartTime = 0;
-
+  uint8_t scanRecoveryAttempts = 0;
   void renderNetworkList(const Rect* screen, const ThemeMetrics* metrics) const;
   void renderPasswordEntry(const Rect* screen, const ThemeMetrics* metrics) const;
   void renderConnecting(const Rect* screen, const ThemeMetrics* metrics) const;
