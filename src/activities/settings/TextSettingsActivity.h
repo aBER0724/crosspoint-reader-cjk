@@ -78,6 +78,9 @@ class TextSettingsActivity final : public Activity {
     Source source;
     int sourceIndex;
     uint8_t pointSize;
+    // Installed catalog family represented by a bundled row (currently Noto Sans),
+    // or -1 when this entry has no SD-backed extension.
+    int supplementalFamilyIndex = -1;
   };
 
   struct SizeEntry {

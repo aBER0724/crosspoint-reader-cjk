@@ -39,6 +39,11 @@ bool hasUiPointSize(const SdCardFontFamilyInfo& family) {
                      [&family](const uint8_t pointSize) { return family.hasSize(pointSize); });
 }
 
+bool hasReaderPointSize(const SdCardFontFamilyInfo& family) {
+  return std::any_of(SdCardFontFamilyInfo::READER_POINT_SIZES.begin(), SdCardFontFamilyInfo::READER_POINT_SIZES.end(),
+                     [&family](const uint8_t pointSize) { return family.hasSize(pointSize); });
+}
+
 std::string uiPointSizeLabel(const SdCardFontFamilyInfo& family) {
   std::string label;
   for (const uint8_t pointSize : SdCardFontFamilyInfo::UI_POINT_SIZES) {
@@ -47,6 +52,19 @@ std::string uiPointSizeLabel(const SdCardFontFamilyInfo& family) {
     label += std::to_string(pointSize);
   }
   return label.empty() ? "12 pt" : label + " pt";
+}
+
+const char* bundledNotoSansCatalogFamily() {
+  switch (I18N.getLanguage()) {
+    case Language::CHINESE_TRADITIONAL:
+      return "NotoSansTC";
+    case Language::JAPANESE:
+      return "NotoSansJP";
+    case Language::CHINESE_SIMPLIFIED:
+    case Language::EN:
+    default:
+      return "NotoSansSC";
+  }
 }
 }  // namespace
 
@@ -79,7 +97,12 @@ void TextSettingsActivity::onEnter() {
   }
   if (registry_) {
     const auto& families = registry_->getFamilies();
+    const int bundledNotoSansIndex = registry_->getFamilyIndex(bundledNotoSansCatalogFamily());
+    if (bundledNotoSansIndex >= 0) {
+      fonts_[CrossPointSettings::NOTOSANS].supplementalFamilyIndex = bundledNotoSansIndex;
+    }
     for (int i = 0; i < static_cast<int>(families.size()); i++) {
+      if (i == bundledNotoSansIndex) continue;
       fonts_.push_back({families[i].name, FontEntry::Source::SdFamily, i, 0});
     }
   }
@@ -323,12 +346,15 @@ void TextSettingsActivity::rebuildSizeEntries() {
   const FontEntry* currentFont = currentFamilyIndex_ >= 0 && currentFamilyIndex_ < static_cast<int>(fonts_.size())
                                      ? &fonts_[currentFamilyIndex_]
                                      : nullptr;
+  const int supplementalFamilyIndex = currentFont ? currentFont->supplementalFamilyIndex : -1;
   if (previewTarget_ == FontTarget::Ui) {
     if (currentFont && currentFont->source == FontEntry::Source::Legacy) {
       sizes_.push_back({std::to_string(currentFont->pointSize) + " pt", currentFont->pointSize});
-    } else if (registry_ && currentFont && currentFont->source == FontEntry::Source::SdFamily) {
+    } else if (registry_ && currentFont &&
+               (currentFont->source == FontEntry::Source::SdFamily || supplementalFamilyIndex >= 0)) {
       const auto& families = registry_->getFamilies();
-      const int sdIndex = currentFont->sourceIndex;
+      const int sdIndex =
+          currentFont->source == FontEntry::Source::SdFamily ? currentFont->sourceIndex : supplementalFamilyIndex;
       if (sdIndex >= 0 && sdIndex < static_cast<int>(families.size())) {
         sizes_.push_back({uiPointSizeLabel(families[sdIndex]), 12});
       }
@@ -344,8 +370,10 @@ void TextSettingsActivity::rebuildSizeEntries() {
   }
 
   const SdCardFontFamilyInfo* sdFamily = nullptr;
-  if (registry_ && currentFont && currentFont->source == FontEntry::Source::SdFamily) {
-    const int sdIndex = currentFont->sourceIndex;
+  if (registry_ && currentFont &&
+      (currentFont->source == FontEntry::Source::SdFamily || supplementalFamilyIndex >= 0)) {
+    const int sdIndex =
+        currentFont->source == FontEntry::Source::SdFamily ? currentFont->sourceIndex : supplementalFamilyIndex;
     const auto& families = registry_->getFamilies();
     if (sdIndex >= 0 && sdIndex < static_cast<int>(families.size())) sdFamily = &families[sdIndex];
   }
@@ -398,6 +426,9 @@ int TextSettingsActivity::findCurrentFontIndex(const char* sdFontFamilyName, con
       if (families[familyIndex].name != sdFontFamilyName) continue;
       for (int i = 0; i < static_cast<int>(fonts_.size()); i++) {
         if (fonts_[i].source == FontEntry::Source::SdFamily && fonts_[i].sourceIndex == familyIndex) return i;
+        if (fonts_[i].source == FontEntry::Source::Builtin && fonts_[i].supplementalFamilyIndex == familyIndex) {
+          return i;
+        }
       }
     }
   }
@@ -426,8 +457,12 @@ void TextSettingsActivity::applyFamily(int listIndex) {
   const FontManager& fontManager = FontManager::getInstance();
   const FontEntry& font = fonts_[listIndex];
   if (font.source == FontEntry::Source::Builtin) {
-    isReader = fontManager.getSelectedIndex() < 0 && SETTINGS.sdFontFamilyName[0] == '\0' &&
-               SETTINGS.fontFamily == font.sourceIndex;
+    isReader = fontManager.getSelectedIndex() < 0 && SETTINGS.fontFamily == font.sourceIndex &&
+               (SETTINGS.sdFontFamilyName[0] == '\0' ||
+                (font.supplementalFamilyIndex >= 0 && registry_ &&
+                 registry_->getFamilies()[font.supplementalFamilyIndex].name == SETTINGS.sdFontFamilyName));
+    isUi = font.supplementalFamilyIndex >= 0 && registry_ &&
+           registry_->getFamilies()[font.supplementalFamilyIndex].name == SETTINGS.sdUiFontFamilyName;
   } else if (font.source == FontEntry::Source::Legacy) {
     isReader = fontManager.getSelectedIndex() == font.sourceIndex;
     isUi = fontManager.getUiSelectedIndex() == font.sourceIndex;
@@ -446,7 +481,15 @@ void TextSettingsActivity::applyFamily(int listIndex) {
                                 : (isUi ? static_cast<int>(FontTarget::Ui) : static_cast<int>(FontTarget::Reader));
   int targetCount = static_cast<int>(std::size(FONT_TARGET_IDS));
   if (font.source == FontEntry::Source::Builtin) {
-    targetCount = 1;
+    if (font.supplementalFamilyIndex < 0 || !registry_) {
+      targetCount = 1;
+    } else {
+      const auto& supplementalFamily = registry_->getFamilies()[font.supplementalFamilyIndex];
+      const bool canTargetReader = hasReaderPointSize(supplementalFamily);
+      const bool canTargetUi = hasUiPointSize(supplementalFamily);
+      if (!canTargetReader && !canTargetUi) return;
+      if (!canTargetReader || !canTargetUi) targetCount = 1;
+    }
   } else if (font.source == FontEntry::Source::SdFamily && registry_) {
     const auto& families = registry_->getFamilies();
     if (font.sourceIndex < 0 || font.sourceIndex >= static_cast<int>(families.size())) return;
@@ -462,7 +505,10 @@ void TextSettingsActivity::applyFamilyToTarget(int listIndex, FontTarget target)
 
   RenderLock lock;
   const auto& font = fonts_[listIndex];
-  if (font.source == FontEntry::Source::Builtin && target != FontTarget::Reader) return;
+  if (font.source == FontEntry::Source::Builtin && target != FontTarget::Reader &&
+      (font.supplementalFamilyIndex < 0 || !registry_)) {
+    return;
+  }
 
   const bool targetsReader = target == FontTarget::Reader || target == FontTarget::Both;
   const bool targetsUi = target == FontTarget::Ui || target == FontTarget::Both;
@@ -472,12 +518,27 @@ void TextSettingsActivity::applyFamilyToTarget(int listIndex, FontTarget target)
     if (!fontManager.clearSelections(targetsReader, targetsUi)) {
       return;
     }
-    if (target == FontTarget::Reader || target == FontTarget::Both) {
-      SETTINGS.fontFamily = static_cast<uint8_t>(font.sourceIndex);
-      SETTINGS.sdFontFamilyName[0] = '\0';
+    const SdCardFontFamilyInfo* supplementalFamily = nullptr;
+    if (font.supplementalFamilyIndex >= 0 && registry_) {
+      const auto& families = registry_->getFamilies();
+      if (font.supplementalFamilyIndex < static_cast<int>(families.size())) {
+        supplementalFamily = &families[font.supplementalFamilyIndex];
+      }
     }
-    if (target == FontTarget::Ui || target == FontTarget::Both) {
-      SETTINGS.sdUiFontFamilyName[0] = '\0';
+    if (targetsUi && (!supplementalFamily || !hasUiPointSize(*supplementalFamily))) return;
+    const bool useSupplementalReader = supplementalFamily && hasReaderPointSize(*supplementalFamily);
+    if (targetsReader) {
+      SETTINGS.fontFamily = static_cast<uint8_t>(font.sourceIndex);
+      if (useSupplementalReader) {
+        strncpy(SETTINGS.sdFontFamilyName, supplementalFamily->name.c_str(), sizeof(SETTINGS.sdFontFamilyName) - 1);
+        SETTINGS.sdFontFamilyName[sizeof(SETTINGS.sdFontFamilyName) - 1] = '\0';
+      } else {
+        SETTINGS.sdFontFamilyName[0] = '\0';
+      }
+    }
+    if (targetsUi) {
+      strncpy(SETTINGS.sdUiFontFamilyName, supplementalFamily->name.c_str(), sizeof(SETTINGS.sdUiFontFamilyName) - 1);
+      SETTINGS.sdUiFontFamilyName[sizeof(SETTINGS.sdUiFontFamilyName) - 1] = '\0';
     }
   } else if (font.source == FontEntry::Source::Legacy) {
     const FontInfo* info = fontManager.getFontInfo(font.sourceIndex);
@@ -535,10 +596,17 @@ std::string TextSettingsActivity::fontRoleText(int listIndex) const {
   const auto& font = fonts_[listIndex];
   const FontManager& fontManager = FontManager::getInstance();
   if (font.source == FontEntry::Source::Builtin) {
-    const bool isReader = fontManager.getSelectedIndex() < 0 && SETTINGS.sdFontFamilyName[0] == '\0' &&
-                          SETTINGS.fontFamily == font.sourceIndex;
-    if (!isReader) return "";
-    return tr(STR_EXT_READER_FONT);
+    const bool usesSupplementalReader =
+        font.supplementalFamilyIndex >= 0 && registry_ &&
+        registry_->getFamilies()[font.supplementalFamilyIndex].name == SETTINGS.sdFontFamilyName;
+    const bool isReader = fontManager.getSelectedIndex() < 0 && SETTINGS.fontFamily == font.sourceIndex &&
+                          (SETTINGS.sdFontFamilyName[0] == '\0' || usesSupplementalReader);
+    const bool isUi = font.supplementalFamilyIndex >= 0 && registry_ &&
+                      registry_->getFamilies()[font.supplementalFamilyIndex].name == SETTINGS.sdUiFontFamilyName;
+    if (isReader && isUi) return tr(STR_READER_AND_UI);
+    if (isReader) return tr(STR_EXT_READER_FONT);
+    if (isUi) return tr(STR_EXT_UI_FONT);
+    return "";
   }
 
   if (font.source == FontEntry::Source::Legacy) {
