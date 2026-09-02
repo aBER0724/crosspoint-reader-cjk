@@ -21,13 +21,13 @@ assert "X-CrossPoint-Token" not in SOURCE, "web requests must not require a mana
 assert 'server->setContentLength(responseLength)' not in SOURCE, "settings API must not require a large contiguous heap block"
 assert 'sendChunk("]", 1)' in SOURCE, "settings API must finish its streamed JSON array"
 assert "_currentClientWrite(" not in SOURCE, "WDT-safe writes must not override the framework path used by HTML responses"
-assert "beginWdtSafeChunkedResponse" in SOURCE, "settings streaming must keep its bounded watchdog-safe path"
+assert "beginWdtSafeResponse" in SOURCE, "settings streaming must keep its bounded watchdog-safe path"
 assert 'void CrossPointWebServer::handleGetOpdsServers() const {' in SOURCE
 opds_start = SOURCE.index('void CrossPointWebServer::handleGetOpdsServers() const {')
 opds_end = SOURCE.index('void CrossPointWebServer::handlePostOpdsServer()', opds_start)
 opds_handler = SOURCE[opds_start:opds_end]
-assert 'beginWdtSafeChunkedResponse("application/json")' in opds_handler, "OPDS settings dependency must use watchdog-safe writes"
-assert "server->sendContent" not in opds_handler, "OPDS slow-client writes must not use blocking framework chunk footers"
+assert 'beginWdtSafeResponse("application/json", response.size())' in opds_handler
+assert "server->sendContent" not in opds_handler, "OPDS slow-client writes must not use blocking framework writes"
 assert "errno == ENOMEM || errno == ENOBUFS" in SOURCE, "transient lwIP memory pressure must be retried"
 assert 'server->send_P(200, "text/html", data, len)' in SOURCE, "HTML responses must use the framework response path"
 for page in ("HomePage", "FilesPage", "FontsPage", "SettingsPage"):

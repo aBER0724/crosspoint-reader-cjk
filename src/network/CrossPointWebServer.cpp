@@ -264,11 +264,36 @@ class WdtSafeWebServer : public WebServer {
     writeWithWatchdog(header.c_str(), header.length());
   }
 
+  void beginWdtSafeChunkedResponse(const char* contentType) {
+    writeFailed_ = false;
+    _contentLength = CONTENT_LENGTH_UNKNOWN;
+    String header;
+    _prepareHeader(header, 200, contentType, 0);
+    writeWithWatchdog(header.c_str(), header.length());
+  }
+
   bool writeWdtSafeContent(const char* data, size_t len) {
     if (writeFailed_) return false;
     writeWithWatchdog(data, len);
     return !writeFailed_;
   }
+
+  bool writeWdtSafeChunk(const char* data, const size_t len) {
+    if (writeFailed_) return false;
+
+    char chunkHeader[24];
+    const int headerLength = snprintf(chunkHeader, sizeof(chunkHeader), "%zx\r\n", len);
+    if (headerLength <= 0 || static_cast<size_t>(headerLength) >= sizeof(chunkHeader)) {
+      writeFailed_ = true;
+      return false;
+    }
+
+    if (!writeWdtSafeContent(chunkHeader, static_cast<size_t>(headerLength))) return false;
+    if (len > 0 && !writeWdtSafeContent(data, len)) return false;
+    return writeWdtSafeContent("\r\n", 2);
+  }
+
+  bool endWdtSafeChunkedResponse() { return writeWdtSafeContent("0\r\n\r\n", 5); }
 
   bool writeFailed() const { return writeFailed_; }
 
@@ -2203,18 +2228,13 @@ void CrossPointWebServer::handleWifiScan() const {
     }
   }
 
-  // Stream response incrementally to avoid heap fragmentation
-  server->setContentLength(CONTENT_LENGTH_UNKNOWN);
-  server->send(200, "application/json", "");
-  server->sendContent("[");
+  auto* safeServer = static_cast<WdtSafeWebServer*>(server.get());
+  safeServer->beginWdtSafeChunkedResponse("application/json");
+  safeServer->writeWdtSafeChunk("[", 1);
 
   bool first = true;
   for (const auto& entry : bestIndex) {
     const int i = entry.second;
-    if (!first) {
-      server->sendContent(",");
-    }
-    first = false;
 
     JsonDocument doc;
     doc["ssid"] = WiFi.SSID(i);
@@ -2225,11 +2245,18 @@ void CrossPointWebServer::handleWifiScan() const {
     char buf[320];
     const size_t written = serializeJson(doc, buf, sizeof(buf));
     if (written >= sizeof(buf)) continue;  // Truncated — skip malformed entry
-    server->sendContent(buf);
+
+    if (!first && !safeServer->writeWdtSafeChunk(",", 1)) break;
+    if (!safeServer->writeWdtSafeChunk(buf, written)) break;
+    first = false;
   }
 
-  server->sendContent("]");
-  server->sendContent("");
+  if (!safeServer->writeFailed()) {
+    safeServer->writeWdtSafeChunk("]", 1);
+  }
+  if (!safeServer->writeFailed()) {
+    safeServer->endWdtSafeChunkedResponse();
+  }
   WiFi.scanDelete();
   LOG_DBG("WEB", "WiFi scan returned %d unique networks", bestIndex.size());
 }
@@ -2277,25 +2304,30 @@ void CrossPointWebServer::handleWifiList() const {
   WIFI_STORE.loadFromFile();
   const auto& creds = WIFI_STORE.getCredentials();
 
-  // Stream response incrementally to avoid heap fragmentation
-  server->setContentLength(CONTENT_LENGTH_UNKNOWN);
-  server->send(200, "application/json", "");
-  server->sendContent("[");
+  auto* safeServer = static_cast<WdtSafeWebServer*>(server.get());
+  safeServer->beginWdtSafeChunkedResponse("application/json");
+  safeServer->writeWdtSafeChunk("[", 1);
 
   // SSID: max 32 bytes per 802.11 spec; worst-case escaping (\uXXXX) = 6 chars/byte → 192 bytes + NUL
   char escapedSsid[256];
-  for (size_t i = 0; i < creds.size(); i++) {
-    if (i > 0) {
-      server->sendContent(",");
-    }
-    server->sendContent("{\"ssid\":\"");
-    appendEscapedJsonString(escapedSsid, sizeof(escapedSsid), creds[i].ssid.c_str());
-    server->sendContent(escapedSsid);
-    server->sendContent("\"}");
+  bool first = true;
+  for (const auto& credential : creds) {
+    const size_t escapedLength = appendEscapedJsonString(escapedSsid, sizeof(escapedSsid), credential.ssid.c_str());
+    if (escapedLength == 0 && !credential.ssid.empty()) continue;
+
+    if (!first && !safeServer->writeWdtSafeChunk(",", 1)) break;
+    if (!safeServer->writeWdtSafeChunk("{\"ssid\":\"", 9)) break;
+    if (!safeServer->writeWdtSafeChunk(escapedSsid, escapedLength)) break;
+    if (!safeServer->writeWdtSafeChunk("\"}", 2)) break;
+    first = false;
   }
 
-  server->sendContent("]");
-  server->sendContent("");
+  if (!safeServer->writeFailed()) {
+    safeServer->writeWdtSafeChunk("]", 1);
+  }
+  if (!safeServer->writeFailed()) {
+    safeServer->endWdtSafeChunkedResponse();
+  }
 }
 
 void CrossPointWebServer::handleWifiDelete() const {
