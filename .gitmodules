@@ -1,4 +1,4 @@
 [submodule "freeink-sdk"]
 	path = freeink-sdk
 	url = https://github.com/aBER0724/freeink-sdk.git
-	branch = codex/dark-redrive-freeink
+	branch = main
