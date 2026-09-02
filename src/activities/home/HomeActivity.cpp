@@ -98,20 +98,32 @@ void HomeActivity::loadRecentBooks(int maxBooks) {
   }
 }
 
-void HomeActivity::loadNextRecentCover([[maybe_unused]] int coverHeight) {
-  const bool redrawRequired = deferRecentCoverDraw;
-  deferRecentCoverDraw = false;
-  nextRecentCoverIndex = recentBooks.size();
+void HomeActivity::loadNextRecentCover(int coverHeight) {
+  // Never extract EPUB images or convert XTC pages from Home's input loop.
+  // Those operations can take many seconds and prevent X4 button sampling.
+  // Reconstruct deterministic paths left empty by older firmware, then let
+  // the theme display only thumbnails that are already present on the SD card.
+  while (nextRecentCoverIndex < recentBooks.size()) {
+    RecentBook& book = recentBooks[nextRecentCoverIndex++];
+    if (!book.coverBmpPath.empty()) continue;
+
+    if (FsHelpers::hasEpubExtension(book.path)) {
+      Epub epub(book.path, "/.crosspoint");
+      book.coverBmpPath = epub.getThumbBmpPath();
+    } else if (FsHelpers::hasXtcExtension(book.path)) {
+      Xtc xtc(book.path, "/.crosspoint");
+      book.coverBmpPath = xtc.getThumbBmpPath();
+    } else {
+      continue;
+    }
+    RECENT_BOOKS.updateBook(book.path, book.title, book.author, book.coverBmpPath);
+  }
+
+  // A path template is harmless when its height-specific bitmap is absent:
+  // themes fall back to their normal placeholder without starting generation.
+  (void)coverHeight;
   recentsLoaded = true;
   recentsLoading = false;
-  if (redrawRequired) {
-    // The deferred first frame stores a placeholder baseline. Do not restore it
-    // while rebuilding the strip with the real cover bitmaps.
-    freeCoverBuffer();
-    coverRendered = false;
-    fullRedrawRequired = true;
-    requestUpdate();
-  }
 }
 void HomeActivity::onEnter() {
   Activity::onEnter();
@@ -121,9 +133,12 @@ void HomeActivity::onEnter() {
   const auto& metrics = UITheme::getInstance().getMetrics();
   loadRecentBooks(metrics.homeRecentBooksCount);
   nextRecentCoverIndex = 0;
-  recentsLoaded = recentBooks.empty();
   recentsLoading = false;
-  nextRecentCoverLoadAt = millis() + RECENT_COVER_LOAD_IDLE_MS;
+  // Home no longer generates thumbnails, so there is no expensive input-loop
+  // work to defer. Normalize stale paths now and let the cancellable render
+  // task draw existing thumbnails in the first frame.
+  deferRecentCoverDraw = false;
+  loadNextRecentCover(metrics.homeCoverHeight);
 
   const auto base = static_cast<int>(recentBooks.size());
   selectorIndex = initialMenuItem == HomeMenuItem::NONE ? 0 : base + menuItemToIndex(initialMenuItem, hasOpdsServers);
@@ -132,7 +147,6 @@ void HomeActivity::onEnter() {
   firstRenderDone = false;
   coverRendered = false;
   coverBufferStored = false;
-  deferRecentCoverDraw = true;
   backPressSeen = false;
 
   // Trigger first update
@@ -436,19 +450,7 @@ void HomeActivity::render(RenderLock&& lock) {
     coverRectW = pageWidth;
     coverRectH = metrics.homeCoverTileHeight;
 
-    // Keep the first frame free of synchronous bitmap IO. Existing thumbnails
-    // are drawn after the short idle delay; missing thumbnails stay as placeholders
-    // instead of being regenerated on the home screen.
-    std::vector<RecentBook> coverBooks;
     const std::vector<RecentBook>* booksForCover = &recentBooks;
-    if (deferRecentCoverDraw) {
-      coverBooks = recentBooks;
-      for (RecentBook& book : coverBooks) {
-        // Keep metadata visible on the first frame while avoiding cover bitmap SD I/O.
-        book.coverBmpPath.clear();
-      }
-      booksForCover = &coverBooks;
-    }
     GUI.drawRecentBookCover(
         renderer, Rect{0, contentOffset + metrics.homeTopPadding, pageWidth, metrics.homeCoverTileHeight},
         *booksForCover, renderedSelectorIndex, coverRendered, coverBufferStored, bufferRestored,

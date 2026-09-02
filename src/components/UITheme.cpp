@@ -3,6 +3,7 @@
 #include <FsHelpers.h>
 #include <GfxRenderer.h>
 #include <HalGPIO.h>
+#include <HalStorage.h>
 #include <Logging.h>
 
 #include <algorithm>
@@ -121,11 +122,48 @@ Rect UITheme::getScreenSafeArea(const GfxRenderer& renderer, bool hasFrontButton
 }
 
 std::string UITheme::getCoverThumbPath(std::string coverBmpPath, int coverHeight) {
-  size_t pos = coverBmpPath.find("[HEIGHT]", 0);
-  if (pos != std::string::npos) {
-    coverBmpPath.replace(pos, 8, std::to_string(coverHeight));
+  const size_t heightPos = coverBmpPath.find("[HEIGHT]");
+  if (heightPos == std::string::npos) return coverBmpPath;
+
+  std::string exactPath = coverBmpPath;
+  exactPath.replace(heightPos, 8, std::to_string(coverHeight));
+  if (Storage.exists(exactPath.c_str())) return exactPath;
+
+  // Theme heights differ (Classic 400, Rounded 300, Lyra 226). Reuse any
+  // existing v2 thumbnail and let drawBitmap scale/crop it rather than
+  // extracting the EPUB or converting an XTC page from Home's input loop.
+  const size_t slash = coverBmpPath.rfind('/', heightPos);
+  if (slash == std::string::npos) return exactPath;
+  const std::string directoryPath = coverBmpPath.substr(0, slash);
+  const std::string prefix = coverBmpPath.substr(slash + 1, heightPos - slash - 1);
+  const std::string suffix = coverBmpPath.substr(heightPos + 8);
+
+  HalFile directory = Storage.open(directoryPath.c_str());
+  if (!directory || !directory.isDirectory()) return exactPath;
+
+  char name[96];
+  for (HalFile file = directory.openNextFile(); file; file = directory.openNextFile()) {
+    name[0] = '\0';
+    const bool regularFile = !file.isDirectory();
+    const size_t nameLength = regularFile ? file.getName(name, sizeof(name)) : 0;
+    file.close();
+    if (nameLength == 0 || nameLength >= sizeof(name)) continue;
+
+    const std::string filename(name);
+    if (filename.size() <= prefix.size() + suffix.size() || filename.rfind(prefix, 0) != 0 ||
+        filename.compare(filename.size() - suffix.size(), suffix.size(), suffix) != 0) {
+      continue;
+    }
+    const size_t digitsEnd = filename.size() - suffix.size();
+    const bool numericHeight = std::all_of(filename.begin() + prefix.size(), filename.begin() + digitsEnd,
+                                           [](const unsigned char ch) { return ch >= '0' && ch <= '9'; });
+    if (numericHeight) {
+      directory.close();
+      return directoryPath + "/" + filename;
+    }
   }
-  return coverBmpPath;
+  directory.close();
+  return exactPath;
 }
 
 UIIcon UITheme::getFileIcon(const std::string& filename) {
