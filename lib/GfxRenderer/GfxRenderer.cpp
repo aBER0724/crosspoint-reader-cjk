@@ -1708,7 +1708,7 @@ void GfxRenderer::fillRectImpl(const int x, const int y, const int width, const 
   if constexpr (C == Color::Black || C == Color::White) {
     // Solid colors are logical UI colors. Dark mode inverts them just like
     // drawPixel(); the optimized byte fill must preserve that semantic.
-    const bool fillBlack = (C == Color::Black) != darkMode;
+    const bool fillBlack = (C == Color::Black) != (darkMode && !skipDarkModeForImages);
     const uint8_t fillByte = fillBlack ? 0x00u : 0xFFu;
     for (int py = phyY0; py <= phyY1; ++py) {
       uint8_t* row = target + static_cast<int32_t>(py - originY) * panelStride;
@@ -2187,8 +2187,8 @@ void GfxRenderer::drawBitmap1Bit(const Bitmap& bitmap, const int x, const int y,
     isScaled = true;
   }
 
-  // In dark mode, pre-fill image area with white since white pixels are
-  // not explicitly drawn (they rely on clearScreen background).
+  // Image pixels bypass dark-mode inversion so their polarity remains positive.
+  // Fill untouched pixels as physical white for the same reason.
   if (darkMode && renderMode == BW) {
     const int displayWidth = isScaled ? static_cast<int>(std::floor(bitmap.getWidth() * scale)) : bitmap.getWidth();
     const int displayHeight = isScaled ? static_cast<int>(std::floor(bitmap.getHeight() * scale)) : bitmap.getHeight();
