@@ -1,5 +1,7 @@
 # Contributing Docs
 
+[English](./README.md) | [简体中文](./README-ZH.md) | [日本語](./README-JA.md)
+
 This section is a lightweight contributor guide for CrossPoint Reader.
 It is written for software developers who may be new to embedded development.
 

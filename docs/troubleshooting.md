@@ -1,5 +1,7 @@
 # Troubleshooting
 
+[English](./troubleshooting.md) · [简体中文](./troubleshooting-ZH.md) · [日本語](./troubleshooting-JA.md)
+
 This document show most common issues and possible solutions while using the device features.
 
 - [Troubleshooting](#troubleshooting)

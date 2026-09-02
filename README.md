@@ -1,8 +1,8 @@
 # CrossPoint Reader CJK
 
-**Version 0.4.0** · [中文](./README-ZH.md) · [日本語](./README-JA.md)
+[中文](./README-ZH.md) · [日本語](./README-JA.md)
 
-Community firmware for the **Xteink X4** e-paper reader, based on [CrossPoint Reader](https://github.com/crosspoint-reader/crosspoint-reader) and adapted for Chinese, Japanese, and multilingual reading.
+Community firmware for the **Xteink X4** e-paper reader. Built on [CrossPoint Reader](https://github.com/crosspoint-reader/crosspoint-reader), it adds practical support for Chinese, Japanese, and multilingual reading.
 
 ![CrossPoint Reader CJK running on an Xteink X4](./docs/images/cover.jpg)
 
@@ -10,19 +10,19 @@ Community firmware for the **Xteink X4** e-paper reader, based on [CrossPoint Re
 
 - Simplified Chinese, Traditional Chinese, Japanese, and English interfaces
 - EPUB 2/3 and TXT reading with CJK-aware layout and typography
-- SD-card reader and UI fonts using the `.cpfont` format
-- On-device font catalog with preview, download, install, and custom repositories
-- Light and dark themes with e-paper-optimized refresh behavior
+- SD-card-based reading and UI fonts using the `.cpfont` format
+- On-device font catalog for previewing, downloading, and installing fonts
+- Light and dark modes tuned for e-paper, including dark-mode refresh handling that keeps backgrounds and cover art stable
+- Inverted portrait UI for using the device comfortably in either upright orientation; upstream currently applies inversion to reader views, while this fork also supports Home and Settings
 - File browser, book covers, sleep screens, rotation, and reading progress
 - Wi-Fi upload, WebDAV, OTA updates, Calibre integration, and KOReader Sync
 
 ## Screenshots
 
-| Home | Settings |
+| Home · light | Settings · light |
 |:--:|:--:|
 | ![English home screen in light mode](./docs/images/current/home-en-light-0.4.0.png) | ![English settings screen in light mode](./docs/images/current/settings-en-light-0.4.0.png) |
 
-Also available in [简体中文](./README-ZH.md#界面截图) and [日本語](./README-JA.md#スクリーンショット).
 
 ## Install
 
@@ -58,6 +58,7 @@ CrossPoint Reader CJK can install complete reader and UI font families from the 
 - [User Guide](./USER_GUIDE.md)
 - [Troubleshooting](./docs/troubleshooting.md)
 - [Web server guide](./docs/webserver.md)
+- [Fork features and upstream merge safeguards](./docs/fork-features.md)
 - [Developer documentation](./docs/contributing/README.md)
 - [Project scope](./SCOPE.md)
 

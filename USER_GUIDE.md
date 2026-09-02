@@ -1,5 +1,7 @@
 # CrossPoint User Guide
 
+**Languages:** [English](USER_GUIDE.md) | [简体中文](USER_GUIDE-ZH.md) | [日本語](USER_GUIDE-JA.md)
+
 Welcome to the **CrossPoint** firmware. This guide outlines the hardware controls, navigation, and reading features of the device.
 
 - [CrossPoint User Guide](#crosspoint-user-guide)

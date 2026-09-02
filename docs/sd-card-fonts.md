@@ -1,5 +1,7 @@
 # SD Card Fonts
 
+[English](./sd-card-fonts.md) | [简体中文](./sd-card-fonts-ZH.md) | [日本語](./sd-card-fonts-JA.md)
+
 CrossPoint supports loading additional fonts from the SD card, including fonts
 with extended Unicode coverage (CJK, Cyrillic, Greek, etc.).
 

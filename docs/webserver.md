@@ -1,5 +1,7 @@
 # Web Server Guide
 
+[English](./webserver.md) · [简体中文](./webserver-ZH.md) · [日本語](./webserver-JA.md)
+
 This guide explains how to connect your CrossPoint Reader to WiFi and use the built-in web server to upload files from your computer or phone.
 
 ## Overview

@@ -1,5 +1,7 @@
 # Project Vision & Scope: CrossPoint Reader
 
+[English](./SCOPE.md) | [简体中文](./SCOPE-ZH.md) | [日本語](./SCOPE-JA.md)
+
 The goal of CrossPoint Reader is to create an efficient, open-source reading experience for ESP32-based e-reader devices. Xteink hardware (X3, X4) is where the project started and remains a primary target, but CrossPoint is explicitly broadening to support the wider ecosystem of small ESP32 e-ink readers. We believe a dedicated e-reader should do one thing exceptionally well: **facilitate focused reading.**
 
 ## 1. Core Mission
