@@ -99,29 +99,64 @@ void HomeActivity::loadRecentBooks(int maxBooks) {
 }
 
 void HomeActivity::loadNextRecentCover(int coverHeight) {
-  // Never extract EPUB images or convert XTC pages from Home's input loop.
-  // Those operations can take many seconds and prevent X4 button sampling.
-  // Reconstruct deterministic paths left empty by older firmware, then let
-  // the theme display only thumbnails that are already present on the SD card.
-  while (nextRecentCoverIndex < recentBooks.size()) {
-    RecentBook& book = recentBooks[nextRecentCoverIndex++];
-    if (!book.coverBmpPath.empty()) continue;
-
-    if (FsHelpers::hasEpubExtension(book.path)) {
-      Epub epub(book.path, "/.crosspoint");
-      book.coverBmpPath = epub.getThumbBmpPath();
-    } else if (FsHelpers::hasXtcExtension(book.path)) {
-      Xtc xtc(book.path, "/.crosspoint");
-      book.coverBmpPath = xtc.getThumbBmpPath();
-    } else {
-      continue;
-    }
-    RECENT_BOOKS.updateBook(book.path, book.title, book.author, book.coverBmpPath);
+  // Keep the first Home frame responsive, then handle at most one cache miss
+  // per idle interval. Existing thumbnails are reused without loading the book.
+  if (deferRecentCoverDraw) {
+    deferRecentCoverDraw = false;
+    freeCoverBuffer();
+    coverRendered = false;
+    fullRedrawRequired = true;
+    requestUpdate();
+    return;
   }
 
-  // A path template is harmless when its height-specific bitmap is absent:
-  // themes fall back to their normal placeholder without starting generation.
-  (void)coverHeight;
+  while (nextRecentCoverIndex < recentBooks.size()) {
+    RecentBook& book = recentBooks[nextRecentCoverIndex++];
+
+    if (book.coverBmpPath.empty()) {
+      if (FsHelpers::hasEpubExtension(book.path)) {
+        Epub epub(book.path, "/.crosspoint");
+        book.coverBmpPath = epub.getThumbBmpPath();
+      } else if (FsHelpers::hasXtcExtension(book.path)) {
+        Xtc xtc(book.path, "/.crosspoint");
+        book.coverBmpPath = xtc.getThumbBmpPath();
+      } else {
+        continue;
+      }
+      RECENT_BOOKS.updateBook(book.path, book.title, book.author, book.coverBmpPath);
+    }
+
+    const std::string coverPath = UITheme::getCoverThumbPath(book.coverBmpPath, coverHeight);
+    if (Storage.exists(coverPath.c_str())) {
+      continue;
+    }
+
+    bool generated = false;
+    if (FsHelpers::hasEpubExtension(book.path)) {
+      Epub epub(book.path, "/.crosspoint");
+      // The reader already builds book.bin before adding an EPUB to recents.
+      // Never rebuild it from Home; load only the cached metadata needed for the cover.
+      if (epub.load(false, true)) {
+        generated = epub.generateThumbBmp(coverHeight);
+      }
+    } else if (FsHelpers::hasXtcExtension(book.path)) {
+      Xtc xtc(book.path, "/.crosspoint");
+      if (xtc.load()) {
+        generated = xtc.generateThumbBmp(coverHeight);
+      }
+    }
+
+    if (!generated) {
+      LOG_ERR("HOME", "Failed to generate cover thumbnail: %s", book.path.c_str());
+    }
+
+    freeCoverBuffer();
+    coverRendered = false;
+    fullRedrawRequired = true;
+    requestUpdate();
+    return;
+  }
+
   recentsLoaded = true;
   recentsLoading = false;
 }
@@ -133,13 +168,10 @@ void HomeActivity::onEnter() {
   const auto& metrics = UITheme::getInstance().getMetrics();
   loadRecentBooks(metrics.homeRecentBooksCount);
   nextRecentCoverIndex = 0;
+  recentsLoaded = recentBooks.empty();
   recentsLoading = false;
-  // Home no longer generates thumbnails, so there is no expensive input-loop
-  // work to defer. Normalize stale paths now and let the cancellable render
-  // task draw existing thumbnails in the first frame.
-  deferRecentCoverDraw = false;
-  loadNextRecentCover(metrics.homeCoverHeight);
-
+  nextRecentCoverLoadAt = millis() + RECENT_COVER_LOAD_IDLE_MS;
+  deferRecentCoverDraw = !recentBooks.empty();
   const auto base = static_cast<int>(recentBooks.size());
   selectorIndex = initialMenuItem == HomeMenuItem::NONE ? 0 : base + menuItemToIndex(initialMenuItem, hasOpdsServers);
   lastRenderedSelectorIndex = -1;
