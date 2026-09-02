@@ -407,24 +407,37 @@ void FileBrowserActivity::render(RenderLock&&) {
     renderer.drawLine(0, separatorY, pageWidth - 1, separatorY, 3, true);
     const int pathMaxWidth = pageWidth - metrics.contentSidePadding * 2;
     // Left-truncate so the deepest directory is always visible
-    const char* pathStr = basepath.c_str();
-    const char* pathDisplay = pathStr;
-    char leftTruncBuf[256];
-    if (renderer.getTextWidth(SMALL_FONT_ID, pathStr) > pathMaxWidth) {
-      const char ellipsis[] = "\xe2\x80\xa6";  // UTF-8 ellipsis (…)
-      const int ellipsisWidth = renderer.getTextWidth(SMALL_FONT_ID, ellipsis);
-      const int available = pathMaxWidth - ellipsisWidth;
-      // Walk forward from the start until the suffix fits, skipping UTF-8 continuation bytes
-      const char* p = pathStr;
-      while (*p) {
-        if (renderer.getTextWidth(SMALL_FONT_ID, p) <= available) break;
-        ++p;
-        while (*p && (static_cast<unsigned char>(*p) & 0xC0) == 0x80) ++p;
+    std::string pathDisplay = basepath;
+    if (renderer.getTextWidth(SMALL_FONT_ID, pathDisplay.c_str()) > pathMaxWidth) {
+      constexpr const char* ellipsis = "\xe2\x80\xa6";
+      const int available = pathMaxWidth - renderer.getTextWidth(SMALL_FONT_ID, ellipsis);
+      std::vector<size_t> byteOffsets;
+      byteOffsets.reserve(basepath.size() + 1);
+      for (size_t i = 0; i < basepath.size();) {
+        byteOffsets.push_back(i);
+        const uint8_t lead = static_cast<uint8_t>(basepath[i]);
+        const size_t sequenceBytes = lead < 0x80             ? 1
+                                     : (lead & 0xE0) == 0xC0 ? 2
+                                     : (lead & 0xF0) == 0xE0 ? 3
+                                     : (lead & 0xF8) == 0xF0 ? 4
+                                                             : 1;
+        i = std::min(basepath.size(), i + sequenceBytes);
       }
-      snprintf(leftTruncBuf, sizeof(leftTruncBuf), "%s%s", ellipsis, p);
-      pathDisplay = leftTruncBuf;
+
+      size_t low = 0;
+      size_t high = byteOffsets.size();
+      while (low < high) {
+        const size_t mid = low + (high - low) / 2;
+        if (renderer.getTextWidth(SMALL_FONT_ID, basepath.c_str() + byteOffsets[mid]) <= available) {
+          high = mid;
+        } else {
+          low = mid + 1;
+        }
+      }
+      pathDisplay = ellipsis;
+      if (low < byteOffsets.size()) pathDisplay += basepath.substr(byteOffsets[low]);
     }
-    renderer.drawText(SMALL_FONT_ID, metrics.contentSidePadding, pathY, pathDisplay);
+    renderer.drawText(SMALL_FONT_ID, metrics.contentSidePadding, pathY, pathDisplay.c_str());
   }
 
   // Help text
