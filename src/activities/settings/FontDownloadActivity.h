@@ -124,6 +124,10 @@ class FontDownloadActivity : public Activity {
   void downloadFamily(int familyIndex, int fileIndex = -1, const char* stagedFilePath = nullptr);
   void downloadAll();
   static bool parsePointSize(const char* filename, const char* familyName, uint8_t& pointSize);
+  static bool isUiPointSize(uint8_t pointSize);
+  int uiPackageFileCount(const ManifestFamily& family) const;
+  int detailFileIndexForRow(const ManifestFamily& family, int row) const;
+  int detailRowForFileIndex(const ManifestFamily& family, int fileIndex) const;
   int defaultPreviewFileIndex(const ManifestFamily& family) const;
   void downloadPreview(int familyIndex, int fileIndex);
   void removePreviewTemporaryFiles();

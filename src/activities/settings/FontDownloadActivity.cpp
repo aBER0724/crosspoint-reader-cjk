@@ -40,6 +40,7 @@ constexpr const char* PREVIEW_TMP_PATH = "/.font_preview.cpfont";
 constexpr const char* PREVIEW_NEXT_PATH = "/.font_preview_next.cpfont";
 constexpr const char* PREVIEW_BACKUP_PATH = "/.font_preview_backup.cpfont";
 constexpr uint8_t DEFAULT_PREVIEW_POINT_SIZE = 14;
+constexpr int UI_PACKAGE_FILE_INDEX = -2;
 
 constexpr const char* PREVIEW_SAMPLE_LINES[] = {
     "\xe9\x98\x85\xe8\xaf\xbb\xe9\xa2\x84\xe8\xa7\x88  "
@@ -95,6 +96,8 @@ bool isValidBaseUrl(const std::string& url) {
 }
 
 constexpr size_t MAX_MANIFEST_FAMILY_JSON_BYTES = 4 * 1024;
+constexpr size_t MIN_NETWORK_FREE_HEAP_BYTES = 32 * 1024;
+constexpr size_t MIN_NETWORK_MAX_ALLOC_BYTES = 21492;
 
 bool seekToManifestFamilies(HalFile& file) {
   constexpr char KEY[] = "\"families\"";
@@ -213,6 +216,7 @@ void FontDownloadActivity::onEnter() {
     RenderLock lock(*this);
     LOG_DBG("FONT", "Heap before WiFi cache release: free=%d max=%d", ESP.getFreeHeap(), ESP.getMaxAllocHeap());
     FontManager::getInstance().releaseGlyphCaches();
+    sdFontSystem.releaseResidentFonts(renderer);
     if (auto* cache = renderer.getFontCacheManager()) {
       cache->clearCache();
     }
@@ -227,6 +231,16 @@ void FontDownloadActivity::onEnter() {
     return;
   }
   wifiStarted_ = true;
+  // Wi-Fi station initialization needs the resident font allocations out of
+  // the way, but scanning and connection screens do not need the TLS arena.
+  // Restore the configured UI face now so the selector matches the rest of the
+  // UI. beginNetworkTransfer() releases it again before manifest/font TLS.
+  {
+    RenderLock lock(*this);
+    sdFontSystem.ensureUiLoaded(renderer);
+  }
+  LOG_DBG("FONT", "Configured UI fonts restored for WiFi selector: free=%d max=%d", ESP.getFreeHeap(),
+          ESP.getMaxAllocHeap());
   startActivityForResult(std::make_unique<WifiSelectionActivity>(renderer, mappedInput),
                          [this](const ActivityResult& result) { onWifiSelectionComplete(!result.isCancelled); });
 }
@@ -243,6 +257,10 @@ void FontDownloadActivity::onExit() {
   }
 
   wifiStarted_ = false;
+  // ActivityManager runs the parent result handler after onExit(). Keep the
+  // resident set dirty here so that handler can rebuild its allocation-heavy
+  // settings lists before restoring SD fonts and their coverage indexes.
+  sdFontSystem.markResidentFontsDirty();
   FontManager::getInstance().releaseGlyphCaches();
 }
 
@@ -259,6 +277,11 @@ void FontDownloadActivity::onWifiSelectionComplete(const bool success) {
     state_ = LOADING_MANIFEST;
   }
   requestUpdateAndWait();
+
+  // The selector uses the configured SD UI face. Release it now, before the
+  // manifest heap guard and TLS handshake; fetchManifestToFile() will call
+  // beginNetworkTransfer() again harmlessly for each retry.
+  beginNetworkTransfer();
 
   // Fail in-place if there is not enough contiguous memory for TLS. Rebooting
   // straight back into this activity restarts WiFi and can trap the user in a
@@ -300,6 +323,12 @@ void FontDownloadActivity::onWifiSelectionComplete(const bool success) {
     cache->clearCache();
   }
   LOG_DBG("FONT", "Heap after WiFi/cache cleanup before family list: free=%d max=%d", ESP.getFreeHeap(),
+          ESP.getMaxAllocHeap());
+  {
+    RenderLock lock(*this);
+    sdFontSystem.ensureLoaded(renderer);
+  }
+  LOG_DBG("FONT", "Configured UI fonts restored for family list: free=%d max=%d", ESP.getFreeHeap(),
           ESP.getMaxAllocHeap());
 
   {
@@ -822,6 +851,7 @@ void FontDownloadActivity::beginNetworkTransfer(int activeFamilyIndex) {
 
   LOG_DBG("FONT", "Heap before font cache release: free=%d max=%d", ESP.getFreeHeap(), ESP.getMaxAllocHeap());
   FontManager::getInstance().releaseGlyphCaches();
+  sdFontSystem.releaseResidentFonts(renderer);
   if (auto* cache = renderer.getFontCacheManager()) {
     cache->clearCache();
   }
@@ -857,6 +887,10 @@ bool FontDownloadActivity::endNetworkTransfer() {
       return false;
     }
     LOG_DBG("FONT", "Manifest restored: free=%d max=%d", ESP.getFreeHeap(), ESP.getMaxAllocHeap());
+  }
+  if (WiFi.getMode() == WIFI_MODE_NULL) {
+    RenderLock lock(*this);
+    sdFontSystem.ensureLoaded(renderer);
   }
   // Keep the low-memory progress renderer active until the entire install
   // transaction, including registry discovery, has completed.
@@ -1381,8 +1415,12 @@ void FontDownloadActivity::downloadFamily(int familyIndex, int fileIndex, const 
   // Work from a copy: beginNetworkTransfer(familyIndex) releases families_ for
   // the duration of each file transfer, and this copy stays valid throughout.
   ManifestFamily family = families_[familyIndex];
-  const bool completeFamily = fileIndex < 0;
-  if (fileIndex < -1 || (!completeFamily && fileIndex >= static_cast<int>(family.files.size()))) return;
+  const bool uiPackage = fileIndex == UI_PACKAGE_FILE_INDEX;
+  const bool completeFamily = fileIndex < 0 && !uiPackage;
+  if (fileIndex < UI_PACKAGE_FILE_INDEX ||
+      (!completeFamily && !uiPackage && fileIndex >= static_cast<int>(family.files.size()))) {
+    return;
+  }
   {
     RenderLock lock(*this);
     state_ = DOWNLOADING;
@@ -1395,10 +1433,16 @@ void FontDownloadActivity::downloadFamily(int familyIndex, int fileIndex, const 
   }
   requestUpdateAndWait();
 
-  const uint64_t downloadBytes = completeFamily ? static_cast<uint64_t>(family.totalSize)
-                                 : stagedFilePath && Storage.exists(stagedFilePath)
-                                     ? 0
-                                     : static_cast<uint64_t>(family.files[fileIndex].size);
+  uint64_t downloadBytes = 0;
+  if (completeFamily) {
+    downloadBytes = family.totalSize;
+  } else if (uiPackage) {
+    for (const auto& file : family.files) {
+      if (isUiPointSize(file.pointSize)) downloadBytes += file.size;
+    }
+  } else if (!(stagedFilePath && Storage.exists(stagedFilePath))) {
+    downloadBytes = family.files[fileIndex].size;
+  }
   const uint64_t requiredBytes = downloadBytes + STORAGE_RESERVE_BYTES;
   const uint64_t freeBytes = Storage.freeBytes();
   if (freeBytes < requiredBytes) {
@@ -1417,7 +1461,20 @@ void FontDownloadActivity::downloadFamily(int familyIndex, int fileIndex, const 
     return;
   }
 
-  const uint32_t transactionFingerprint = completeFamily ? family.fingerprint : family.files[fileIndex].fingerprint;
+  uint32_t transactionFingerprint = family.fingerprint;
+  if (!completeFamily) {
+    if (uiPackage) {
+      transactionFingerprint = 2166136261U;
+      for (const auto& file : family.files) {
+        if (isUiPointSize(file.pointSize)) {
+          transactionFingerprint =
+              fingerprintBytes(&file.fingerprint, sizeof(file.fingerprint), transactionFingerprint);
+        }
+      }
+    } else {
+      transactionFingerprint = family.files[fileIndex].fingerprint;
+    }
+  }
   if (!fontInstaller_.beginFamilyInstall(family.name.c_str(), transactionFingerprint, completeFamily)) {
     RenderLock lock(*this);
     state_ = ERROR;
@@ -1439,9 +1496,10 @@ void FontDownloadActivity::downloadFamily(int familyIndex, int fileIndex, const 
     errorMessage_ = rollbackSucceeded ? message : tr(STR_FONT_ROLLBACK_FAILED);
   };
 
-  const size_t firstFileIndex = completeFamily ? 0 : static_cast<size_t>(fileIndex);
-  const size_t endFileIndex = completeFamily ? family.files.size() : firstFileIndex + 1;
+  const size_t firstFileIndex = completeFamily || uiPackage ? 0 : static_cast<size_t>(fileIndex);
+  const size_t endFileIndex = completeFamily || uiPackage ? family.files.size() : firstFileIndex + 1;
   for (size_t i = firstFileIndex; i < endFileIndex; i++) {
+    if (uiPackage && !isUiPointSize(family.files[i].pointSize)) continue;
     const auto& file = family.files[i];
     const std::string fileName = manifestFileName(family, file);
 
@@ -1480,7 +1538,7 @@ void FontDownloadActivity::downloadFamily(int familyIndex, int fileIndex, const 
       }
     }
 
-    const bool useStagedFile = !completeFamily && stagedFilePath && Storage.exists(stagedFilePath);
+    const bool useStagedFile = !completeFamily && !uiPackage && stagedFilePath && Storage.exists(stagedFilePath);
     LOG_DBG("FONT", "DLFAMILY decide: fam=%d file=%d staged='%s' useStaged=%d complete=%d", familyIndex,
             static_cast<int>(i), stagedFilePath ? stagedFilePath : "", useStagedFile, completeFamily);
     if (useStagedFile) {
@@ -1629,12 +1687,46 @@ void FontDownloadActivity::downloadFamily(int familyIndex, int fileIndex, const 
   }
 }
 
+bool FontDownloadActivity::isUiPointSize(const uint8_t pointSize) {
+  return pointSize == 8 || pointSize == 10 || pointSize == 12;
+}
+
+int FontDownloadActivity::uiPackageFileCount(const ManifestFamily& family) const {
+  return static_cast<int>(std::count_if(family.files.begin(), family.files.end(),
+                                        [](const ManifestFile& file) { return isUiPointSize(file.pointSize); }));
+}
+
+int FontDownloadActivity::detailFileIndexForRow(const ManifestFamily& family, const int row) const {
+  const int uiFileCount = uiPackageFileCount(family);
+  if (uiFileCount > 0) {
+    if (row == 0) return UI_PACKAGE_FILE_INDEX;
+    int readerRow = 1;
+    for (size_t i = 0; i < family.files.size(); ++i) {
+      if (isUiPointSize(family.files[i].pointSize)) continue;
+      if (readerRow++ == row) return static_cast<int>(i);
+    }
+    return -1;
+  }
+  return row >= 0 && row < static_cast<int>(family.files.size()) ? row : -1;
+}
+
+int FontDownloadActivity::detailRowForFileIndex(const ManifestFamily& family, const int fileIndex) const {
+  if (fileIndex < 0 || fileIndex >= static_cast<int>(family.files.size())) return 0;
+  const int uiFileCount = uiPackageFileCount(family);
+  if (uiFileCount == 0) return fileIndex;
+  if (isUiPointSize(family.files[fileIndex].pointSize)) return 0;
+  int row = 1;
+  for (int i = 0; i < fileIndex; ++i) {
+    if (!isUiPointSize(family.files[i].pointSize)) ++row;
+  }
+  return row;
+}
 bool FontDownloadActivity::heapSufficientForNetworkTransfer() const {
   // TLS manifests and font files need a roughly contiguous arena. Thresholds
   // sit just below the worst successful transfer measured on-device
   // (35232/21492) so normal post-manifest runs never trip; cold-boot entries
   // with a fragmented heap do.
-  return ESP.getFreeHeap() >= 32 * 1024 && ESP.getMaxAllocHeap() >= 21 * 1024;
+  return ESP.getFreeHeap() >= MIN_NETWORK_FREE_HEAP_BYTES && ESP.getMaxAllocHeap() >= MIN_NETWORK_MAX_ALLOC_BYTES;
 }
 
 bool FontDownloadActivity::detailHasDeleteRow() const {
@@ -1645,7 +1737,8 @@ bool FontDownloadActivity::detailHasDeleteRow() const {
 int FontDownloadActivity::detailRowCount() const {
   if (detailFamilyIndex_ < 0 || detailFamilyIndex_ >= static_cast<int>(families_.size())) return 0;
   const auto& family = families_[detailFamilyIndex_];
-  int rows = static_cast<int>(family.files.size());
+  const int uiFileCount = uiPackageFileCount(family);
+  int rows = static_cast<int>(family.files.size()) - uiFileCount + (uiFileCount > 0 ? 1 : 0);
   if (detailHasDeleteRow()) rows += 1;  // delete row
   return rows;
 }
@@ -1731,7 +1824,7 @@ void FontDownloadActivity::loop() {
         // Open the family's point-size list instead of downloading a default
         // size up front, so the user can pick which size(s) to install.
         detailFamilyIndex_ = familyIndex;
-        selectedIndex_ = defaultPreviewFileIndex(families_[familyIndex]);
+        selectedIndex_ = detailRowForFileIndex(families_[familyIndex], defaultPreviewFileIndex(families_[familyIndex]));
         LOG_DBG("FONT", "FAMILY_DETAIL enter: family=%d name='%s' files=%u defaultIdx=%d free=%u max=%u", familyIndex,
                 families_[familyIndex].name.c_str(), static_cast<unsigned>(families_[familyIndex].files.size()),
                 selectedIndex_, ESP.getFreeHeap(), ESP.getMaxAllocHeap());
@@ -1852,7 +1945,15 @@ void FontDownloadActivity::loop() {
         promptDeleteFamily(detailFamilyIndex_);
         return;
       }
-      downloadPreview(detailFamilyIndex_, selectedIndex_);
+      const auto& family = families_[detailFamilyIndex_];
+      const int fileIndex = detailFileIndexForRow(family, selectedIndex_);
+      if (fileIndex == UI_PACKAGE_FILE_INDEX) {
+        currentFileIndex_ = 0;
+        currentFileTotal_ = static_cast<size_t>(uiPackageFileCount(family));
+        downloadFamily(detailFamilyIndex_, UI_PACKAGE_FILE_INDEX);
+      } else if (fileIndex >= 0) {
+        downloadPreview(detailFamilyIndex_, fileIndex);
+      }
     };
 
     if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
@@ -2083,30 +2184,51 @@ void FontDownloadActivity::render(RenderLock&&) {
           renderer, contentRect, detailRows, selectedIndex_,
           [this, &detailFamily, detailRows](int index) -> std::string {
             const bool isDeleteRow = detailHasDeleteRow() && index == detailRows - 1;
-            if (isDeleteRow) {
-              return std::string(tr(STR_DELETE)) + " " + detailFamily.name;
-            }
+            if (isDeleteRow) return std::string(tr(STR_DELETE)) + " " + detailFamily.name;
+            const int fileIndex = detailFileIndexForRow(detailFamily, index);
+            if (fileIndex == UI_PACKAGE_FILE_INDEX) return tr(STR_EXT_UI_FONT);
+            if (fileIndex < 0) return "";
             char buf[32];
-            snprintf(buf, sizeof(buf), "%u pt", static_cast<unsigned>(detailFamily.files[index].pointSize));
+            snprintf(buf, sizeof(buf), "%u pt", static_cast<unsigned>(detailFamily.files[fileIndex].pointSize));
             return std::string(buf);
           },
           [this, &detailFamily, detailRows](int index) -> std::string {
             if (detailHasDeleteRow() && index == detailRows - 1) return "";
-            return formatSize(detailFamily.files[index].size);
+            const int fileIndex = detailFileIndexForRow(detailFamily, index);
+            if (fileIndex == UI_PACKAGE_FILE_INDEX) {
+              size_t totalSize = 0;
+              for (const auto& file : detailFamily.files) {
+                if (isUiPointSize(file.pointSize)) totalSize += file.size;
+              }
+              return formatSize(totalSize);
+            }
+            return fileIndex >= 0 ? formatSize(detailFamily.files[fileIndex].size) : "";
           },
           nullptr,
           [this, &detailFamily, detailRows](int index) -> std::string {
             if (detailHasDeleteRow() && index == detailRows - 1) return "";
-            const auto& file = detailFamily.files[index];
+            const int fileIndex = detailFileIndexForRow(detailFamily, index);
             if (detailFamily.hasUpdate) return tr(STR_UPDATE_AVAILABLE);
-            if (detailFamily.installed && file.installed) return tr(STR_INSTALLED);
+            if (fileIndex == UI_PACKAGE_FILE_INDEX) {
+              const bool installed = std::all_of(
+                  detailFamily.files.begin(), detailFamily.files.end(),
+                  [](const ManifestFile& file) { return !isUiPointSize(file.pointSize) || file.installed; });
+              return detailFamily.installed && installed ? tr(STR_INSTALLED) : "";
+            }
+            if (fileIndex >= 0 && detailFamily.installed && detailFamily.files[fileIndex].installed) {
+              return tr(STR_INSTALLED);
+            }
             return "";
           },
           true);
 
-      const auto labels = mappedInput.mapLabels(
-          tr(STR_BACK), detailHasDeleteRow() && selectedIndex_ == detailRows - 1 ? tr(STR_DELETE) : tr(STR_PREVIEW),
-          tr(STR_DIR_UP), tr(STR_DIR_DOWN));
+      const bool deleteSelected = detailHasDeleteRow() && selectedIndex_ == detailRows - 1;
+      const bool uiPackageSelected = detailFileIndexForRow(detailFamily, selectedIndex_) == UI_PACKAGE_FILE_INDEX;
+      const auto labels = mappedInput.mapLabels(tr(STR_BACK),
+                                                deleteSelected      ? tr(STR_DELETE)
+                                                : uiPackageSelected ? tr(STR_DOWNLOAD)
+                                                                    : tr(STR_PREVIEW),
+                                                tr(STR_DIR_UP), tr(STR_DIR_DOWN));
       GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
     }
   } else if (state_ == DOWNLOADING_PREVIEW) {
