@@ -15,13 +15,6 @@
 
 namespace {
 constexpr const char* HOSTNAME = "crosspoint";
-
-std::string appendAdminToken(const std::string& url, const std::string& token) {
-  if (token.empty()) {
-    return url;
-  }
-  return url + (url.find('?') == std::string::npos ? "?" : "&") + "token=" + token;
-}
 }  // namespace
 
 void CalibreConnectActivity::onEnter() {
@@ -206,18 +199,12 @@ void CalibreConnectActivity::render(RenderLock&&) {
     renderer.drawText(SMALL_FONT_ID, metrics.contentSidePadding, y + height * 3, tr(STR_CALIBRE_INSTRUCTION_4));
 
     y += height * 4 + metrics.verticalSpacing * 2;
-    const std::string token = webServer ? webServer->getAdminToken() : "";
-    const std::string serverUrl = appendAdminToken("http://" + connectedIP + "/", token);
+    const std::string serverUrl = "http://" + connectedIP + "/";
     const int lineWidth = pageWidth - metrics.contentSidePadding * 2;
     const std::string urlLine = renderer.truncatedText(
         SMALL_FONT_ID, (std::string(tr(STR_URL_PREFIX)) + serverUrl).c_str(), lineWidth, EpdFontFamily::REGULAR);
     renderer.drawText(SMALL_FONT_ID, metrics.contentSidePadding, y, urlLine.c_str());
     y += height;
-    if (!token.empty()) {
-      renderer.drawText(SMALL_FONT_ID, metrics.contentSidePadding, y,
-                        (std::string(tr(STR_TOKEN_PREFIX)) + token).c_str());
-      y += height;
-    }
 
     y += metrics.verticalSpacing * 2;
     renderer.drawText(UI_12_FONT_ID, metrics.contentSidePadding, y, tr(STR_CALIBRE_STATUS), true, EpdFontFamily::BOLD);
