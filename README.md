@@ -19,10 +19,9 @@ Community firmware for the **Xteink X4** e-paper reader. Built on [CrossPoint Re
 
 ## Screenshots
 
-| Home · light | Settings · light |
-|:--:|:--:|
-| ![English home screen in light mode](./docs/images/current/home-en-light-0.4.0.png) | ![English settings screen in light mode](./docs/images/current/settings-en-light-0.4.0.png) |
-
+| Home · light | Settings · light | Home · dark |
+|:--:|:--:|:--:|
+| ![English home screen in light mode](./docs/images/current/home-en-light-0.4.0.png) | ![English settings screen in light mode](./docs/images/current/settings-en-light-0.4.0.png) | ![English home screen in dark mode](./docs/images/current/home-en-dark-0.4.0.png) |
 
 ## Install
 

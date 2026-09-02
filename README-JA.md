@@ -19,10 +19,9 @@
 
 ## スクリーンショット
 
-| ホーム・ライト | 設定・ライト |
-|:--:|:--:|
-| ![日本語のライトモードのホーム画面](./docs/images/current/home-ja-light-0.4.0.png) | ![日本語のライトモードの設定画面](./docs/images/current/settings-ja-light-0.4.0.png) |
-
+| ホーム・ライト | 設定・ライト | ホーム・ダーク |
+|:--:|:--:|:--:|
+| ![日本語のライトモードのホーム画面](./docs/images/current/home-ja-light-0.4.0.png) | ![日本語のライトモードの設定画面](./docs/images/current/settings-ja-light-0.4.0.png) | ![日本語のダークモードのホーム画面](./docs/images/current/home-ja-dark-0.4.0.png) |
 
 ## インストール
 
