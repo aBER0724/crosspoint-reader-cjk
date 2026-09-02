@@ -544,12 +544,17 @@ void SettingsActivity::render(RenderLock&&) {
   const bool sameCategory = lastRenderedCategoryIndex == selectedCategoryIndex;
   const bool selectionChanged = lastRenderedSettingIndex >= 0 && lastRenderedSettingIndex != selectedSettingIndex;
   if (!forceFullSettingsRefresh && sameCategory && selectionChanged) {
+    const int rowStep = GUI.getListRowStep(false);
+    const int pageItems = GUI.getListPageItems(listHeight, false);
     if (lastRenderedSettingIndex == 0 || selectedSettingIndex == 0) {
       const int tabTop = safeArea.y + metrics.topPadding + metrics.headerHeight;
-      renderer.setPartialUpdateRect(0, tabTop, pageWidth, metrics.tabBarHeight);
+      const int listSelection = selectedSettingIndex == 0 ? lastRenderedSettingIndex : selectedSettingIndex;
+      const int visibleRow = std::max(0, listSelection - 1) % pageItems;
+      // Moving between the tab bar and the list changes both regions. Refreshing
+      // only the tab bar leaves the first/last row's selected pixels stale until
+      // another list movement happens.
+      renderer.setPartialUpdateRect(0, tabTop, pageWidth, listTop + (visibleRow + 1) * rowStep - tabTop);
     } else {
-      const int rowStep = GUI.getListRowStep(false);
-      const int pageItems = GUI.getListPageItems(listHeight, false);
       const int previousRow = lastRenderedSettingIndex - 1;
       const int currentRow = selectedSettingIndex - 1;
       const int previousPage = previousRow / pageItems;
