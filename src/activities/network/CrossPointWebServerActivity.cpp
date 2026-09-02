@@ -379,7 +379,6 @@ void CrossPointWebServerActivity::render(RenderLock&&) {
   if (state == WebServerActivityState::SERVER_RUNNING || state == WebServerActivityState::AP_STARTING) {
     renderer.clearScreen();
     const auto& metrics = UITheme::getInstance().getMetrics();
-    const auto pageWidth = renderer.getScreenWidth();
     const auto pageHeight = renderer.getScreenHeight();
     const Rect screen = UITheme::getInstance().getScreenSafeArea(renderer, true, false);
 

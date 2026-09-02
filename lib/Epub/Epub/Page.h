@@ -138,16 +138,15 @@ class Page {
   }
 
   bool prepareImages(const PageRenderCancellation* cancellation = nullptr) {
-    for (const auto& element : elements) {
+    const auto preparationSucceeded = [cancellation](const std::shared_ptr<PageElement>& element) {
       if (cancellation && cancellation->requested()) {
         return false;
       }
-      if (element->getTag() == TAG_PageImage &&
-          !static_cast<PageImage&>(*element).getImageBlock().prepareSource(cancellation)) {
-        return false;
-      }
-    }
-    return !cancellation || !cancellation->requested();
+      return element->getTag() != TAG_PageImage ||
+             static_cast<PageImage&>(*element).getImageBlock().prepareSource(cancellation);
+    };
+    return std::all_of(elements.begin(), elements.end(), preparationSucceeded) &&
+           (!cancellation || !cancellation->requested());
   }
 
   // Get bounding box of all images on the page (union of image rects)

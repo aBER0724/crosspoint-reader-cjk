@@ -30,7 +30,7 @@ class Lyra3CoversTheme : public LyraTheme {
 
   void resetSelectionBuffers() const;
   bool buildSelectionBuffers(GfxRenderer& renderer, Rect coverRect, const std::vector<RecentBook>& recentBooks) const;
-  bool restoreSelectionBuffer(GfxRenderer& renderer, int selectorIndex) const;
+  bool restoreSelectionBuffer(const GfxRenderer& renderer, int selectorIndex) const;
 
  public:
   ~Lyra3CoversTheme() override { resetSelectionBuffers(); }

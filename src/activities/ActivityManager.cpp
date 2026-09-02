@@ -36,10 +36,9 @@ bool hasHeldInput(const MappedInputManager& input) {
       MappedInputManager::Button::PageForward, MappedInputManager::Button::NavNext,
       MappedInputManager::Button::NavPrevious,
   };
-  for (const auto button : buttons) {
-    if (input.isPressed(button)) {
-      return true;
-    }
+  if (std::any_of(std::begin(buttons), std::end(buttons),
+                  [&input](const auto button) { return input.isPressed(button); })) {
+    return true;
   }
 
   float touchX;
@@ -260,8 +259,8 @@ void ActivityManager::loop() {
   // render is queued or running, otherwise a just-superseded screen could win
   // the race to the panel.
   const uint32_t latestRenderSerial = renderRequestSerial.load(std::memory_order_acquire);
-  const uint32_t completedRenderSerial = this->completedRenderSerial.load(std::memory_order_acquire);
-  if (!requestedUpdate.load(std::memory_order_relaxed) && completedRenderSerial == latestRenderSerial) {
+  const uint32_t completedSerial = completedRenderSerial.load(std::memory_order_acquire);
+  if (!requestedUpdate.load(std::memory_order_relaxed) && completedSerial == latestRenderSerial) {
     RenderLock lock(false);
     if (lock.locked() && !renderer.refreshBusy()) {
       renderer.flushDeferredRefresh();
@@ -285,8 +284,8 @@ void ActivityManager::flushDeferredPersistence() {
   }
 
   const uint32_t latestRenderSerial = renderRequestSerial.load(std::memory_order_acquire);
-  const uint32_t completedRenderSerial = this->completedRenderSerial.load(std::memory_order_acquire);
-  if (completedRenderSerial != latestRenderSerial) {
+  const uint32_t completedSerial = completedRenderSerial.load(std::memory_order_acquire);
+  if (completedSerial != latestRenderSerial) {
     return;
   }
 
