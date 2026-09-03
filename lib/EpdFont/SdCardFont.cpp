@@ -74,10 +74,9 @@ constexpr size_t MINI_RETAIN_MIN_FREE_HEAP = 40 * 1024;
 constexpr uint8_t MINI_UNDERUSE_RUNS_BEFORE_FREE = 3;
 // Above this size, the compact interval table becomes both expensive and
 // vulnerable to heap fragmentation. A page-packed BMP coverage bitmap
-// provides the same glyph-index mapping with one smaller allocation.
+// provides the same glyph-index mapping with one smaller allocation. Keep the
+// always-resident coverage index separate from lazily allocated page bitmaps.
 constexpr size_t BMP_INTERVAL_TABLE_MAX_BYTES = 4 * 1024;
-constexpr uint16_t BMP_MINI_BITMAP_PREFERRED_BYTES = 5 * 1024;
-constexpr uint16_t BMP_MINI_BITMAP_FALLBACK_BYTES = 4 * 1024;
 
 // Keep-if-fits buffer reuse: only reallocate when the needed size exceeds the
 // current capacity. Freeing + reallocating slightly different sizes every page
@@ -722,14 +721,11 @@ bool SdCardFont::load(const char* path) {
       const size_t coverageWordCount = s.bmpCoveragePageCount * PerStyle::BMP_WORDS_PER_PAGE;
       const size_t offsetWordCount = (s.bmpCoveragePageCount + 1) / 2;
       const size_t indexWordCount = coverageWordCount + offsetWordCount;
-      s.bmpMiniBitmapCapacity = BMP_MINI_BITMAP_PREFERRED_BYTES;
-      s.bmpCoverageData = new (std::nothrow)
-          uint32_t[indexWordCount + (s.bmpMiniBitmapCapacity + sizeof(uint32_t) - 1) / sizeof(uint32_t)]();
-      if (!s.bmpCoverageData) {
-        s.bmpMiniBitmapCapacity = BMP_MINI_BITMAP_FALLBACK_BYTES;
-        s.bmpCoverageData = new (std::nothrow)
-            uint32_t[indexWordCount + (s.bmpMiniBitmapCapacity + sizeof(uint32_t) - 1) / sizeof(uint32_t)]();
-      }
+      // UI fallbacks normally use on-demand glyphs and never prewarm a page.
+      // Do not pin an unused bitmap arena beside the permanent coverage index;
+      // prewarmStyle() allocates a right-sized reusable bitmap only when needed.
+      s.bmpMiniBitmapCapacity = 0;
+      s.bmpCoverageData = new (std::nothrow) uint32_t[indexWordCount]();
       if (!s.bmpCoverageData) {
         LOG_ERR("SDCF", "Failed to allocate BMP coverage for style %u", i);
         s.bmpMiniBitmapCapacity = 0;
