@@ -39,7 +39,10 @@ class KeyboardEntryActivity : public Activity {
   InputType inputType;
   bool passwordVisible = false;
 
-  ButtonNavigator buttonNavigator;
+  // Keyboard traversal should start repeating quickly and keep moving while a
+  // light-mode refresh is still in flight. Keep these timings local so lists
+  // retain the more deliberate global ButtonNavigator defaults.
+  ButtonNavigator buttonNavigator{150, 275};
 
   // Keyboard layers. The letter/symbol layers come from the SDK's builtin
   // layouts (with the always-visible number row); the URL layers are

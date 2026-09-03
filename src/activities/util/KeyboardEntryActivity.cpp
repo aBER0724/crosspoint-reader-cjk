@@ -943,7 +943,11 @@ void KeyboardEntryActivity::render(RenderLock&&) {
 
   GUI.drawSideButtonHints(renderer, ">", "<");
 
-  renderer.displayBuffer();
+  if (renderer.isDarkMode()) {
+    renderer.displayBufferDarkRedrive();
+  } else {
+    renderer.displayBufferAsync();
+  }
 }
 
 void KeyboardEntryActivity::onComplete(std::string text) {
