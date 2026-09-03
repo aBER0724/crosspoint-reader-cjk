@@ -97,6 +97,7 @@ Read `docs/fork-features.md` before an upstream merge or a refactor in a high-ri
 - Rendering-affecting font unload/reload and registry updates follow the established render lock and cache-release ordering.
 - `.cpfont` and `.cpfontpkg` installation is transactional. Preserve staged files, validation, rollback, legacy `.bak` recovery, cancellation, and the last usable family.
 - Before TLS-heavy catalog work, release manifest family storage, glyph/renderer caches, and restorable resident SD fonts in the established order. Restore them only at the intended lifecycle points.
+- On ESP32-C3/X4, the Wi-Fi selector intentionally stays on built-in CJK UI fonts. Do not reload configured 8/10/12 pt SD UI faces after STA startup and before manifest TLS: that allocation order repeatedly reduced the largest block below wolfSSL's measured 21,492-byte requirement, and freeing the faces afterwards did not repair fragmentation. Restore configured SD UI fonts after the transfer/parse lifecycle or on exit.
 - Keep manifest and payload processing streaming and bounded. `HttpDownloader::maxBytes` is a generic upper bound, not an exact content-length assertion.
 - Wi-Fi-selection return restores only the UI font; it must not mutate the reader-font selection.
 

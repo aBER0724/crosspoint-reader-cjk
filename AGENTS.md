@@ -191,6 +191,7 @@ When font catalog, UI font lifecycle, low-memory networking, SD font caching, We
 - `.cpfont`/`.cpfontpkg` install and replacement are staged transactions. Failure, cancellation, restart, or a stale `.bak` must not destroy the last usable family.
 - Validate byte bounds, SHA-256, CPFont structure/version, range responses, and final paths before activation.
 - Release manifest families, glyph/renderer caches, and resident SD fonts before TLS-heavy transfers; restore only at the lifecycle points established by the catalog.
+- On ESP32-C3/X4, keep resident SD UI fonts unloaded from Wi-Fi STA startup through the manifest TLS handshake. Loading the configured 8/10/12 pt CJK UI faces inside `WifiSelectionActivity` fragments the heap below wolfSSL's measured 21,492-byte contiguous-allocation requirement, and unloading them later does not coalesce it. The selector intentionally uses built-in CJK UI fonts; restore configured SD UI fonts only after manifest transfer/parse or activity exit. Do not revert this to make the selector visually match the configured UI font.
 - Keep streaming/range downloads bounded. `HttpDownloader::maxBytes` is an upper bound, not an exact expected object length.
 - Wi-Fi selector restoration is UI-font-only; it must not unexpectedly replace the reader font.
 

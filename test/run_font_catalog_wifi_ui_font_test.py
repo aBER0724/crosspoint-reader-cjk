@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Font catalog Wi-Fi selector must use the configured SD UI font."""
+"""Font catalog Wi-Fi selector must preserve the TLS arena."""
 from pathlib import Path
 import sys
 
@@ -12,10 +12,12 @@ if start < 0 or end < 0:
 body = source[start:end]
 release = body.find("sdFontSystem.releaseResidentFonts(renderer)")
 wifi = body.find("if (!WiFi.mode(WIFI_STA))")
-restore = body.find("sdFontSystem.ensureUiLoaded(renderer)", wifi)
 selector = body.find("std::make_unique<WifiSelectionActivity>", wifi)
-if min(release, wifi, restore, selector) < 0 or not (release < wifi < restore < selector):
-    print("configured UI font is not restored for the Wi-Fi selector", file=sys.stderr)
+if min(release, wifi, selector) < 0 or not (release < wifi < selector):
+    print("resident fonts are not released before the Wi-Fi selector", file=sys.stderr)
+    raise SystemExit(1)
+if body.find("sdFontSystem.ensureUiLoaded(renderer)", wifi, selector) >= 0:
+    print("SD UI font is restored before the selector and fragments the TLS arena", file=sys.stderr)
     raise SystemExit(1)
 
 transfer_start = source.find("void FontDownloadActivity::beginNetworkTransfer")

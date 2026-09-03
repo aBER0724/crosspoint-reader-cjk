@@ -231,16 +231,12 @@ void FontDownloadActivity::onEnter() {
     return;
   }
   wifiStarted_ = true;
-  // Wi-Fi station initialization needs the resident font allocations out of
-  // the way, but scanning and connection screens do not need the TLS arena.
-  // Restore the configured UI face now so the selector matches the rest of the
-  // UI. beginNetworkTransfer() releases it again before manifest/font TLS.
-  {
-    RenderLock lock(*this);
-    sdFontSystem.ensureUiLoaded(renderer);
-  }
-  LOG_DBG("FONT", "Configured UI fonts restored for WiFi selector: free=%d max=%d", ESP.getFreeHeap(),
-          ESP.getMaxAllocHeap());
+  // Keep the resident SD UI faces unloaded while selecting Wi-Fi. Loading all
+  // three configured CJK UI sizes after STA startup fragments the X4 heap into
+  // blocks smaller than wolfSSL's measured 21,492-byte handshake requirement,
+  // and releasing them afterwards cannot coalesce that arena. The built-in CJK
+  // UI fonts remain available for the selector; configured SD UI fonts are
+  // restored after the manifest transfer or when leaving this activity.
   startActivityForResult(std::make_unique<WifiSelectionActivity>(renderer, mappedInput),
                          [this](const ActivityResult& result) { onWifiSelectionComplete(!result.isCancelled); });
 }
@@ -278,9 +274,8 @@ void FontDownloadActivity::onWifiSelectionComplete(const bool success) {
   }
   requestUpdateAndWait();
 
-  // The selector uses the configured SD UI face. Release it now, before the
-  // manifest heap guard and TLS handshake; fetchManifestToFile() will call
-  // beginNetworkTransfer() again harmlessly for each retry.
+  // Resident SD fonts were already released before STA startup. Keep that
+  // allocation order intact through the manifest handshake.
   beginNetworkTransfer();
 
   // Fail in-place if there is not enough contiguous memory for TLS. Rebooting
