@@ -31,6 +31,9 @@
 #include "activities/Activity.h"
 #include "activities/ActivityManager.h"
 #include "activities/settings/SdFirmwareUpdateActivity.h"
+// Test-only serial command needs the OTA activity type (see OTA_TEST in
+// handleSerialTestInputCommand).
+#include "activities/settings/OtaUpdateActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "images/LoadingIcon.h"
@@ -246,6 +249,14 @@ bool handleSerialTestInputCommand(const String& command) {
   if (command == "INPUT:CLEAR") {
     mappedInputManager.clearTestButtons();
     logSerial.println("TEST_INPUT:CLEARED");
+    return true;
+  }
+  if (command == "OTA_TEST") {
+    // Test-only: launch the OTA activity directly over Home, bypassing the
+    // settings navigation, so automated device tests can exercise the full
+    // check path deterministically.
+    activityManager.pushActivity(std::make_unique<OtaUpdateActivity>(renderer, mappedInputManager));
+    logSerial.println("OTA_TEST:LAUNCHED");
     return true;
   }
   if (!command.startsWith("INPUT:")) return false;

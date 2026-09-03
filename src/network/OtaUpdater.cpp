@@ -13,23 +13,14 @@
 
 #include <cstring>
 
-#include "esp_http_client.h"
-
 namespace {
 constexpr char latestReleaseUrl[] = "https://api.github.com/repos/aBER0724/crosspoint-reader-cjk/releases/latest";
-
-/* This is buffer and size holder to keep upcoming data from latestReleaseUrl */
-char* local_buf;
-int output_len;
-
-/*
- * When esp_crt_bundle.h included, it is pointing wrong header file
- * which is something under WifiClientSecure because of our framework based on arduno platform.
- * To manage this obstacle, don't include anything, just extern and it will point correct one.
- */
-extern "C" {
-extern esp_err_t esp_crt_bundle_attach(void* conf);
-}
+// The full /releases/latest body is ~9 KB today (notes + assets + author
+// objects). Keep the accumulator cap at 12 KB: the guard trips BEFORE any
+// append that would exceed capacity, so std::string never reallocates and
+// never hits the doubling peak (old+new blocks live at once) that
+// OOM-aborted the check on-device at ~21 KB free during body reception.
+constexpr size_t RELEASE_JSON_MAX_BYTES = 12 * 1024;
 
 bool isTraditionalChineseBuild() { return strstr(CROSSPOINT_VERSION, "-tc") != nullptr; }
 
@@ -81,47 +72,10 @@ bool pickAnyFirmwareAsset(const JsonArrayConst& assets, std::string* outUrl, siz
   }
   return false;
 }
-
-esp_err_t http_client_set_header_cb(esp_http_client_handle_t http_client) {
-  return esp_http_client_set_header(http_client, "User-Agent", "CrossPoint-ESP32-" CROSSPOINT_VERSION);
-}
-
-esp_err_t event_handler(esp_http_client_event_t* event) {
-  /* We do interested in only HTTP_EVENT_ON_DATA event only */
-  if (event->event_id != HTTP_EVENT_ON_DATA) return ESP_OK;
-
-  if (!esp_http_client_is_chunked_response(event->client)) {
-    int content_len = esp_http_client_get_content_length(event->client);
-    int copy_len = 0;
-
-    if (local_buf == NULL) {
-      /* local_buf life span is tracked by caller checkForUpdate */
-      local_buf = static_cast<char*>(calloc(content_len + 1, sizeof(char)));
-      output_len = 0;
-      if (local_buf == NULL) {
-        LOG_ERR("OTA", "HTTP Client Out of Memory Failed, Allocation %d", content_len);
-        return ESP_ERR_NO_MEM;
-      }
-    }
-    copy_len = min(event->data_len, (content_len - output_len));
-    if (copy_len) {
-      memcpy(local_buf + output_len, event->data, copy_len);
-    }
-    output_len += copy_len;
-  } else {
-    /* Code might be hits here, It happened once (for version checking) but I need more logs to handle that */
-    int chunked_len;
-    esp_http_client_get_chunk_length(event->client, &chunked_len);
-    LOG_DBG("OTA", "esp_http_client_is_chunked_response failed, chunked_len: %d", chunked_len);
-  }
-
-  return ESP_OK;
-} /* event_handler */
-} /* namespace */
+}  // namespace
 
 OtaUpdater::OtaUpdaterError OtaUpdater::checkForUpdate() {
   JsonDocument filter;
-  esp_err_t esp_err;
   JsonDocument doc;
   updateAvailable = false;
   latestVersion.clear();
@@ -130,60 +84,42 @@ OtaUpdater::OtaUpdaterError OtaUpdater::checkForUpdate() {
   processedSize = 0;
   totalSize = 0;
 
-  esp_http_client_config_t client_config = {
-      .url = latestReleaseUrl,
-      .event_handler = event_handler,
-      /* Default HTTP client buffer size 512 byte only */
-      .buffer_size = 4096,
-      .buffer_size_tx = 1024,
-      .skip_cert_common_name_check = true,
-      .crt_bundle_attach = esp_crt_bundle_attach,
-      .keep_alive_enable = true,
-  };
-
-  /* To track life time of local_buf, dtor will be called on exit from that function */
-  struct localBufCleaner {
-    char** bufPtr;
-    ~localBufCleaner() {
-      if (*bufPtr) {
-        free(*bufPtr);
-        *bufPtr = NULL;
-      }
+  // Fetch the release metadata through the same wolfSSL transport the firmware
+  // download itself uses. The previous raw esp_http_client path ran mbedTLS,
+  // whose ssl_setup needs ~35 KB of contiguous heap right after WiFi startup;
+  // on X4 that allocation failed even with tens of KB free (field crash:
+  // mbedtls_ssl_setup returned -0x7F00 at free=35732/max=29684). wolfSSL needs
+  // the documented ~21.5 KB contiguous arena and tolerates the post-WiFi heap.
+  std::string releaseJson;
+  // Reserve exactly once, on the FIRST body chunk: by then the TLS handshake
+  // has completed and freed its transient allocations, so a single 12 KB
+  // allocation is safe. Reserving before the handshake is what starved it
+  // (field: -125 MEMORY_E at free=36656 with a 16 KB reserve in place).
+  bool reserved = false;
+  const bool fetchOk = HttpDownloader::fetchUrl(latestReleaseUrl, [&](const uint8_t* data, size_t len) {
+    if (releaseJson.size() + len > RELEASE_JSON_MAX_BYTES) {
+      LOG_ERR("OTA", "Release JSON exceeds %u bytes, aborting", static_cast<unsigned>(RELEASE_JSON_MAX_BYTES));
+      return false;
     }
-  } localBufCleaner = {&local_buf};
-
-  esp_http_client_handle_t client_handle = esp_http_client_init(&client_config);
-  if (!client_handle) {
-    LOG_ERR("OTA", "HTTP Client Handle Failed");
-    return INTERNAL_UPDATE_ERROR;
-  }
-
-  esp_err = esp_http_client_set_header(client_handle, "User-Agent", "CrossPoint-ESP32-" CROSSPOINT_VERSION);
-  if (esp_err != ESP_OK) {
-    LOG_ERR("OTA", "esp_http_client_set_header Failed : %s", esp_err_to_name(esp_err));
-    esp_http_client_cleanup(client_handle);
-    return INTERNAL_UPDATE_ERROR;
-  }
-
-  esp_err = esp_http_client_perform(client_handle);
-  if (esp_err != ESP_OK) {
-    LOG_ERR("OTA", "esp_http_client_perform Failed : %s", esp_err_to_name(esp_err));
-    esp_http_client_cleanup(client_handle);
+    if (!reserved) {
+      releaseJson.reserve(RELEASE_JSON_MAX_BYTES);
+      reserved = true;
+    }
+    releaseJson.append(reinterpret_cast<const char*>(data), len);
+    return true;
+  });
+  if (!fetchOk) {
+    LOG_ERR("OTA", "Release metadata fetch failed");
     return HTTP_ERROR;
   }
-
-  /* esp_http_client_close will be called inside cleanup as well*/
-  esp_err = esp_http_client_cleanup(client_handle);
-  if (esp_err != ESP_OK) {
-    LOG_ERR("OTA", "esp_http_client_cleanup Failed : %s", esp_err_to_name(esp_err));
-    return INTERNAL_UPDATE_ERROR;
-  }
+  LOG_DBG("OTA", "Release JSON: %u bytes, free=%d max=%d", static_cast<unsigned>(releaseJson.size()), ESP.getFreeHeap(),
+          ESP.getMaxAllocHeap());
 
   filter["tag_name"] = true;
   filter["assets"][0]["name"] = true;
   filter["assets"][0]["browser_download_url"] = true;
   filter["assets"][0]["size"] = true;
-  const DeserializationError error = deserializeJson(doc, local_buf, DeserializationOption::Filter(filter));
+  const DeserializationError error = deserializeJson(doc, releaseJson, DeserializationOption::Filter(filter));
   if (error) {
     LOG_ERR("OTA", "JSON parse failed: %s", error.c_str());
     return JSON_PARSE_ERROR;

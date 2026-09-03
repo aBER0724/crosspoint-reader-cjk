@@ -60,7 +60,16 @@ bool isCancelled(Sink& sink) {
 }
 
 #if defined(FREEINK_NET_WOLFSSL)
-bool shouldUseTls12(const std::string& url) { return url.find(".workers.dev/") != std::string::npos; }
+bool shouldUseTls12(const std::string& url) {
+  // TLS 1.3 record processing needs more contiguous heap than remains after
+  // WiFi startup on X4-class targets (field: wolfSSL_connect -125 MEMORY_E on
+  // the OTA release check at free=36668/max=31732). GitHub endpoints and
+  // workers.dev support TLS 1.2 and carry essentially all of our TLS traffic.
+  // Note: "github.com" does not match "githubusercontent.com" (release CDN),
+  // so both are listed.
+  return url.find("api.github.com") != std::string::npos || url.find("github.com") != std::string::npos ||
+         url.find("githubusercontent.com") != std::string::npos || url.find(".workers.dev/") != std::string::npos;
+}
 
 void addBasicAuthorization(freeink::SecureHttpClient& http, const std::string& username, const std::string& password) {
   if (username.empty() || password.empty()) return;
@@ -141,6 +150,10 @@ HttpDownloader::DownloadError runGetWolf(const std::string& startUrl, const std:
     http.setInsecure();
     http.setFollowRedirects(0);
     http.setReuse(false);
+    // Honor the TLS 1.2 host list on the plain GET path too, not just the
+    // range path: the release-check field failure above happened exactly
+    // here, on the auto-negotiated TLS 1.3 handshake.
+    http.setTls12Only(shouldUseTls12(url));
     if (!http.begin(url)) {
       LOG_ERR("HTTP", "wolfSSL bad URL: %s", url.c_str());
       return HttpDownloader::HTTP_ERROR;

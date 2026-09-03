@@ -1,13 +1,16 @@
 #include "OtaUpdateActivity.h"
 
+#include <FontCacheManager.h>
 #include <FontManager.h>
 #include <GfxRenderer.h>
 #include <I18n.h>
+#include <Logging.h>
 #include <WiFi.h>
 
 #include <cstring>
 
 #include "MappedInputManager.h"
+#include "SdCardFontSystem.h"
 #include "activities/network/WifiSelectionActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
@@ -45,8 +48,19 @@ void OtaUpdateActivity::onWifiSelectionComplete(const bool success) {
   }
   requestUpdateAndWait();
 
-  LOG_DBG("OTA", "Heap before external glyph cache release: free=%d max=%d", ESP.getFreeHeap(), ESP.getMaxAllocHeap());
-  FontManager::getInstance().releaseGlyphCaches();
+  // Same pre-TLS contract as FontDownloadActivity::beginNetworkTransfer:
+  // release built-in glyph caches, resident SD fonts and the decompressor
+  // cache before the TLS-heavy release-metadata fetch, because the WiFi
+  // selector re-grew caches while it rendered.
+  {
+    RenderLock lock;
+    LOG_DBG("OTA", "Heap before update-check cache release: free=%d max=%d", ESP.getFreeHeap(), ESP.getMaxAllocHeap());
+    FontManager::getInstance().releaseGlyphCaches();
+    sdFontSystem.releaseResidentFonts(renderer);
+    if (auto* cache = renderer.getFontCacheManager()) {
+      cache->clearCache();
+    }
+  }
   LOG_DBG("OTA", "Heap before update check: free=%d max=%d", ESP.getFreeHeap(), ESP.getMaxAllocHeap());
 
   const auto res = updater.checkForUpdate();
@@ -77,9 +91,36 @@ void OtaUpdateActivity::onWifiSelectionComplete(const bool success) {
 void OtaUpdateActivity::onEnter() {
   Activity::onEnter();
 
+  // The CJK UI glyph caches (built-in font page buffers, the decompressor cache and
+  // any resident SD faces) can hold most of the free heap, and WiFi STA startup
+  // allocates its driver state in one burst. Releasing after WiFi.mode() is too
+  // late on X4: WiFi init can fail with a null internal handle, or exhaust the
+  // heap mid-init so libstdc++ throws std::bad_alloc with no handler and the
+  // firmware abort()s (field crash: OTA check with ~54 KB free sampled, heap
+  // actually bottoming out during wifi task/driver allocation). Same contract
+  // as FontDownloadActivity::onEnter.
+  {
+    RenderLock lock(*this);
+    LOG_DBG("OTA", "Heap before WiFi cache release: free=%d max=%d", ESP.getFreeHeap(), ESP.getMaxAllocHeap());
+    FontManager::getInstance().releaseGlyphCaches();
+    sdFontSystem.releaseResidentFonts(renderer);
+    if (auto* cache = renderer.getFontCacheManager()) {
+      cache->clearCache();
+    }
+    LOG_DBG("OTA", "Heap before WiFi startup: free=%d max=%d", ESP.getFreeHeap(), ESP.getMaxAllocHeap());
+  }
+
   // Turn on WiFi immediately
   LOG_DBG("OTA", "Turning on WiFi...");
-  WiFi.mode(WIFI_STA);
+  if (!WiFi.mode(WIFI_STA)) {
+    LOG_ERR("OTA", "Failed to initialize WiFi for update check");
+    {
+      RenderLock lock;
+      state = FAILED;
+    }
+    requestUpdate();
+    return;
+  }
 
   // Launch WiFi selection subactivity
   LOG_DBG("OTA", "Launching WifiSelectionActivity...");
@@ -95,6 +136,11 @@ void OtaUpdateActivity::onExit() {
   delay(100);              // Allow disconnect frame to be sent
   WiFi.mode(WIFI_OFF);
   delay(100);  // Allow WiFi hardware to fully power down
+
+  // WiFi is fully powered down, so reloading the configured UI face is safe
+  // again. Without this the device keeps rendering with built-in CJK glyphs
+  // until the next font reload (user-visible "UI font reset to default").
+  sdFontSystem.ensureUiLoaded(renderer);
 }
 
 bool OtaUpdateActivity::buildOtaProgressGlyphAtlas() {
