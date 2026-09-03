@@ -66,10 +66,9 @@ class MappedInputManager {
   // Returns the raw front button index that was pressed this frame (or -1 if none).
   int getPressedFrontButton() const;
 
-  // True when the control axis is flipped relative to the physical buttons: the user opted into
-  // orientation-following front buttons AND the screen is *currently rendered* rotated (INVERTED /
-  // LANDSCAPE_CCW). Keyed on the live renderer orientation rather than the persisted reader setting,
-  // so portrait UI (home, settings) never swaps while the reader and its menus do.
+  // True when linear previous/next semantics need an axis swap that is not already handled by remapping
+  // the four front hardware roles. This is keyed on the live rendered orientation, never only the persisted
+  // reader setting.
   [[nodiscard]] bool isNavDirectionSwapped() const;
 
   // OrientationHelper sets the live activity orientation as it transitions between
@@ -97,6 +96,9 @@ class MappedInputManager {
   const GfxRenderer* renderer = nullptr;
   Orientation effectiveOrientation = Orientation::Portrait;
 
+  [[nodiscard]] Orientation currentOrientation() const;
+  [[nodiscard]] uint8_t mapFrontHardwareIndex(uint8_t hardwareIndex) const;
+  [[nodiscard]] uint8_t hintFrontHardwareIndex(uint8_t screenSlotIndex) const;
   bool mapButton(Button button, bool (HalGPIO::*fn)(uint8_t) const) const;
   bool checkBluetooth(Button button, BtFn pageBackFn, BtFn pageForwardFn) const;
 

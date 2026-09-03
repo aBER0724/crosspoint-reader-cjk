@@ -9,18 +9,52 @@
 #include "CrossPointSettings.h"
 #include "components/UITheme.h"
 #include "input/BluetoothPageTurnState.h"
+#include "input/FrontButtonOrientation.h"
+
+MappedInputManager::Orientation MappedInputManager::currentOrientation() const {
+  if (!renderer) return effectiveOrientation;
+  switch (renderer->getOrientation()) {
+    case GfxRenderer::PortraitInverted:
+      return Orientation::PortraitInverted;
+    case GfxRenderer::LandscapeClockwise:
+      return Orientation::LandscapeClockwise;
+    case GfxRenderer::LandscapeCounterClockwise:
+      return Orientation::LandscapeCounterClockwise;
+    case GfxRenderer::Portrait:
+    default:
+      return Orientation::Portrait;
+  }
+}
+
+namespace {
+FrontButtonOrientation::Orientation toFrontButtonOrientation(const MappedInputManager::Orientation orientation) {
+  switch (orientation) {
+    case MappedInputManager::Orientation::PortraitInverted:
+      return FrontButtonOrientation::Orientation::PortraitInverted;
+    case MappedInputManager::Orientation::LandscapeClockwise:
+      return FrontButtonOrientation::Orientation::LandscapeClockwise;
+    case MappedInputManager::Orientation::LandscapeCounterClockwise:
+      return FrontButtonOrientation::Orientation::LandscapeCounterClockwise;
+    case MappedInputManager::Orientation::Portrait:
+    default:
+      return FrontButtonOrientation::Orientation::Portrait;
+  }
+}
+}  // namespace
 
 bool MappedInputManager::isNavDirectionSwapped() const {
-  // Key the swap on the orientation the screen is *actually* rendered at, not the persisted reader
-  // setting. The reader (and its modal menus) render rotated, so navigation/labels flip there; the
-  // home and settings UI render in portrait, so they never flip even when a rotated reader is configured.
-  if (!SETTINGS.frontButtonFollowOrientation) return false;
-  if (renderer) {
-    const auto orientation = renderer->getOrientation();
-    return orientation == GfxRenderer::PortraitInverted || orientation == GfxRenderer::LandscapeCounterClockwise;
-  }
-  return effectiveOrientation == Orientation::PortraitInverted ||
-         effectiveOrientation == Orientation::LandscapeCounterClockwise;
+  return FrontButtonOrientation::navigationSwapped(SETTINGS.frontButtonFollowOrientation,
+                                                   toFrontButtonOrientation(currentOrientation()));
+}
+
+uint8_t MappedInputManager::mapFrontHardwareIndex(const uint8_t hardwareIndex) const {
+  return FrontButtonOrientation::inputHardwareIndex(SETTINGS.frontButtonFollowOrientation,
+                                                    toFrontButtonOrientation(currentOrientation()), hardwareIndex);
+}
+
+uint8_t MappedInputManager::hintFrontHardwareIndex(const uint8_t screenSlotIndex) const {
+  return FrontButtonOrientation::hintHardwareIndex(SETTINGS.frontButtonFollowOrientation,
+                                                   toFrontButtonOrientation(currentOrientation()), screenSlotIndex);
 }
 
 bool MappedInputManager::mapButton(const Button button, bool (HalGPIO::*fn)(uint8_t) const) const {
@@ -28,17 +62,13 @@ bool MappedInputManager::mapButton(const Button button, bool (HalGPIO::*fn)(uint
 
   switch (button) {
     case Button::Back:
-      // Logical Back maps to user-configured front button.
-      return (gpio.*fn)(SETTINGS.frontButtonBack);
+      return (gpio.*fn)(mapFrontHardwareIndex(SETTINGS.frontButtonBack));
     case Button::Confirm:
-      // Logical Confirm maps to user-configured front button.
-      return (gpio.*fn)(SETTINGS.frontButtonConfirm);
+      return (gpio.*fn)(mapFrontHardwareIndex(SETTINGS.frontButtonConfirm));
     case Button::Left:
-      // Logical Left maps to user-configured front button.
-      return (gpio.*fn)(SETTINGS.frontButtonLeft);
+      return (gpio.*fn)(mapFrontHardwareIndex(SETTINGS.frontButtonLeft));
     case Button::Right:
-      // Logical Right maps to user-configured front button.
-      return (gpio.*fn)(SETTINGS.frontButtonRight);
+      return (gpio.*fn)(mapFrontHardwareIndex(SETTINGS.frontButtonRight));
     case Button::Up:
       // Side buttons remain fixed for Up/Down.
       return (gpio.*fn)(HalGPIO::BTN_UP);
@@ -405,31 +435,24 @@ void MappedInputManager::clearTestButtons() { testButtons.fill({}); }
 
 MappedInputManager::Labels MappedInputManager::mapLabels(const char* back, const char* confirm, const char* previous,
                                                          const char* next) const {
-  // Swap previous/next labels to match the page turn direction swap in INVERTED and LANDSCAPE_CCW.
   const bool swapLabels = isNavDirectionSwapped();
   const char* leftLabel = swapLabels ? next : previous;
   const char* rightLabel = swapLabels ? previous : next;
 
-  // Build the label order based on the configured hardware mapping.
-  auto labelForHardware = [&](uint8_t hw) -> const char* {
-    // Compare against configured logical roles and return the matching label.
-    if (hw == SETTINGS.frontButtonBack) {
-      return back;
-    }
-    if (hw == SETTINGS.frontButtonConfirm) {
-      return confirm;
-    }
-    if (hw == SETTINGS.frontButtonLeft) {
-      return leftLabel;
-    }
-    if (hw == SETTINGS.frontButtonRight) {
-      return rightLabel;
-    }
+  // Resolve each visible screen slot to the hardware role that remains beneath it after rotation. When front
+  // buttons follow inverted portrait, input roles are mirrored and labels keep their configured slot order. When
+  // following is disabled, input stays raw and the labels mirror instead so they never advertise the wrong key.
+  const auto labelForScreenSlot = [&](const uint8_t screenSlot) -> const char* {
+    const uint8_t hardwareIndex = hintFrontHardwareIndex(screenSlot);
+    if (hardwareIndex == SETTINGS.frontButtonBack) return back;
+    if (hardwareIndex == SETTINGS.frontButtonConfirm) return confirm;
+    if (hardwareIndex == SETTINGS.frontButtonLeft) return leftLabel;
+    if (hardwareIndex == SETTINGS.frontButtonRight) return rightLabel;
     return "";
   };
 
-  return {labelForHardware(HalGPIO::BTN_BACK), labelForHardware(HalGPIO::BTN_CONFIRM),
-          labelForHardware(HalGPIO::BTN_LEFT), labelForHardware(HalGPIO::BTN_RIGHT)};
+  return {labelForScreenSlot(HalGPIO::BTN_BACK), labelForScreenSlot(HalGPIO::BTN_CONFIRM),
+          labelForScreenSlot(HalGPIO::BTN_LEFT), labelForScreenSlot(HalGPIO::BTN_RIGHT)};
 }
 
 int MappedInputManager::getPressedFrontButton() const {

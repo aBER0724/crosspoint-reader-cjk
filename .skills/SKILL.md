@@ -109,6 +109,7 @@ Read `docs/fork-features.md` before an upstream merge or a refactor in a high-ri
 - Images and covers preserve their intended polarity in dark mode; UI background inversion must not double-invert image data.
 - Reader orientation and full-UI Portrait/Portrait Inverted orientation are separate persisted settings. Input mapping follows the orientation actually drawn.
 - Use logical mapped buttons in activities, not raw GPIO indices, except where the remapping implementation itself requires physical indices.
+- **The front-button orientation policy is a hard regression contract. It has been accidentally overwritten and reimplemented multiple times; never resolve an upstream conflict by restoring an older `MappedInputManager` implementation or deleting `FrontButtonOrientation` / `test/run_front_button_orientation_mapping_test.py`.** Use the live renderer orientation. Portrait Inverted + follow enabled mirrors all four front hardware roles once, without an additional previous/next swap. Follow disabled leaves input raw and mirrors only the displayed hints. Landscape Counter-Clockwise keeps its semantic navigation swap. Physical remap capture, Bluetooth page turning, side buttons, touch/gestures, tilt, and serial test input stay outside this conversion. Run the focused host test and physically verify inverted UI with follow both enabled and disabled.
 
 ### Responsiveness, Web, and storage
 
