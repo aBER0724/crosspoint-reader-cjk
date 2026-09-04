@@ -265,7 +265,7 @@ bool handleSerialTestInputCommand(const String& command) {
     // check finds an update, so the full download+flash path can be exercised
     // even when the USB console drops mid-flow (the failure is persisted to
     // NVS and reported at the next boot).
-    OtaUpdateActivity::requestAutoInstallForTest();
+    OtaUpdateActivity::requestAutoInstall();
     activityManager.pushActivity(std::make_unique<OtaUpdateActivity>(renderer, mappedInputManager));
     logSerial.println("OTA_INSTALL:LAUNCHED");
     return true;
@@ -558,6 +558,14 @@ void setup() {
   } else if (HalSystem::isRebootFromPanic()) {
     // If we rebooted from a panic, go to crash report screen to show the panic info
     activityManager.goToCrashReport();
+  } else if (OtaUpdater::consumeBootInstallRequest()) {
+    // Restart-to-install: the user confirmed an OTA update and the device
+    // rebooted on purpose. The app-run heap cannot reliably host the bulk
+    // TLS download, so run the whole flow on this freshly booted heap
+    // instead. The flag is consumed above; a failure falls back to Home.
+    LOG_INF("MAIN", "Boot install request: launching OTA flow on clean heap");
+    OtaUpdateActivity::requestAutoInstall();
+    activityManager.pushActivity(std::make_unique<OtaUpdateActivity>(renderer, mappedInputManager));
   } else if (resume == BootResume::Silent && snapshotTarget == SILENT_REBOOT_TARGET_READER &&
              !APP_STATE.openEpubPath.empty()) {
     activityManager.goToReader(APP_STATE.openEpubPath);

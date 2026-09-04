@@ -91,7 +91,7 @@ bool contains(const Rect& rect, const int x, const int y) {
 }
 }  // namespace
 
-bool OtaUpdateActivity::autoInstallForTest = false;
+bool OtaUpdateActivity::autoInstallPending = false;
 
 void OtaUpdateActivity::onWifiSelectionComplete(const bool success) {
   if (!success) {
@@ -146,8 +146,8 @@ void OtaUpdateActivity::onWifiSelectionComplete(const bool success) {
     RenderLock lock;
     state = WAITING_CONFIRMATION;
   }
-  if (autoInstallForTest) {
-    autoInstallForTest = false;
+  if (autoInstallPending) {
+    autoInstallPending = false;
     OtaUpdater::recordInstallProgressForDiagnostics(1, 0);
     runUpdateInstall();
   }
@@ -425,6 +425,8 @@ void OtaUpdateActivity::render(RenderLock&&) {
     renderer.drawCenteredText(UI_10_FONT_ID, top, tr(STR_UPDATE_FAILED), true, EpdFontFamily::BOLD);
     const auto labels = mappedInput.mapLabels(tr(STR_BACK), "", "", "");
     GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+  } else if (state == REBOOTING) {
+    renderer.drawCenteredText(UI_10_FONT_ID, top, tr(STR_REBOOTING_TO_INSTALL), true, EpdFontFamily::BOLD);
   } else if (state == FINISHED) {
     renderer.drawCenteredText(UI_10_FONT_ID, top, tr(STR_UPDATE_COMPLETE), true, EpdFontFamily::BOLD);
     renderer.drawCenteredText(UI_10_FONT_ID, top + height + metrics.verticalSpacing, tr(STR_POWER_ON_HINT));
@@ -435,6 +437,20 @@ void OtaUpdateActivity::render(RenderLock&&) {
   } else {
     renderer.displayBuffer();
   }
+}
+
+void OtaUpdateActivity::beginRebootInstall() {
+  LOG_DBG("OTA", "Update confirmed, arming reboot-to-install and restarting");
+  OtaUpdater::requestBootInstall();
+  {
+    RenderLock lock(*this);
+    state = REBOOTING;
+  }
+  requestUpdateAndWait();
+  // Give the e-paper time to physically settle before the reboot wipes the
+  // frame; the boot-time install flow takes over from here.
+  delay(2500);
+  ESP.restart();
 }
 
 void OtaUpdateActivity::runUpdateInstall() {
@@ -452,6 +468,14 @@ void OtaUpdateActivity::runUpdateInstall() {
   const bool atlasReady = buildOtaProgressGlyphAtlas();
   LOG_DBG("OTA", "Progress glyph atlas: %s", atlasReady ? "ready" : "unavailable");
   fontManager.releaseGlyphCaches();
+  {
+    // Belt-and-suspenders: resident SD font internals (interval tables, metric caches) are a
+    // fragmentation source we control. When they are already unloaded (e.g. after the WiFi
+    // selector path) this is a no-op; the progress UI falls back to built-in CJK glyphs and a
+    // failed install reloads the configured families through the dirty flag.
+    RenderLock lock(*this);
+    sdFontSystem.releaseResidentFonts(renderer);
+  }
   LOG_DBG("OTA", "Heap before install: free=%d max=%d", ESP.getFreeHeap(), ESP.getMaxAllocHeap());
   {
     RenderLock lock(*this);
@@ -509,13 +533,13 @@ void OtaUpdateActivity::loop() {
         return;
       }
       if (contains(actionRects.update, x, y)) {
-        runUpdateInstall();
+        beginRebootInstall();
         return;
       }
     }
 
     if (mappedInput.wasPressed(MappedInputManager::Button::Confirm)) {
-      runUpdateInstall();
+      beginRebootInstall();
       return;
     }
 

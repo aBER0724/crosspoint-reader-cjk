@@ -11,6 +11,7 @@ class OtaUpdateActivity : public Activity {
     UPDATE_IN_PROGRESS,
     NO_UPDATE,
     FAILED,
+    REBOOTING,
     FINISHED,
     SHUTTING_DOWN
   };
@@ -41,24 +42,24 @@ class OtaUpdateActivity : public Activity {
   const OtaProgressGlyph* findOtaProgressGlyph(char ch) const;
   void drawOtaProgressText(const char* text, int y);
   void renderOtaProgressOnly(unsigned int percentage, size_t processedSize, size_t totalSize);
+  void beginRebootInstall();
   void runUpdateInstall();
-
-  // Test-only: when set before the activity is pushed, the install starts
-  // automatically once the check finds an update, so automated serial tests
-  // can exercise the full download+flash path even when the USB console
-  // drops mid-flow. Cleared on use.
-  static bool autoInstallForTest;
+  // Set before the activity is pushed: once the check finds an update the
+  // install starts automatically, without waiting for on-screen confirmation.
+  // Used by the reboot-to-clean-heap install flow (main.cpp sees the NVS
+  // bootInstall flag) and by automated serial-driven device tests.
+  static bool autoInstallPending;
 
  public:
-  // Test-only entry: flip the flag via this setter before pushing the
-  // activity so the install starts without needing serial input mid-flow.
-  static void requestAutoInstallForTest() { autoInstallForTest = true; }
+  static void requestAutoInstall() { autoInstallPending = true; }
   explicit OtaUpdateActivity(GfxRenderer& renderer, MappedInputManager& mappedInput)
       : Activity("OtaUpdate", renderer, mappedInput), updater() {}
   void onEnter() override;
   void onExit() override;
   void loop() override;
   void render(RenderLock&&) override;
-  bool preventAutoSleep() override { return state == CHECKING_FOR_UPDATE || state == UPDATE_IN_PROGRESS; }
+  bool preventAutoSleep() override {
+    return state == CHECKING_FOR_UPDATE || state == UPDATE_IN_PROGRESS || state == REBOOTING;
+  }
   bool skipLoopDelay() override { return true; }  // Prevent power-saving mode
 };

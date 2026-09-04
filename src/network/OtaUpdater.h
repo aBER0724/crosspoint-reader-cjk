@@ -44,4 +44,13 @@ class OtaUpdater {
   static void recordInstallProgressForDiagnostics(uint8_t stage, size_t processed);
   static void recordInstallFailureForDiagnostics(OtaUpdaterError error, size_t processed, size_t total);
   static void reportAndClearLastInstallFailure();
+
+  // Restart-to-clean-heap install: a fragmented app-run heap cannot hold a TLS
+  // handshake plus a ~16 KiB release-CDN record simultaneously (measured -125
+  // MEMORY_E mid-download with a fresh 35.5 KiB heap), so the confirm step
+  // arms this flag and reboots instead of installing in place. The next boot
+  // sees the flag and drives the whole flow automatically, then clears it.
+  static void requestBootInstall();
+  static bool consumeBootInstallRequest();
+  static void clearBootInstallRequest();
 };

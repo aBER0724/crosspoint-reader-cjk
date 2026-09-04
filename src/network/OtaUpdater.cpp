@@ -371,3 +371,37 @@ void OtaUpdater::reportAndClearLastInstallFailure() {
   LOG_ERR("OTA", "Last OTA run: stage=%u err=%d processed=%u/%u free=%d max=%d", stage, static_cast<int>(error),
           static_cast<unsigned>(processed), static_cast<unsigned>(total), ESP.getFreeHeap(), ESP.getMaxAllocHeap());
 }
+
+void OtaUpdater::requestBootInstall() {
+  Preferences prefs;
+  if (!prefs.begin("ota-diag", false)) {
+    LOG_ERR("OTA", "Boot install flag: NVS open failed");
+    return;
+  }
+  prefs.putBool("bootInstall", true);
+  prefs.end();
+}
+
+bool OtaUpdater::consumeBootInstallRequest() {
+  Preferences prefs;
+  if (!prefs.begin("ota-diag", false)) {
+    return false;
+  }
+  const bool requested = prefs.getBool("bootInstall", false);
+  if (requested) {
+    // Consume before doing anything else so a crash during the install flow
+    // can never turn into a boot loop.
+    prefs.putBool("bootInstall", false);
+  }
+  prefs.end();
+  return requested;
+}
+
+void OtaUpdater::clearBootInstallRequest() {
+  Preferences prefs;
+  if (!prefs.begin("ota-diag", false)) {
+    return;
+  }
+  prefs.putBool("bootInstall", false);
+  prefs.end();
+}
