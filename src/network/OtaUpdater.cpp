@@ -11,16 +11,17 @@
 #include <esp_wifi.h>
 // clang-format on
 
+#include <HalStorage.h>
+
 #include <cstring>
 
 namespace {
 constexpr char latestReleaseUrl[] = "https://api.github.com/repos/aBER0724/crosspoint-reader-cjk/releases/latest";
 // The full /releases/latest body is ~9 KB today (notes + assets + author
-// objects). Keep the accumulator cap at 12 KB: the guard trips BEFORE any
-// append that would exceed capacity, so std::string never reallocates and
-// never hits the doubling peak (old+new blocks live at once) that
-// OOM-aborted the check on-device at ~21 KB free during body reception.
+// objects). Staged on SD during the transfer with this as the upper bound;
+// see checkForUpdate() for why it must never be held in RAM mid-transfer.
 constexpr size_t RELEASE_JSON_MAX_BYTES = 12 * 1024;
+constexpr char OTA_RELEASE_JSON_PATH[] = "/ota_release.tmp";
 
 bool isTraditionalChineseBuild() { return strstr(CROSSPOINT_VERSION, "-tc") != nullptr; }
 
@@ -90,31 +91,64 @@ OtaUpdater::OtaUpdaterError OtaUpdater::checkForUpdate() {
   // on X4 that allocation failed even with tens of KB free (field crash:
   // mbedtls_ssl_setup returned -0x7F00 at free=35732/max=29684). wolfSSL needs
   // the documented ~21.5 KB contiguous arena and tolerates the post-WiFi heap.
-  std::string releaseJson;
-  // Reserve exactly once, on the FIRST body chunk: by then the TLS handshake
-  // has completed and freed its transient allocations, so a single 12 KB
-  // allocation is safe. Reserving before the handshake is what starved it
-  // (field: -125 MEMORY_E at free=36656 with a 16 KB reserve in place).
-  bool reserved = false;
-  const bool fetchOk = HttpDownloader::fetchUrl(latestReleaseUrl, [&](const uint8_t* data, size_t len) {
-    if (releaseJson.size() + len > RELEASE_JSON_MAX_BYTES) {
-      LOG_ERR("OTA", "Release JSON exceeds %u bytes, aborting", static_cast<unsigned>(RELEASE_JSON_MAX_BYTES));
-      return false;
-    }
-    if (!reserved) {
-      releaseJson.reserve(RELEASE_JSON_MAX_BYTES);
-      reserved = true;
-    }
-    releaseJson.append(reinterpret_cast<const char*>(data), len);
-    return true;
-  });
-  if (!fetchOk) {
-    LOG_ERR("OTA", "Release metadata fetch failed");
+  //
+  // Stage the response on the SD card (font-manifest pattern) instead of
+  // accumulating it in RAM: at check time the heap still carries the WiFi
+  // selector's scan leftovers and the live TLS session, and every large
+  // std::string allocation in that window has aborted on device (16 KB
+  // reserve before the handshake -> -125 MEMORY_E stall; 12 KB reserve at the
+  // first body chunk -> bad_alloc -> abort, because the contiguous max block
+  // there is under 12 KB even when free heap is ~36 KB). downloadToFile keeps
+  // the transfer allocation-free (bounded by RELEASE_JSON_MAX_BYTES) and we
+  // parse from the staged file only after the TLS client is destroyed.
+  // maxBytes stays 0 on purpose: in downloadToFile a nonzero maxBytes on a
+  // TLS 1.2 host switches runGetWolf into its ranged-GET mode (font-segment
+  // semantics), and the GitHub releases API answers 200 without a
+  // Content-Range header, which that path rejects (field: "Invalid
+  // Content-Range for requested bytes 0-12287"). The body is bounded instead
+  // by the explicit size check on the staged file below.
+  const HttpDownloader::DownloadError dlError =
+      HttpDownloader::downloadToFile(latestReleaseUrl, OTA_RELEASE_JSON_PATH, nullptr, nullptr, "", "", nullptr, 0);
+  if (dlError != HttpDownloader::DownloadError::OK) {
+    LOG_ERR("OTA", "Release metadata fetch failed: %d", static_cast<int>(dlError));
     return HTTP_ERROR;
   }
+  std::string releaseJson;
+  {
+    HalFile file;
+    if (!Storage.openFileForRead("OTA", OTA_RELEASE_JSON_PATH, file)) {
+      LOG_ERR("OTA", "Staged release JSON missing");
+      Storage.remove(OTA_RELEASE_JSON_PATH);
+      return JSON_PARSE_ERROR;
+    }
+    const size_t jsonSize = file.size();
+    if (jsonSize == 0 || jsonSize > RELEASE_JSON_MAX_BYTES) {
+      LOG_ERR("OTA", "Staged release JSON has invalid size %u", static_cast<unsigned>(jsonSize));
+      file.close();
+      Storage.remove(OTA_RELEASE_JSON_PATH);
+      return JSON_PARSE_ERROR;
+    }
+    // Belt and suspenders: the transfer is done and the TLS arena is freed,
+    // so the JSON should fit easily; still, fail cleanly rather than letting
+    // the reserve below abort() if the heap is unexpectedly squeezed.
+    if (ESP.getMaxAllocHeap() < static_cast<int>(jsonSize + 4096)) {
+      LOG_ERR("OTA", "Heap too low to parse release JSON (%u bytes, max=%d)", static_cast<unsigned>(jsonSize),
+              ESP.getMaxAllocHeap());
+      file.close();
+      Storage.remove(OTA_RELEASE_JSON_PATH);
+      return JSON_PARSE_ERROR;
+    }
+    releaseJson.reserve(jsonSize + 1);
+    uint8_t chunk[512];
+    int n;
+    while ((n = file.read(chunk, sizeof(chunk))) > 0) {
+      releaseJson.append(reinterpret_cast<const char*>(chunk), static_cast<size_t>(n));
+    }
+    file.close();
+  }
+  Storage.remove(OTA_RELEASE_JSON_PATH);
   LOG_DBG("OTA", "Release JSON: %u bytes, free=%d max=%d", static_cast<unsigned>(releaseJson.size()), ESP.getFreeHeap(),
           ESP.getMaxAllocHeap());
-
   filter["tag_name"] = true;
   filter["assets"][0]["name"] = true;
   filter["assets"][0]["browser_download_url"] = true;
