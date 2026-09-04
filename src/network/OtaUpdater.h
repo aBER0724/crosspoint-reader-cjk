@@ -35,4 +35,13 @@ class OtaUpdater {
   const std::string& getLatestVersion() const;
   OtaUpdaterError checkForUpdate();
   OtaUpdaterError installUpdate(ProgressCallback onProgress = nullptr, void* ctx = nullptr);
+
+  // Persist the install failure's stage and heap state so a failed on-device
+  // update remains diagnosable even when the failure happens with the USB
+  // console unavailable (the install runs with the serial log silent for
+  // minutes). reportAndClearLastInstallFailure() logs and erases the record
+  // once at the next boot.
+  static void recordInstallProgressForDiagnostics(uint8_t stage, size_t processed);
+  static void recordInstallFailureForDiagnostics(OtaUpdaterError error, size_t processed, size_t total);
+  static void reportAndClearLastInstallFailure();
 };

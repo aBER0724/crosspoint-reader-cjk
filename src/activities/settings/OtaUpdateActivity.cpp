@@ -6,8 +6,12 @@
 #include <I18n.h>
 #include <Logging.h>
 #include <WiFi.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
+#include <freertos/task.h>
 
 #include <cstring>
+#include <new>
 
 #include "MappedInputManager.h"
 #include "SdCardFontSystem.h"
@@ -15,6 +19,60 @@
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "network/OtaUpdater.h"
+
+namespace {
+// WiFi STA startup can wedge the calling task indefinitely on X4 (observed when
+// the device is powered from a weak USB supply: the RF/BBPLL bring-up never
+// returns and the calling task is lost while the scheduler keeps running). Run
+// it on a short-lived worker and bound the wait so the flow fails gracefully
+// instead of freezing the screen.
+constexpr TickType_t WIFI_MODE_TIMEOUT_TICKS = pdMS_TO_TICKS(20000);
+
+struct WifiModeRequest {
+  SemaphoreHandle_t done;
+  bool result;
+};
+
+void wifiModeWorker(void* ctx) {
+  auto* request = static_cast<WifiModeRequest*>(ctx);
+  request->result = WiFi.mode(WIFI_STA);
+  xSemaphoreGive(request->done);
+  vTaskDelete(nullptr);
+}
+
+bool wifiModeWithTimeout() {
+  auto* request = new (std::nothrow) WifiModeRequest{};
+  if (request == nullptr) {
+    // No heap for the fallback path: call inline like the old code.
+    return WiFi.mode(WIFI_STA);
+  }
+  request->done = xSemaphoreCreateBinary();
+  if (request->done == nullptr) {
+    delete request;
+    return WiFi.mode(WIFI_STA);
+  }
+  TaskHandle_t worker = nullptr;
+  if (xTaskCreate(wifiModeWorker, "ota_wifi_mode", 4096, request, 5, &worker) != pdPASS) {
+    vSemaphoreDelete(request->done);
+    delete request;
+    return WiFi.mode(WIFI_STA);
+  }
+  const bool completed = xSemaphoreTake(request->done, WIFI_MODE_TIMEOUT_TICKS) == pdTRUE;
+  if (!completed) {
+    LOG_ERR("OTA", "WiFi.mode did not return within 20s; abandoning the startup task");
+    // The worker may still be wedged inside the driver and will signal `done`
+    // (then delete its task) if it ever unwedges. Ownership of the request and
+    // the semaphore transfers to the worker, so the waiter must not free them.
+    // The leak is bounded to one small allocation per abandoned attempt.
+    return false;
+  }
+  // The worker deleted itself after give(); reclaim its context.
+  vSemaphoreDelete(request->done);
+  const bool result = request->result;
+  delete request;
+  return result;
+}
+}  // namespace
 
 namespace {
 struct OtaActionRects {
@@ -33,13 +91,15 @@ bool contains(const Rect& rect, const int x, const int y) {
 }
 }  // namespace
 
+bool OtaUpdateActivity::autoInstallForTest = false;
+
 void OtaUpdateActivity::onWifiSelectionComplete(const bool success) {
   if (!success) {
     LOG_ERR("OTA", "WiFi connection failed, exiting");
     finish();
     return;
   }
-
+  OtaUpdater::recordInstallProgressForDiagnostics(0, 0);
   LOG_DBG("OTA", "WiFi connected, checking for update");
 
   {
@@ -86,6 +146,11 @@ void OtaUpdateActivity::onWifiSelectionComplete(const bool success) {
     RenderLock lock;
     state = WAITING_CONFIRMATION;
   }
+  if (autoInstallForTest) {
+    autoInstallForTest = false;
+    OtaUpdater::recordInstallProgressForDiagnostics(1, 0);
+    runUpdateInstall();
+  }
 }
 
 void OtaUpdateActivity::onEnter() {
@@ -111,8 +176,12 @@ void OtaUpdateActivity::onEnter() {
   }
 
   // Turn on WiFi immediately
+  // stage 8 = entered onEnter and about to call WiFi.mode; if the next boot
+  // reports stage 8 with nothing later, the wedge is in WiFi STA startup.
+  OtaUpdater::recordInstallProgressForDiagnostics(8, 0);
   LOG_DBG("OTA", "Turning on WiFi...");
-  if (!WiFi.mode(WIFI_STA)) {
+  if (!wifiModeWithTimeout()) {
+    OtaUpdater::recordInstallProgressForDiagnostics(9, 0);  // stage 9 = WiFi.mode returned false
     LOG_ERR("OTA", "Failed to initialize WiFi for update check");
     {
       RenderLock lock;
@@ -121,6 +190,7 @@ void OtaUpdateActivity::onEnter() {
     requestUpdate();
     return;
   }
+  OtaUpdater::recordInstallProgressForDiagnostics(7, 0);  // stage 7 = WiFi.mode returned true
 
   // Launch WiFi selection subactivity
   LOG_DBG("OTA", "Launching WifiSelectionActivity...");
@@ -407,6 +477,7 @@ void OtaUpdateActivity::runUpdateInstall() {
 
   if (res != OtaUpdater::OK) {
     LOG_DBG("OTA", "Update failed: %d", res);
+    OtaUpdater::recordInstallFailureForDiagnostics(res, updater.getProcessedSize(), updater.getTotalSize());
     {
       RenderLock lock(*this);
       state = FAILED;

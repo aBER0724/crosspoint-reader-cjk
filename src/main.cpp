@@ -38,6 +38,7 @@
 #include "fontIds.h"
 #include "images/LoadingIcon.h"
 #include "input/BluetoothPageTurnManager.h"
+#include "network/OtaUpdater.h"
 #include "util/ButtonNavigator.h"
 #include "util/ScreenshotUtil.h"
 
@@ -259,6 +260,16 @@ bool handleSerialTestInputCommand(const String& command) {
     logSerial.println("OTA_TEST:LAUNCHED");
     return true;
   }
+  if (command == "OTA_INSTALL") {
+    // Test-only: like OTA_TEST, but the install starts automatically once the
+    // check finds an update, so the full download+flash path can be exercised
+    // even when the USB console drops mid-flow (the failure is persisted to
+    // NVS and reported at the next boot).
+    OtaUpdateActivity::requestAutoInstallForTest();
+    activityManager.pushActivity(std::make_unique<OtaUpdateActivity>(renderer, mappedInputManager));
+    logSerial.println("OTA_INSTALL:LAUNCHED");
+    return true;
+  }
   if (!command.startsWith("INPUT:")) return false;
 
   const int actionSeparator = command.indexOf(':', 6);
@@ -392,6 +403,13 @@ void setup() {
       (isSilentReboot && silentRebootTarget <= SILENT_REBOOT_TARGET_FONTS) ? silentRebootTarget : 0;
   silentRebootMagic = 0;
   silentRebootTarget = 0;
+  // Surface a persisted OTA install failure from a previous session (see
+  // OtaUpdater::recordInstallFailureForDiagnostics) while the console is
+  // available, then erase it so it is reported exactly once.
+  LOG_INF("MAIN", "Reset reason: %d (power=%d sw=%d panic=%d int=%d task=%d wdt=%d brownout=%d)",
+          static_cast<int>(esp_reset_reason()), ESP_RST_POWERON, ESP_RST_SW, ESP_RST_PANIC, ESP_RST_INT_WDT,
+          ESP_RST_TASK_WDT, ESP_RST_WDT, ESP_RST_BROWNOUT);
+  OtaUpdater::reportAndClearLastInstallFailure();
   if (!isSilentReboot) {
     // A normal (non self-healing-restart) boot resets the font self-heal loop
     // counter so a crash dump can always surface after ordinary user boots.

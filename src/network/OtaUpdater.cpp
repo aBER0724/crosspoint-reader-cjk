@@ -12,6 +12,7 @@
 // clang-format on
 
 #include <HalStorage.h>
+#include <Preferences.h>
 
 #include <cstring>
 
@@ -259,7 +260,7 @@ OtaUpdater::OtaUpdaterError OtaUpdater::installUpdate(ProgressCallback onProgres
     return INTERNAL_UPDATE_ERROR;
   }
   LOG_DBG("OTA", "OTA begin OK: free=%d max=%d", ESP.getFreeHeap(), ESP.getMaxAllocHeap());
-
+  recordInstallProgressForDiagnostics(2, 0);
   /* For better timing and connectivity, we disable power saving for WiFi */
   esp_wifi_set_ps(WIFI_PS_NONE);
 
@@ -278,6 +279,11 @@ OtaUpdater::OtaUpdaterError OtaUpdater::installUpdate(ProgressCallback onProgres
     if (onProgress && totalSize > 0) {
       const int pct = static_cast<int>(static_cast<uint64_t>(processedSize) * 100 / totalSize);
       if (pct != lastReportedPct) {
+        // Persist coarse progress so an interrupted install reports how far
+        // it got. NVS wear is bounded: one write per whole percent bucket.
+        if (pct % 10 == 0) {
+          recordInstallProgressForDiagnostics(2, processedSize);
+        }
         lastReportedPct = pct;
         onProgress(ctx);
       }
@@ -308,4 +314,60 @@ OtaUpdater::OtaUpdaterError OtaUpdater::installUpdate(ProgressCallback onProgres
 
   LOG_INF("OTA", "Update completed");
   return OK;
+}
+
+// --- Install failure diagnostics -------------------------------------------
+// The install phase runs with the USB console unavailable for minutes at a
+// time (and the failure path must not depend on serial output), so persist
+// the essential state in NVS and print it once at the next boot.
+
+namespace {
+// Stage values written to NVS as the install flow progresses, so an
+// interrupted run reports how far it got at the next boot.
+constexpr uint8_t DIAG_STAGE_CHECK_OK = 1;   // update found, install about to start
+constexpr uint8_t DIAG_STAGE_OTA_BEGIN = 2;  // esp_ota_begin succeeded, download running
+constexpr uint8_t DIAG_STAGE_FAILED = 3;     // installUpdate returned an error
+
+void writeDiagRecord(const uint8_t stage, const OtaUpdater::OtaUpdaterError error, const size_t processed,
+                     const size_t total) {
+  Preferences prefs;
+  if (!prefs.begin("ota-diag", false)) {
+    LOG_ERR("OTA", "Diag record: NVS open failed");
+    return;
+  }
+  prefs.putUChar("stage", stage);
+  prefs.putUChar("err", static_cast<uint8_t>(error));
+  prefs.putULong("proc", processed);
+  prefs.putULong("tot", total);
+  prefs.putBool("valid", true);
+  prefs.end();
+}
+}  // namespace
+
+void OtaUpdater::recordInstallProgressForDiagnostics(const uint8_t stage, const size_t processed) {
+  writeDiagRecord(stage, OK, processed, 0);
+}
+
+void OtaUpdater::recordInstallFailureForDiagnostics(const OtaUpdaterError error, const size_t processed,
+                                                    const size_t total) {
+  writeDiagRecord(DIAG_STAGE_FAILED, error, processed, total);
+}
+
+void OtaUpdater::reportAndClearLastInstallFailure() {
+  Preferences prefs;
+  if (!prefs.begin("ota-diag", true)) {
+    return;
+  }
+  if (!prefs.getBool("valid", false)) {
+    prefs.end();
+    return;
+  }
+  const uint8_t stage = prefs.getUChar("stage", 0);
+  const auto error = static_cast<OtaUpdaterError>(prefs.getUChar("err", 0));
+  const size_t processed = prefs.getULong("proc", 0);
+  const size_t total = prefs.getULong("tot", 0);
+  prefs.clear();
+  prefs.end();
+  LOG_ERR("OTA", "Last OTA run: stage=%u err=%d processed=%u/%u free=%d max=%d", stage, static_cast<int>(error),
+          static_cast<unsigned>(processed), static_cast<unsigned>(total), ESP.getFreeHeap(), ESP.getMaxAllocHeap());
 }

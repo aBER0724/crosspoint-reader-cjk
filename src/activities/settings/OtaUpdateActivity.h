@@ -43,7 +43,16 @@ class OtaUpdateActivity : public Activity {
   void renderOtaProgressOnly(unsigned int percentage, size_t processedSize, size_t totalSize);
   void runUpdateInstall();
 
+  // Test-only: when set before the activity is pushed, the install starts
+  // automatically once the check finds an update, so automated serial tests
+  // can exercise the full download+flash path even when the USB console
+  // drops mid-flow. Cleared on use.
+  static bool autoInstallForTest;
+
  public:
+  // Test-only entry: flip the flag via this setter before pushing the
+  // activity so the install starts without needing serial input mid-flow.
+  static void requestAutoInstallForTest() { autoInstallForTest = true; }
   explicit OtaUpdateActivity(GfxRenderer& renderer, MappedInputManager& mappedInput)
       : Activity("OtaUpdate", renderer, mappedInput), updater() {}
   void onEnter() override;
