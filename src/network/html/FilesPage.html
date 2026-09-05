@@ -1586,6 +1586,23 @@
             </div>
           </div>
 
+          <!-- Auto-crop Margins (element lost in the 1.5.0 merge while the
+               upload-settings JS still referenced it, which crashed
+               openUploadModal with a null .checked write and made the upload
+               button appear dead) -->
+          <div class="advanced-setting-row">
+            <div class="setting-label">
+              <div class="setting-title">✂ Auto-crop Margins</div>
+              <div class="setting-desc">Trim uniform borders and scale image content to fit</div>
+            </div>
+            <div class="setting-controls">
+              <label class="toggle-switch">
+                <input type="checkbox" id="autoCropToggle" onchange="updateQualitySettings()">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+          </div>
+
           <div class="convert-settings" id="convertSettings" style="display:block;">
             <span>⚫ True-Grayscale</span>
           <span>📏 Max 480×800px</span>
@@ -2265,6 +2282,12 @@
     updateQualitySettings();
   }
 
+  // Restored: lost in an upstream merge while updateQualitySettings still called it.
+  function isImagePickerVisible() {
+    const pickerSection = document.getElementById('imagePickerSection');
+    return pickerSection && pickerSection.style.display !== 'none';
+  }
+
   function updateQualitySettings() {
     const quality = document.getElementById('qualitySlider').value;
     // Check if grayscaleToggle exists (may be hidden for compatibility with other devices)
@@ -2280,7 +2303,7 @@
     // Update converter variables (used by processImage and applyGrayscale)
     JPEG_QUALITY = parseInt(quality, 10);
     ENABLE_GRAYSCALE = true; // Always grayscale for e-ink
-    ENABLE_AUTO_CROP = autoCropToggle ? autoCropToggle.checked : false;
+    ENABLE_AUTO_CROP = document.getElementById('autoCropToggle')?.checked || false;
     if (isImagePickerVisible()) {
       renderImageGrid();
     }
@@ -2920,7 +2943,7 @@
       const autoCropToggle = document.getElementById('autoCropToggle');
       JPEG_QUALITY = parseInt(qualitySlider.value, 10);
       ENABLE_GRAYSCALE = true;
-      ENABLE_AUTO_CROP = autoCropToggle ? autoCropToggle.checked : false;
+      ENABLE_AUTO_CROP = autoCropToggle?.checked || false;
       const qualityDisplay = document.getElementById('qualityDisplaySimple');
       if (qualityDisplay) {
         qualityDisplay.textContent = '📦 ' + qualitySlider.value + '% JPEG';
@@ -3196,6 +3219,7 @@ let uploadGeneration = 0;       // Incremented each uploadFile() call; guards st
 let currentUploadWs = null;     // Active WebSocket reference for external abort
 let currentUploadXhr = null;    // Active XHR reference for external abort
 const WS_PORT = 81;
+const WS_CONNECT_TIMEOUT_MS = 4000; // Abort CONNECTING quickly; HTTP fallback takes over
 const WS_CHUNK_SIZE = 4096; // 4KB chunks - smaller for ESP32 stability
 
 // ============================================================================
@@ -3210,7 +3234,19 @@ const DEFAULT_ENABLE_GRAYSCALE = true;
 // Note: Overlap is now always centered distribution (min 5%)
 const DEFAULT_ENABLE_AUTO_CROP = false;
 
+// Device profiles restored: the 1.5.0 merge dropped the declarations while the
+// applyDeviceTarget()/setDeviceTarget() code still referenced them, which crashed
+// the upload modal (DETECTED_DEVICE is not defined).
+const DEVICE_PROFILES = {
+  X4: { width: 480, height: 800, label: 'X4' },
+  X3: { width: 528, height: 792, label: 'X3' },
+};
+const DEFAULT_DEVICE = 'X4';
+
 // Dynamic conversion settings (updated by UI)
+let DEVICE_TARGET = 'auto';      // 'auto' | 'X4' | 'X3'
+let DETECTED_DEVICE = null;      // populated from /api/status
+let ACTIVE_DEVICE = DEFAULT_DEVICE;
 let MAX_WIDTH = DEFAULT_MAX_WIDTH;
 let MAX_HEIGHT = DEFAULT_MAX_HEIGHT;
 let JPEG_QUALITY = DEFAULT_JPEG_QUALITY;
@@ -3247,11 +3283,14 @@ function applyUploadSettings(settings = {}) {
   const merged = { ...DEFAULT_UPLOAD_SETTINGS, ...settings };
   suppressUploadSettingsSave = true;
   try {
-    document.getElementById('convertBeforeUpload').checked = !!merged.convertBeforeUpload;
-    document.getElementById('renameFromMetadataToggle').checked = !!merged.renameFromMetadata;
-    document.getElementById('autoCropToggle').checked = !!merged.autoCrop;
-    document.getElementById('export-log-checkbox').checked = !!merged.exportLog;
-    document.getElementById('rememberUploadSettings').checked = !!settings.rememberSettings;
+    // Optional chaining: a merge that drops a toggle from the markup must not
+    // crash openUploadModal again (the upload button would silently do nothing).
+    const el = (id) => document.getElementById(id);
+    if (el('convertBeforeUpload')) el('convertBeforeUpload').checked = !!merged.convertBeforeUpload;
+    if (el('renameFromMetadataToggle')) el('renameFromMetadataToggle').checked = !!merged.renameFromMetadata;
+    if (el('autoCropToggle')) el('autoCropToggle').checked = !!merged.autoCrop;
+    if (el('export-log-checkbox')) el('export-log-checkbox').checked = !!merged.exportLog;
+    if (el('rememberUploadSettings')) el('rememberUploadSettings').checked = !!settings.rememberSettings;
 
     setQualityPreset(Math.max(1, Math.min(95, parseInt(merged.quality, 10) || DEFAULT_JPEG_QUALITY)));
     setDeviceTarget(['auto', 'X3', 'X4'].includes(merged.deviceTarget) ? merged.deviceTarget : 'auto');
@@ -3315,6 +3354,12 @@ async function fetchVersion() {
     if (response.ok) {
       const data = await response.json();
       crosspointVersion = data.version || 'Unknown';
+      // Device detection restored from upstream: applyDeviceTarget() needs
+      // DETECTED_DEVICE to resolve the 'auto' device target.
+      if (data.device === 'X3' || data.device === 'X4') {
+        DETECTED_DEVICE = data.device;
+        applyDeviceTarget();
+      }
     }
   } catch (e) {
     console.error('Failed to fetch version:', e);
@@ -4965,11 +5010,23 @@ function uploadFileWebSocket(file, onProgress, onComplete, onError) {
     currentUploadWs = ws;
     let uploadStarted = false;
     let sendingChunks = false;
-    let uploadComplete = false; // set only when DONE is received and resolve() called
+    let uploadComplete = false; // set only when DONE is received and complete is confirmed
+
+    // Mesh APs sometimes answer ICMP host-unreachable for the device while it
+    // roams between nodes; browsers then sit in CONNECTING for minutes without
+    // firing onerror. Give up fast so the caller can fall back to HTTP.
+    const connectTimeout = setTimeout(() => {
+      if (!uploadStarted && !uploadComplete) {
+        console.warn('[WS] Connect timeout, aborting');
+        try { ws.close(); } catch (e) { /* already closed */ }
+        reject(new Error('WebSocket connection timeout'));
+      }
+    }, WS_CONNECT_TIMEOUT_MS);
 
     ws.binaryType = 'arraybuffer';
 
     ws.onopen = function() {
+      clearTimeout(connectTimeout);
       console.log('[WS] Connected, starting upload:', file.name);
       // Send start message: START:<filename>:<size>:<path>
       ws.send(`START:${file.name}:${file.size}:${currentPath}`);
@@ -5156,6 +5213,7 @@ async function uploadFile() {
     if (!error || typeof error.message !== 'string') return false;
     const message = error.message;
     return message.includes('WebSocket connection failed') ||
+           message.includes('WebSocket connection timeout') ||
            message.includes('WebSocket error during upload') ||
            message.includes('WebSocket closed during upload') ||
            message.includes('Network error');
