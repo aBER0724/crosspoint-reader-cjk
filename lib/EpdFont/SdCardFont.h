@@ -274,7 +274,7 @@ class SdCardFont {
   // each measure/draw traversal. Keep enough slots for a normal page while also
   // enforcing a bitmap-byte budget so unusual large glyphs cannot consume the
   // TLS/reader heap reserve.
-  static constexpr uint32_t OVERFLOW_CAPACITY = 80;
+  static constexpr uint32_t OVERFLOW_CAPACITY = 120;
   static constexpr uint32_t OVERFLOW_BITMAP_BUDGET_BYTES = 24 * 1024;
   static constexpr uint32_t OVERFLOW_LOW_HEAP_RESERVE_BYTES = 8 * 1024;
   uint32_t overflowBitmapBudget() const;

@@ -1733,10 +1733,20 @@ const EpdGlyph* SdCardFont::onGlyphMiss(void* ctx, uint32_t codepoint) {
   const auto& s = self->styles_[styleIdx];
   if (!s.fullIntervals && !s.bmpIntervals && !s.intervalsAreBmpCoverage) return nullptr;
 
-  // Check overflow cache first (matching both codepoint and style)
+  // Check overflow cache first (matching both codepoint and style). On a hit,
+  // swap the entry with the newest slot so FIFO eviction keeps it resident.
+  // Without this, scrolling a page whose working set approaches or exceeds
+  // capacity (the font-catalog family list, ~300 distinct CJK names) evicts
+  // nearly every glyph between frames and reloads them from SD one at a time.
   for (uint32_t i = 0; i < self->overflowCount_; i++) {
     if (self->overflow_[i].codepoint == codepoint && self->overflow_[i].styleIdx == styleIdx) {
-      return &self->overflow_[i].glyph;
+      const uint32_t newest = (self->overflowOldest_ + self->overflowCount_ - 1) % OVERFLOW_CAPACITY;
+      if (i != newest) {
+        OverflowEntry tmp = self->overflow_[i];
+        self->overflow_[i] = self->overflow_[newest];
+        self->overflow_[newest] = tmp;
+      }
+      return &self->overflow_[newest].glyph;
     }
   }
 
