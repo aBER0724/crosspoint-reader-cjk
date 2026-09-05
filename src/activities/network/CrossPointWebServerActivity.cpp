@@ -102,6 +102,16 @@ void CrossPointWebServerActivity::onExit() {
   WiFi.mode(WIFI_OFF);
   delay(30);  // Allow WiFi hardware to power down
 
+  // released before the network session (no-op when nothing was released).
+  // No RenderLock here: onExit() is called from exitActivity() with the render
+  // mutex already held by the activity transition ("lock must be held by the
+  // caller"); taking it again self-deadlocks the main task on this
+  // non-recursive mutex (device freeze right after "Setting WiFi mode OFF").
+  if (webSessionFontRelease_) {
+    sdFontSystem.ensureLoaded(renderer);
+    webSessionFontRelease_ = false;
+  }
+
   LOG_DBG("WEBACT", "Free heap at onExit end: %d bytes", ESP.getFreeHeap());
 }
 
@@ -113,9 +123,23 @@ void CrossPointWebServerActivity::onNetworkModeSelected(const NetworkMode mode) 
     modeName = "Create Hotspot";
   }
   LOG_DBG("WEBACT", "Network mode selected: %s", modeName);
-
   networkMode = mode;
   isApMode = (mode == NetworkMode::CREATE_HOTSPOT);
+
+  // The X4 heap cannot hold the resident CJK SD fonts plus the WiFi stack.
+  // Release them before any network mode starts (same contract as the OTA
+  // update flow); the loop pause below keeps them out until the session ends
+  // and onExit() restores them.
+  {
+    RenderLock lock;
+    LOG_DBG("WEBACT", "Heap before network-font release: free=%d max=%d", ESP.getFreeHeap(), ESP.getMaxAllocHeap());
+    FontManager::getInstance().releaseGlyphCaches();
+    sdFontSystem.releaseResidentFonts(renderer);
+    if (auto* cache = renderer.getFontCacheManager()) {
+      cache->clearCache();
+    }
+  }
+  webSessionFontRelease_ = true;
 
   if (mode == NetworkMode::CONNECT_CALIBRE) {
     startActivityForResult(
@@ -249,10 +273,16 @@ void CrossPointWebServerActivity::startWebServer() {
   // WiFi and the current UI font compete for the same fragmented X4 heap.
   // Reclaim glyph bitmaps before starting networking; selections and open font
   // files remain intact and glyphs are loaded again on demand.
-  LOG_DBG("WEBACT", "Heap before upload cache release: free=%d max=%d", ESP.getFreeHeap(), ESP.getMaxAllocHeap());
-  FontManager::getInstance().releaseGlyphCaches();
-  if (auto* cache = renderer.getFontCacheManager()) {
-    cache->clearCache();
+  {
+    RenderLock lock;
+    LOG_DBG("WEBACT", "Heap before network cache release: free=%d max=%d", ESP.getFreeHeap(), ESP.getMaxAllocHeap());
+    FontManager::getInstance().releaseGlyphCaches();
+    // The WiFi selector re-grew caches while it rendered; drop them again so
+    // server startup sees the largest contiguous heap available.
+    sdFontSystem.releaseResidentFonts(renderer);
+    if (auto* cache = renderer.getFontCacheManager()) {
+      cache->clearCache();
+    }
   }
 
   webServer.reset(new (std::nothrow) CrossPointWebServer());
@@ -356,13 +386,11 @@ void CrossPointWebServerActivity::loop() {
         lastHandleClientTime = millis();
       }
 
-      if (sdFontSystem.hasPendingReload()) {
-        RenderLock lock(false);
-        if (lock.locked()) {
-          sdFontSystem.ensureLoaded(renderer);
-          requestUpdate();
-        }
-      }
+      // NOTE: do not auto-run sdFontSystem.ensureLoaded() here. Resident CJK
+      // fonts are released for the whole web session (they fragment the heap
+      // below what the WiFi stack and lwIP need, which reboot-loops the
+      // device). Fonts uploaded through the web UI activate when this
+      // activity exits and onExit() restores them.
 
       // Handle exit on Back button (also check outside loop)
       if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {

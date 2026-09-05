@@ -376,6 +376,25 @@ void CrossPointWebServer::begin() {
   // This is critical for reliable web server operation on ESP32.
   WiFi.setSleep(false);
 
+  // The X4 sits on a home mesh that intermittently drops the client (browser
+  // uploads then silently do nothing). Log the association transitions so the
+  // dark windows can be attributed to the device or the network.
+  wifiEventLogId = WiFi.onEvent([](WiFiEvent_t event, WiFiEventInfo_t info) {
+    switch (event) {
+      case ARDUINO_EVENT_WIFI_STA_DISCONNECTED:
+        LOG_INF("WEB", "WiFi STA disconnected, reason=%d", info.wifi_sta_disconnected.reason);
+        break;
+      case ARDUINO_EVENT_WIFI_STA_CONNECTED:
+        LOG_INF("WEB", "WiFi STA associated");
+        break;
+      case ARDUINO_EVENT_WIFI_STA_GOT_IP:
+        LOG_INF("WEB", "WiFi STA got IP");
+        break;
+      default:
+        break;
+    }
+  });
+
   // Note: WebServer class doesn't have setNoDelay() in the standard ESP32 library.
   // We rely on disabling WiFi sleep for responsiveness.
 
@@ -509,6 +528,11 @@ void CrossPointWebServer::stop() {
     fontUpload.file = FsFile();
   }
 
+  if (wifiEventLogId >= 0) {
+    WiFi.removeEvent(wifiEventLogId);
+    wifiEventLogId = -1;
+  }
+
   if (!running || !server) {
     LOG_DBG("WEB", "stop() called but already stopped (running=%d, server=%p)", running, server.get());
     if (watchdogTaskRegistered) {
@@ -630,6 +654,9 @@ CrossPointWebServer::WsUploadStatus CrossPointWebServer::getWsUploadStatus() con
 }
 
 static void sendHtmlContent(WebServer* server, const char* data, size_t len) {
+  // The device is unattended firmware: pages change between releases and the
+  // heap/network can flap, so never let the browser serve a stale cached UI.
+  server->sendHeader("Cache-Control", "no-store, must-revalidate");
   server->sendHeader("Content-Encoding", "gzip");
   server->send_P(200, "text/html", data, len);
 }
@@ -640,6 +667,7 @@ void CrossPointWebServer::handleRoot() const {
 }
 
 void CrossPointWebServer::handleJszip() const {
+  server->sendHeader("Cache-Control", "no-store, must-revalidate");
   server->sendHeader("Content-Encoding", "gzip");
   server->send_P(200, "application/javascript", jszip_minJs, jszip_minJsCompressedSize);
   LOG_DBG("WEB", "Served jszip.min.js");

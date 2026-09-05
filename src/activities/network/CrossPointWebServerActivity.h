@@ -35,6 +35,8 @@ class CrossPointWebServerActivity final : public Activity {
   // Network mode
   NetworkMode networkMode = NetworkMode::JOIN_NETWORK;
   bool isApMode = false;
+  // Resident SD fonts are released before WiFi/AP startup and restored on exit.
+  bool webSessionFontRelease_ = false;
 
   // Web server - owned by this activity
   std::unique_ptr<CrossPointWebServer> webServer;

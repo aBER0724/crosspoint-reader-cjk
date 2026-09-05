@@ -116,6 +116,8 @@ class CrossPointWebServer {
   std::unique_ptr<WebSocketsServer> wsServer = nullptr;
   bool running = false;
   bool watchdogTaskRegistered = false;
+  // Id of the Wi-Fi event logger registered while the server runs; -1 when off.
+  int32_t wifiEventLogId = -1;
   bool apMode = false;  // true when running in AP mode, false for STA mode
   uint16_t port = 80;
   uint16_t wsPort = 81;  // WebSocket port
