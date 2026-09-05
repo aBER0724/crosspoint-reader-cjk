@@ -42,6 +42,27 @@ constexpr const char* PREVIEW_BACKUP_PATH = "/.font_preview_backup.cpfont";
 constexpr uint8_t DEFAULT_PREVIEW_POINT_SIZE = 14;
 constexpr int UI_PACKAGE_FILE_INDEX = -2;
 
+// GitHub contents API envelope handling. Some LAN middleboxes strip the
+// Accept: application/vnd.github.raw request header, and GitHub then answers
+// with its default JSON envelope ({"name":...,"content":"<base64>"}) instead of
+// the raw manifest, which used to surface as "Unsupported manifest version: 0".
+// The envelope is detected from a small prefix probe and the embedded base64 is
+// streamed to a sibling file in fixed-size buffers; neither the ~66 KB envelope
+// nor the ~47 KB decoded manifest is ever held in RAM.
+constexpr size_t MANIFEST_PROBE_BYTES = 2048;
+constexpr size_t MANIFEST_DECODE_READ_BYTES = 512;
+constexpr size_t MANIFEST_DECODE_OUT_BYTES = 768;
+constexpr const char* MANIFEST_RAW_PREFIX = "{\"version\":";
+constexpr const char* MANIFEST_CONTENT_KEY = "\"content\":\"";
+
+int manifestBase64Value(char c) {
+  if (c >= 'A' && c <= 'Z') return c - 'A';
+  if (c >= 'a' && c <= 'z') return c - 'a' + 26;
+  if (c >= '0' && c <= '9') return c - '0' + 52;
+  if (c == '+') return 62;
+  if (c == '/') return 63;
+  return -1;
+}
 constexpr const char* PREVIEW_SAMPLE_LINES[] = {
     "\xe9\x98\x85\xe8\xaf\xbb\xe9\xa2\x84\xe8\xa7\x88  "
     "\xe6\xb1\x89\xe5\xad\x97\xe6\x98\x8e\xe6\x9c\x9d\xe9\xbb\x91\xe4\xbd\x93\xe6\xa5\xb7\xe4\xbd\x93",
@@ -278,16 +299,17 @@ void FontDownloadActivity::onWifiSelectionComplete(const bool success) {
   // allocation order intact through the manifest handshake.
   beginNetworkTransfer();
 
-  // Fail in-place if there is not enough contiguous memory for TLS. Rebooting
-  // straight back into this activity restarts WiFi and can trap the user in a
-  // Fonts -> WiFi -> reboot loop when the heap remains below the threshold.
+  // A heap that cannot host the TLS handshake is deterministic to fix with the
+  // same self-heal the family list and preview screens use: silent-restart
+  // straight back into this activity on a freshly booted heap (cold boot
+  // measured ~75 KB free / ~47 KB max alloc, comfortably above both network
+  // thresholds). The RTC-persisted 3-attempt cap in main.cpp bounds the loop —
+  // after 3 reboots the device simply lands on Home, so the old fear of an
+  // endless Fonts -> WiFi -> reboot loop does not apply to this path.
   if (!heapSufficientForNetworkTransfer()) {
-    LOG_DBG("FONT", "Heap too fragmented for manifest fetch: free=%d max=%d", ESP.getFreeHeap(), ESP.getMaxAllocHeap());
-    errorMessage_ = tr(STR_FONT_LIST_FETCH_FAILED);
-    {
-      RenderLock lock(*this);
-      state_ = ERROR;
-    }
+    LOG_DBG("FONT", "Heap too fragmented for manifest fetch: free=%d max=%d; silent-restarting for a clean heap",
+            ESP.getFreeHeap(), ESP.getMaxAllocHeap());
+    silentRestartToFonts();
     return;
   }
   if (!fetchAndParseManifests()) {
@@ -529,6 +551,140 @@ bool FontDownloadActivity::restoreManifestData() {
   return true;
 }
 
+// Detects a GitHub contents API base64 envelope in a downloaded manifest file
+// and replaces it with the decoded raw manifest, streaming with fixed-size
+// buffers. Returns true when the file is usable as a raw manifest afterwards,
+// false on IO or decode failure (the caller retries the download).
+bool FontDownloadActivity::normalizeManifestEnvelope(const char* path) {
+  HalFile in;
+  if (!Storage.openFileForRead("FONT", path, in)) {
+    LOG_ERR("FONT", "Failed to open downloaded manifest for normalization");
+    return false;
+  }
+
+  char probe[MANIFEST_PROBE_BYTES];
+  const int probeLen = in.read(probe, sizeof(probe));
+  const size_t rawPrefixLen = strlen(MANIFEST_RAW_PREFIX);
+  if (probeLen < static_cast<int>(rawPrefixLen)) {
+    in.close();
+    LOG_ERR("FONT", "Downloaded manifest is too small: %d bytes", probeLen);
+    return false;
+  }
+  if (strncmp(probe, MANIFEST_RAW_PREFIX, rawPrefixLen) == 0) {
+    in.close();
+    return true;  // Already the raw manifest.
+  }
+
+  const size_t keyLen = strlen(MANIFEST_CONTENT_KEY);
+  int contentOffset = -1;
+  for (int i = 0; i + static_cast<int>(keyLen) <= probeLen; ++i) {
+    if (memcmp(probe + i, MANIFEST_CONTENT_KEY, keyLen) == 0) {
+      contentOffset = i + static_cast<int>(keyLen);
+      break;
+    }
+  }
+  if (contentOffset < 0) {
+    in.close();
+    // Neither a raw manifest nor a recognizable envelope; let the parser
+    // report the actual problem.
+    return true;
+  }
+
+  const std::string decodedPath = std::string(path) + ".dec";
+  Storage.remove(decodedPath.c_str());
+  HalFile out;
+  if (!Storage.openFileForWrite("FONT", decodedPath.c_str(), out)) {
+    LOG_ERR("FONT", "Failed to create decoded manifest file");
+    in.close();
+    return false;
+  }
+  if (!in.seekSet(static_cast<size_t>(contentOffset))) {
+    LOG_ERR("FONT", "Failed to seek to manifest content");
+    in.close();
+    out.close();
+    Storage.remove(decodedPath.c_str());
+    return false;
+  }
+
+  char readBuf[MANIFEST_DECODE_READ_BYTES];
+  uint8_t outBuf[MANIFEST_DECODE_OUT_BYTES];
+  size_t outLen = 0;
+  size_t decodedSize = 0;
+  uint32_t group = 0;
+  int groupBits = 0;
+  bool closed = false;
+  bool failed = false;
+
+  while (!failed && !closed) {
+    const int n = in.read(readBuf, sizeof(readBuf));
+    if (n <= 0) break;  // EOF before the closing quote: not decodable.
+    for (int i = 0; i < n && !closed && !failed; ++i) {
+      const char c = readBuf[i];
+      if (c == '"') {
+        closed = true;
+        break;
+      }
+      if (c == '\\') {
+        // JSON escape inside the base64 payload (GitHub emits "\\n" line
+        // breaks). Consume the escaped character; an escape split across the
+        // chunk boundary is read byte-by-byte.
+        if (i + 1 < n) {
+          ++i;
+          continue;
+        }
+        char escaped = 0;
+        if (in.read(&escaped, 1) != 1) failed = true;
+        continue;
+      }
+      if (c == '=') continue;  // Padding: trailing bits drop out below.
+      const int value = manifestBase64Value(c);
+      if (value < 0) {
+        LOG_ERR("FONT", "Invalid base64 character in manifest envelope");
+        failed = true;
+        break;
+      }
+      group = (group << 6) | static_cast<uint32_t>(value);
+      groupBits += 6;
+      if (groupBits >= 8) {
+        groupBits -= 8;
+        outBuf[outLen++] = static_cast<uint8_t>((group >> groupBits) & 0xFF);
+        if (outLen == sizeof(outBuf)) {
+          if (out.write(outBuf, outLen) != outLen) {
+            LOG_ERR("FONT", "Failed to write decoded manifest");
+            failed = true;
+            break;
+          }
+          decodedSize += outLen;
+          outLen = 0;
+        }
+      }
+    }
+  }
+
+  bool ok = closed && !failed;
+  if (ok && outLen > 0) {
+    if (out.write(outBuf, outLen) != outLen) {
+      LOG_ERR("FONT", "Failed to write decoded manifest tail");
+      ok = false;
+    } else {
+      decodedSize += outLen;
+    }
+  }
+  out.close();
+  in.close();
+  if (!ok) {
+    Storage.remove(decodedPath.c_str());
+    return false;
+  }
+  if (!Storage.remove(path) || !Storage.rename(decodedPath.c_str(), path)) {
+    LOG_ERR("FONT", "Failed to replace manifest with decoded copy");
+    Storage.remove(decodedPath.c_str());
+    return false;
+  }
+  LOG_INF("FONT", "Decoded GitHub manifest envelope: %zu bytes", decodedSize);
+  return true;
+}
+
 bool FontDownloadActivity::downloadManifestToFile(const std::string& url, const char* path) {
   // Download the raw manifest to a file on SD card to avoid holding both
   // TLS buffers and the full JSON string in RAM simultaneously. The file is
@@ -557,7 +713,10 @@ bool FontDownloadActivity::downloadManifestToFile(const std::string& url, const 
       Storage.remove(path);
       return false;
     }
-    if (result == HttpDownloader::OK) return true;
+    // A middlebox between the device and GitHub can strip the raw Accept
+    // header, in which case the download carries the base64 envelope. Decode
+    // it in place; on failure fall through to the retry loop below.
+    if (result == HttpDownloader::OK && normalizeManifestEnvelope(path)) return true;
 
     Storage.remove(path);
     if (attempt < MAX_DOWNLOAD_ATTEMPTS) {

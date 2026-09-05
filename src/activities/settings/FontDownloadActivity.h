@@ -27,6 +27,11 @@
 // whose handshake needs far less contiguous heap than release-assets' RSA cipher,
 // which fails with -112/-125 once the X4 heap is fragmented. The file must be
 // committed to the repo (not only attached to the release) for this to work.
+//
+// LAN middleboxes may strip the Accept: application/vnd.github.raw header from
+// client requests, in which case GitHub answers with the default base64 JSON
+// envelope. normalizeManifestEnvelope() detects that shape and decodes it back
+// to the raw manifest before parsing, so both response shapes are supported.
 #define FONT_MANIFEST_URL_STRINGIFY_INNER(x) #x
 #define FONT_MANIFEST_URL_STRINGIFY(x) FONT_MANIFEST_URL_STRINGIFY_INNER(x)
 #define FONT_MANIFEST_URL                                                \
@@ -110,6 +115,7 @@ class FontDownloadActivity : public Activity {
   void onWifiSelectionComplete(bool success);
   bool fetchAndParseManifests();
   bool downloadManifestToFile(const std::string& url, const char* path);
+  bool normalizeManifestEnvelope(const char* path);
   bool parseManifestFile(const char* path, std::vector<ManifestFamily>& outFamilies, std::string& outBaseUrl,
                          std::string& outUpdatedAt, bool allowSelfHealRestart);
   bool restoreManifestData();
