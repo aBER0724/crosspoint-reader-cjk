@@ -437,6 +437,24 @@ uint8_t* ZipFile::readFileToMemory(const char* filename, size_t* size, const boo
   return data;
 }
 
+// Allocates a streaming buffer, shrinking the chunk on failure. After a web
+// upload session the heap is fragmented (measured: 29 KB free but < 8 KB
+// largest block), and a hard 8 KB requirement then failed every section
+// build with "index failed: invalid book" until the next reboot. A smaller
+// chunk only costs extra SD writes, so degrade instead of failing.
+static uint8_t* allocChunkBuffer(const size_t preferred, size_t& actual) {
+  static constexpr size_t CHUNK_LADDER[] = {8192, 4096, 2048, 1024, 512};
+  for (const size_t size : CHUNK_LADDER) {
+    if (size > preferred) continue;
+    if (void* buf = malloc(size)) {
+      actual = size;
+      return static_cast<uint8_t*>(buf);
+    }
+  }
+  actual = 0;
+  return nullptr;
+}
+
 bool ZipFile::readFileToStream(const char* filename, Print& out, const size_t chunkSize, const bool allowEarlyStop,
                                const std::function<bool()>& cancelFn) {
   const ScopedOpenClose zip{*this};
@@ -454,19 +472,19 @@ bool ZipFile::readFileToStream(const char* filename, Print& out, const size_t ch
 
   if (fileStat.method == ZIP_METHOD_STORED) {
     // no deflation, just read content
-    const auto buffer = static_cast<uint8_t*>(malloc(chunkSize));
+    size_t chunk = 0;
+    const auto buffer = allocChunkBuffer(chunkSize, chunk);
     if (!buffer) {
-      LOG_ERR("ZIP", "Failed to allocate memory for buffer");
+      LOG_ERR("ZIP", "Failed to allocate memory for buffer (any chunk size)");
       return false;
     }
-
     size_t remaining = inflatedDataSize;
     while (remaining > 0) {
       if (cancelFn && cancelFn()) {
         free(buffer);
         return false;
       }
-      const size_t dataRead = file.read(buffer, remaining < chunkSize ? remaining : chunkSize);
+      const size_t dataRead = file.read(buffer, remaining < chunk ? remaining : chunk);
       if (dataRead == 0) {
         LOG_ERR("ZIP", "Could not read more bytes");
         free(buffer);
@@ -487,24 +505,29 @@ bool ZipFile::readFileToStream(const char* filename, Print& out, const size_t ch
   }
 
   if (fileStat.method == ZIP_METHOD_DEFLATED) {
-    auto* fileReadBuffer = static_cast<uint8_t*>(malloc(chunkSize));
+    size_t readChunk = 0;
+    auto* fileReadBuffer = allocChunkBuffer(chunkSize, readChunk);
     if (!fileReadBuffer) {
       LOG_ERR("ZIP", "Failed to allocate memory for zip file read buffer");
       return false;
     }
 
-    auto* outputBuffer = static_cast<uint8_t*>(malloc(chunkSize));
+    // The output buffer must fit the SAME chunk size at every step, so use the
+    // smaller of the two allocations as the effective streaming chunk.
+    size_t outChunk = 0;
+    auto* outputBuffer = allocChunkBuffer(chunkSize, outChunk);
     if (!outputBuffer) {
-      LOG_ERR("ZIP", "Failed to allocate memory for output buffer");
+      LOG_ERR("ZIP", "Failed to allocate memory for output buffer (any chunk size)");
       free(fileReadBuffer);
       return false;
     }
+    const size_t chunk = readChunk < outChunk ? readChunk : outChunk;
 
     ZipInflateCtx ctx;
     ctx.file = &file;
     ctx.fileRemaining = deflatedDataSize;
     ctx.readBuf = fileReadBuffer;
-    ctx.readBufSize = chunkSize;
+    ctx.readBufSize = chunk;
 
     InflateStream inflate;
     if (!inflate.init(true)) {
@@ -523,7 +546,7 @@ bool ZipFile::readFileToStream(const char* filename, Print& out, const size_t ch
         break;
       }
       size_t produced;
-      const InflateStream::Status status = inflate.readAtMost(outputBuffer, chunkSize, &produced);
+      const InflateStream::Status status = inflate.readAtMost(outputBuffer, chunk, &produced);
 
       totalProduced += produced;
       if (totalProduced > static_cast<size_t>(inflatedDataSize)) {
